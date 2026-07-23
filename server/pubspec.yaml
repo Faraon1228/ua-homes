@@ -1,0 +1,8 @@
+name: drive_community_server
+description: A simple local sync server for DriveCommunity Flutter app.
+publish_to: 'none'
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+dependencies:
+  shelf: ^1.4.0
+  shelf_router: ^1.0.0
