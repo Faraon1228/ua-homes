@@ -1,6 +1,7 @@
 name: Deploy UA Homes
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
