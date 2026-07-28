@@ -172,6 +172,7 @@ def init_db():
             e_oselya       INTEGER NOT NULL DEFAULT 0,
             views          INTEGER NOT NULL DEFAULT 0,
             images         TEXT    NOT NULL DEFAULT '[]',
+            status         TEXT    NOT NULL DEFAULT 'draft',
             latitude       REAL,
             longitude      REAL,
             description    TEXT    NOT NULL DEFAULT '',
