@@ -4,52 +4,72 @@ Endpoints for admin panel property/user management
 """
 
 from flask import Blueprint, g, jsonify, request
+from functools import wraps
 import json
 
 # Create blueprint
 admin_bp = Blueprint('admin', __name__, url_prefix='/api/admin')
 
-# Helper: Check if user is admin
-def require_admin(f):
-    from functools import wraps
+# Helper: Require JWT auth + admin role
+def require_auth_admin(f):
+    """Require both auth and admin role"""
     @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not hasattr(g, 'user_id') or g.user_id is None:
+    def wrapper(*args, **kwargs):
+        # Check auth
+        from app import decode_token
+        import jwt
+        
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
             return jsonify(error="Unauthorized"), 401
         
-        db = g.get('db')
-        if not db:
-            return jsonify(error="Database error"), 500
-            
+        token = auth[7:]
+        try:
+            payload = decode_token(token)
+        except jwt.ExpiredSignatureError:
+            return jsonify(error="Token expired"), 401
+        except jwt.PyJWTError:
+            return jsonify(error="Invalid token"), 401
+        
+        g.user_id = int(payload["sub"])
+        g.user_email = payload["email"]
+        
+        # Check admin role
+        from app import get_db
+        db = get_db()
         user = db.execute(
             "SELECT role FROM users WHERE id = ?",
             (g.user_id,)
         ).fetchone()
         
         if not user or user['role'] != 'admin':
-            return jsonify(error="Forbidden - admin access required"), 403
+            return jsonify(error="Admin access required"), 403
         
         return f(*args, **kwargs)
-    return decorated_function
+    return wrapper
 
 
-# ─── Admin Auth ──────────────────────────────────────────────────────────
+# ─── Admin Auth ──────────────────────────────────────────────────────
 
 @admin_bp.route("/auth/register", methods=["POST"])
 def admin_register():
-    """Register new admin (first admin only)"""
+    """Register new admin (first admin only, localhost only)"""
     from app import get_db
     import bcrypt
     
+    # Allow only localhost
+    if request.remote_addr not in ['127.0.0.1', 'localhost', '::1']:
+        return jsonify(error="Admin registration only from localhost"), 403
+    
     db = get_db()
     
-    # Check if any admin exists (first admin bypass)
+    # Check if any admin exists
     existing_admin = db.execute(
         "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
     ).fetchone()
     
-    if existing_admin and request.remote_addr not in ['127.0.0.1', 'localhost']:
-        return jsonify(error="Admin already exists. Contact existing admin."), 403
+    if existing_admin:
+        return jsonify(error="Admin already exists"), 409
     
     data = request.get_json() or {}
     email = (data.get('email') or '').strip()
@@ -74,8 +94,8 @@ def admin_register():
     
     # Create admin user
     db.execute(
-        "INSERT INTO users (name, email, password_hash, role, status) VALUES (?, ?, ?, ?, ?)",
-        (name, email, hashed, 'admin', 'active')
+        "INSERT INTO users (name, email, password, password_hash, role, status) VALUES (?, ?, ?, ?, ?, ?)",
+        (name, email, password, hashed, 'admin', 'active')
     )
     db.commit()
     
@@ -85,10 +105,49 @@ def admin_register():
     ), 201
 
 
-# ─── Admin Dashboard ─────────────────────────────────────────────────────
+@admin_bp.route("/auth/login", methods=["POST"])
+def admin_login():
+    """Admin login — returns JWT token"""
+    from app import get_db, make_token
+    import bcrypt
+    
+    db = get_db()
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip()
+    password = data.get('password') or ''
+    
+    if not email or not password:
+        return jsonify(error="Email and password required"), 400
+    
+    user = db.execute(
+        "SELECT id, password_hash, role FROM users WHERE email = ?",
+        (email,)
+    ).fetchone()
+    
+    if not user:
+        return jsonify(error="User not found"), 404
+    
+    if user['role'] != 'admin':
+        return jsonify(error="User is not an admin"), 403
+    
+    # Check password
+    if not bcrypt.checkpw(password.encode(), user['password_hash'].encode()):
+        return jsonify(error="Invalid password"), 401
+    
+    # Generate token
+    token = make_token(user['id'], email)
+    
+    return jsonify(
+        ok=True,
+        token=token,
+        user_id=user['id']
+    )
+
+
+# ─── Admin Dashboard ─────────────────────────────────────────────────
 
 @admin_bp.route("/dashboard/stats", methods=["GET"])
-@require_admin
+@require_auth_admin
 def dashboard_stats():
     """Get dashboard statistics"""
     from app import get_db
@@ -134,7 +193,7 @@ def dashboard_stats():
 # ─── Admin Listings Management ──────────────────────────────────────────
 
 @admin_bp.route("/listings", methods=["GET"])
-@require_admin
+@require_auth_admin
 def admin_get_listings():
     """Get all listings with filters for admin"""
     from app import get_db
@@ -188,7 +247,7 @@ def admin_get_listings():
 
 
 @admin_bp.route("/listings", methods=["POST"])
-@require_admin
+@require_auth_admin
 def admin_create_listing():
     """Create new listing as admin"""
     from app import get_db
@@ -242,7 +301,7 @@ def admin_create_listing():
 
 
 @admin_bp.route("/listings/<int:listing_id>", methods=["GET"])
-@require_admin
+@require_auth_admin
 def admin_get_listing(listing_id):
     """Get single listing details"""
     from app import get_db
@@ -272,7 +331,7 @@ def admin_get_listing(listing_id):
 
 
 @admin_bp.route("/listings/<int:listing_id>", methods=["PUT"])
-@require_admin
+@require_auth_admin
 def admin_update_listing(listing_id):
     """Update listing"""
     from app import get_db
@@ -313,7 +372,7 @@ def admin_update_listing(listing_id):
 
 
 @admin_bp.route("/listings/<int:listing_id>", methods=["DELETE"])
-@require_admin
+@require_auth_admin
 def admin_delete_listing(listing_id):
     """Delete listing"""
     from app import get_db
@@ -334,7 +393,7 @@ def admin_delete_listing(listing_id):
 
 
 @admin_bp.route("/listings/<int:listing_id>/publish", methods=["POST"])
-@require_admin
+@require_auth_admin
 def admin_publish_listing(listing_id):
     """Publish/unpublish listing"""
     from app import get_db
@@ -354,10 +413,10 @@ def admin_publish_listing(listing_id):
     return jsonify(ok=True, status=status)
 
 
-# ─── Image Management ────────────────────────────────────────────────────
+# ─── Image Management ────────────────────────────────────────────────
 
 @admin_bp.route("/listings/<int:listing_id>/images", methods=["POST"])
-@require_admin
+@require_auth_admin
 def admin_upload_image(listing_id):
     """Upload image for listing"""
     from app import get_db
@@ -418,7 +477,7 @@ def admin_upload_image(listing_id):
 
 
 @admin_bp.route("/listings/<int:listing_id>/images/<int:image_id>", methods=["DELETE"])
-@require_admin
+@require_auth_admin
 def admin_delete_image(listing_id, image_id):
     """Delete image"""
     from app import get_db
@@ -446,10 +505,10 @@ def admin_delete_image(listing_id, image_id):
     return jsonify(ok=True)
 
 
-# ─── User Management ────────────────────────────────────────────────────
+# ─── User Management ────────────────────────────────────────────────
 
 @admin_bp.route("/users", methods=["GET"])
-@require_admin
+@require_auth_admin
 def admin_get_users():
     """Get all users"""
     from app import get_db
@@ -481,7 +540,7 @@ def admin_get_users():
 
 
 @admin_bp.route("/users/<int:user_id>", methods=["PUT"])
-@require_admin
+@require_auth_admin
 def admin_update_user(user_id):
     """Update user role/status"""
     from app import get_db
@@ -512,10 +571,10 @@ def admin_update_user(user_id):
     return jsonify(ok=True)
 
 
-# ─── Reports ────────────────────────────────────────────────────────────
+# ─── Reports ────────────────────────────────────────────────────────
 
 @admin_bp.route("/reports/listings-by-city", methods=["GET"])
-@require_admin
+@require_auth_admin
 def admin_report_listings_by_city():
     """Get listings count by city"""
     from app import get_db
@@ -532,7 +591,7 @@ def admin_report_listings_by_city():
 
 
 @admin_bp.route("/reports/user-growth", methods=["GET"])
-@require_admin
+@require_auth_admin
 def admin_report_user_growth():
     """Get user growth over time"""
     from app import get_db

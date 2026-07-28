@@ -145,11 +145,14 @@ def init_db():
     db.execute("PRAGMA foreign_keys=ON")
     db.executescript("""
         CREATE TABLE IF NOT EXISTS users (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            name       TEXT    NOT NULL,
-            email      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
-            password   TEXT    NOT NULL,
-            created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            name            TEXT    NOT NULL,
+            email           TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+            password        TEXT    NOT NULL,
+            password_hash   TEXT,
+            role            TEXT    NOT NULL DEFAULT 'user',
+            status          TEXT    NOT NULL DEFAULT 'active',
+            created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
         );
 
         CREATE TABLE IF NOT EXISTS listings (
