@@ -565,6 +565,79 @@ def delete_listing(listing_id: int):
     return jsonify(ok=True)
 
 
+# ─── Map (geo-based search) ──────────────────────────────────────────────────
+
+@app.route("/api/map/listings", methods=["GET"])
+def get_map_listings():
+    """Get listings with coordinates for map visualization."""
+    db   = get_db()
+    args = request.args
+
+    city      = strip(args.get("city", ""), 100)
+    min_price = pos_int(args.get("minPrice"))
+    max_price = pos_int(args.get("maxPrice"))
+    min_rooms = nonneg_int(args.get("minRooms"))
+    max_rooms = nonneg_int(args.get("maxRooms"))
+    e_oselya  = args.get("eOselya") == "1"
+    
+    # Geo-search params
+    lat       = args.get("lat", type=float)
+    lng       = args.get("lng", type=float)
+    radius_m  = args.get("radius", type=int, default=5000)
+
+    query = """
+        SELECT l.id, l.title, l.city, l.district, l.price, l.rooms, l.area,
+               l.latitude, l.longitude, l.e_oselya, l.views, l.created_at
+        FROM listings l
+        WHERE l.latitude IS NOT NULL AND l.longitude IS NOT NULL
+    """
+    params: list = []
+
+    if city:
+        query += " AND l.city = ?"
+        params.append(city)
+    if min_price is not None:
+        query += " AND l.price >= ?"
+        params.append(min_price)
+    if max_price is not None:
+        query += " AND l.price <= ?"
+        params.append(max_price)
+    if min_rooms is not None:
+        query += " AND l.rooms >= ?"
+        params.append(min_rooms)
+    if max_rooms is not None:
+        query += " AND l.rooms <= ?"
+        params.append(max_rooms)
+    if e_oselya:
+        query += " AND l.e_oselya = 1"
+
+    query += " ORDER BY l.created_at DESC LIMIT 500"
+
+    rows = db.execute(query, params).fetchall()
+    listings = [dict(r) for r in rows]
+
+    # If geo-search provided, filter by radius (Haversine formula)
+    if lat is not None and lng is not None:
+        def distance_m(lat1, lng1, lat2, lng2):
+            from math import radians, sin, cos, sqrt, atan2
+            R = 6371000  # Earth radius in meters
+            dlat = radians(lat2 - lat1)
+            dlng = radians(lng2 - lng1)
+            a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng/2)**2
+            c = 2 * atan2(sqrt(a), sqrt(1-a))
+            return R * c
+
+        listings = [
+            {**l, "distance_m": distance_m(lat, lng, l["latitude"], l["longitude"])}
+            for l in listings
+            if distance_m(lat, lng, l["latitude"], l["longitude"]) <= radius_m
+        ]
+        # Sort by distance
+        listings.sort(key=lambda x: x["distance_m"])
+
+    return jsonify(listings=listings, count=len(listings))
+
+
 # ─── Analytics (aggregate stats) ─────────────────────────────────────────────
 
 @app.route("/api/analytics/summary", methods=["GET"])
