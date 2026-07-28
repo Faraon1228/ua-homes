@@ -50,6 +50,8 @@ const {useEffect,useMemo,useCallback,useState,useRef} = React;
 // Local dev: auto-detect network IP vs localhost
 const API = (() => {
   if (window.UA_HOMES_API) return window.UA_HOMES_API;
+  const configured = "__UA_HOMES_API__";
+  if (configured && configured !== "__UA_HOMES_API__") return configured;
   const h = location.hostname;
   if (h === "localhost" || h === "127.0.0.1") return "http://localhost:5050";
   // Same host but different port (e.g. Vercel proxies /api to backend)
