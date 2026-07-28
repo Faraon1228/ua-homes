@@ -140,7 +140,6 @@ def build_listing_filters(args, allow_ids=False):
                 raise ValueError("listing_ids cannot be empty")
             clauses.append(f"id IN ({','.join('?' for _ in ids)})")
             params.extend(ids)
-            return clauses, params
 
     city = (args.get("city") or "").strip()
     status = (args.get("status") or "").strip()
@@ -487,6 +486,77 @@ def admin_delete_listing(listing_id):
     db.commit()
     
     return jsonify(ok=True)
+
+
+@admin_bp.route("/listings/<int:listing_id>/duplicate", methods=["POST"])
+@require_auth_admin
+def admin_duplicate_listing(listing_id):
+    from app import get_db
+
+    db = get_db()
+    source = db.execute(
+        """
+        SELECT title, city, district, property_type, condition_type, price, rooms,
+               area, floor, total_floors, year_built, e_oselya, description,
+               latitude, longitude, images
+        FROM listings
+        WHERE id = ?
+        """,
+        (listing_id,)
+    ).fetchone()
+
+    if not source:
+        return jsonify(error="Listing not found"), 404
+
+    title = source["title"] or "Listing"
+    if not title.endswith(" (Copy)"):
+        title = f"{title} (Copy)"
+
+    cur = db.execute(
+        """
+        INSERT INTO listings (
+            user_id, title, city, district, property_type, condition_type,
+            price, rooms, area, floor, total_floors, year_built, e_oselya,
+            views, images, status, latitude, longitude, description
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            g.user_id,
+            title,
+            source["city"],
+            source["district"],
+            source["property_type"],
+            source["condition_type"],
+            source["price"],
+            source["rooms"],
+            source["area"],
+            source["floor"],
+            source["total_floors"],
+            source["year_built"],
+            source["e_oselya"],
+            0,
+            source["images"],
+            "draft",
+            source["latitude"],
+            source["longitude"],
+            source["description"],
+        )
+    )
+
+    new_listing_id = cur.lastrowid
+
+    images = db.execute(
+        'SELECT image_url, "order" as image_order FROM listing_images WHERE listing_id = ? ORDER BY "order"',
+        (listing_id,)
+    ).fetchall()
+    for image in images:
+        db.execute(
+            "INSERT INTO listing_images (listing_id, image_url, 'order') VALUES (?, ?, ?)",
+            (new_listing_id, image["image_url"], image["image_order"])
+        )
+
+    db.commit()
+    return jsonify(ok=True, id=new_listing_id, title=title), 201
 
 
 @admin_bp.route("/listings/<int:listing_id>/publish", methods=["POST"])

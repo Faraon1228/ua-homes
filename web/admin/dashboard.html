@@ -237,6 +237,19 @@
                             <div class="text-sm text-slate-500">або натисніть кнопку вибору файлу нижче</div>
                         </div>
                         <input type="file" id="csv-file" accept=".csv,text/csv" class="w-full p-2 border border-gray-300 rounded">
+                        <div id="csv-preview" class="rounded-2xl border border-gray-200 p-4 bg-slate-50">
+                            <div class="flex items-center justify-between gap-2 mb-3">
+                                <h3 class="font-bold text-slate-800">Попередній перегляд</h3>
+                                <span id="csv-preview-count" class="text-xs text-slate-500">Файл не вибрано</span>
+                            </div>
+                            <div id="csv-preview-message" class="text-sm text-slate-500">Оберіть CSV, щоб побачити перші рядки перед імпортом.</div>
+                            <div class="overflow-auto mt-3">
+                                <table class="w-full text-sm hidden" id="csv-preview-table">
+                                    <thead class="bg-white border-b" id="csv-preview-head"></thead>
+                                    <tbody id="csv-preview-body" class="divide-y bg-white"></tbody>
+                                </table>
+                            </div>
+                        </div>
                         <div class="flex gap-3">
                             <button type="button" onclick="importCsv()" class="flex-1 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700">
                                 Імпортувати CSV
@@ -340,6 +353,8 @@
         let listingsCache = [];
         let editingListingId = null;
         let selectedListingIds = new Set();
+        let csvPreviewRows = [];
+        let csvPreviewHeaders = [];
 
         // Check auth
         window.addEventListener('load', async () => {
@@ -374,12 +389,32 @@
             } else if (page === 'csv-import') {
                 document.getElementById('csv-message').innerHTML = '';
                 setupCsvDropzone();
+                setupCsvPreview();
             } else if (page === 'users') {
                 loadUsers();
             } else if (page === 'moderation') {
                 loadModeration();
             } else if (page === 'reports') {
                 loadReports();
+            }
+        }
+
+        async function duplicateListing(id) {
+            if (!confirm('Дублювати це оголошення?')) return;
+            try {
+                const res = await fetch(`${API_BASE}/listings/${id}/duplicate`, {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    await loadListings();
+                    loadDashboard();
+                } else {
+                    const err = await res.json();
+                    alert(err.error || 'Не вдалося продублювати оголошення');
+                }
+            } catch (err) {
+                alert('Помилка дублювання');
             }
         }
 
@@ -462,6 +497,7 @@
                         </td>
                         <td class="px-6 py-4 space-x-2">
                             <button onclick="openEditModalFromId(${l.id})" class="text-blue-600 hover:underline text-sm">Редагувати</button>
+                            <button onclick="duplicateListing(${l.id})" class="text-slate-600 hover:underline text-sm">Дублювати</button>
                             <button onclick="deleteListing(${l.id})" class="text-red-600 hover:underline text-sm">Видалити</button>
                         </td>
                     </tr>
@@ -624,9 +660,14 @@
 
         async function exportSelectedListings() {
             const listingIds = Array.from(selectedListingIds);
-            const url = listingIds.length
-                ? `${API_BASE}/export/csv?listing_ids=${listingIds.join(',')}`
-                : `${API_BASE}/export/csv`;
+            const filters = getListingFilters();
+            const params = new URLSearchParams();
+            if (listingIds.length) params.set('listing_ids', listingIds.join(','));
+            if (filters.city) params.set('city', filters.city);
+            if (filters.status) params.set('status', filters.status);
+            if (filters.search) params.set('search', filters.search);
+            const query = params.toString();
+            const url = query ? `${API_BASE}/export/csv?${query}` : `${API_BASE}/export/csv`;
 
             try {
                 const res = await fetch(url, { headers: getAuthHeaders() });
@@ -789,6 +830,107 @@
             URL.revokeObjectURL(url);
         }
 
+        function parseCsvLine(line) {
+            const cells = [];
+            let cell = '';
+            let quoted = false;
+
+            for (let i = 0; i < line.length; i += 1) {
+                const ch = line[i];
+                const next = line[i + 1];
+
+                if (ch === '"') {
+                    if (quoted && next === '"') {
+                        cell += '"';
+                        i += 1;
+                    } else {
+                        quoted = !quoted;
+                    }
+                    continue;
+                }
+
+                if (ch === ',' && !quoted) {
+                    cells.push(cell);
+                    cell = '';
+                    continue;
+                }
+
+                cell += ch;
+            }
+
+            cells.push(cell);
+            return cells.map(value => value.trim());
+        }
+
+        function parseCsvText(text) {
+            const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(Boolean);
+            if (!lines.length) return { headers: [], rows: [] };
+            const headers = parseCsvLine(lines[0]);
+            const rows = lines.slice(1).map(line => {
+                const values = parseCsvLine(line);
+                const row = {};
+                headers.forEach((header, index) => {
+                    row[header] = values[index] ?? '';
+                });
+                return row;
+            });
+            return { headers, rows };
+        }
+
+        function renderCsvPreview() {
+            const message = document.getElementById('csv-preview-message');
+            const table = document.getElementById('csv-preview-table');
+            const head = document.getElementById('csv-preview-head');
+            const body = document.getElementById('csv-preview-body');
+            const count = document.getElementById('csv-preview-count');
+
+            if (!csvPreviewHeaders.length) {
+                table.classList.add('hidden');
+                message.textContent = 'Оберіть CSV, щоб побачити перші рядки перед імпортом.';
+                count.textContent = 'Файл не вибрано';
+                return;
+            }
+
+            const required = ['title', 'city', 'district', 'price', 'rooms', 'area'];
+            const missingHeaders = required.filter(field => !csvPreviewHeaders.includes(field));
+            const previewRows = csvPreviewRows.slice(0, 5);
+
+            head.innerHTML = `<tr>${csvPreviewHeaders.map(h => `<th class="px-3 py-2 text-left text-xs font-bold uppercase tracking-wide ${required.includes(h) ? 'text-slate-700' : 'text-slate-500'}">${h}</th>`).join('')}</tr>`;
+            body.innerHTML = previewRows.map(row => {
+                const missing = required.filter(field => !String(row[field] || '').trim());
+                return `<tr class="${missing.length ? 'bg-red-50' : ''}">${csvPreviewHeaders.map(header => `<td class="px-3 py-2 text-xs">${String(row[header] || '')}</td>`).join('')}</tr>`;
+            }).join('');
+
+            table.classList.remove('hidden');
+            message.innerHTML = missingHeaders.length
+                ? `<div class="text-amber-700 font-semibold">⚠ Відсутні колонки: ${missingHeaders.join(', ')}</div>`
+                : `<div class="text-green-700 font-semibold">✓ CSV готовий до імпорту. ${previewRows.length} зразків для перевірки.</div>`;
+            count.textContent = `${csvPreviewRows.length} рядків`;
+        }
+
+        function setupCsvPreview() {
+            const input = document.getElementById('csv-file');
+            if (!input || input.dataset.previewBound === '1') return;
+
+            input.addEventListener('change', async () => {
+                const file = input.files && input.files[0];
+                if (!file) {
+                    csvPreviewRows = [];
+                    csvPreviewHeaders = [];
+                    renderCsvPreview();
+                    return;
+                }
+                const text = await file.text();
+                const parsed = parseCsvText(text);
+                csvPreviewHeaders = parsed.headers;
+                csvPreviewRows = parsed.rows;
+                renderCsvPreview();
+            });
+
+            input.dataset.previewBound = '1';
+            renderCsvPreview();
+        }
+
         function setupCsvDropzone() {
             const dropzone = document.getElementById('csv-dropzone');
             const input = document.getElementById('csv-file');
@@ -813,6 +955,7 @@
                     const dt = new DataTransfer();
                     Array.from(e.dataTransfer.files).forEach(file => dt.items.add(file));
                     input.files = dt.files;
+                    input.dispatchEvent(new Event('change'));
                 }
             });
 
