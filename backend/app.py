@@ -206,7 +206,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS moderation_log (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
-            admin_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+            admin_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
             action     TEXT    NOT NULL,
             reason     TEXT,
             created_at TEXT    NOT NULL DEFAULT (datetime('now'))

@@ -36,6 +36,9 @@
                 <button onclick="showPage('users')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
                     <i class="fas fa-users mr-2"></i> Користувачі
                 </button>
+                <button onclick="showPage('moderation')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
+                    <i class="fas fa-shield-halved mr-2"></i> Модерація
+                </button>
                 <button onclick="showPage('reports')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
                     <i class="fas fa-chart-bar mr-2"></i> Звіти
                 </button>
@@ -206,6 +209,42 @@
                     </div>
                 </div>
 
+                <!-- Moderation Page -->
+                <div id="page-moderation" class="p-6 hidden">
+                    <h2 class="text-2xl font-bold mb-6">Черга модерації</h2>
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+                            <div class="p-4 border-b">
+                                <h3 class="font-bold">Очікуючі оголошення</h3>
+                            </div>
+                            <div class="overflow-auto">
+                                <table class="w-full">
+                                    <thead class="bg-gray-50 border-b">
+                                        <tr>
+                                            <th class="px-4 py-3 text-left text-sm font-semibold">Назва</th>
+                                            <th class="px-4 py-3 text-left text-sm font-semibold">Місто</th>
+                                            <th class="px-4 py-3 text-left text-sm font-semibold">Статус</th>
+                                            <th class="px-4 py-3 text-left text-sm font-semibold">Дії</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="moderation-table" class="divide-y">
+                                        <tr><td colspan="4" class="px-4 py-4 text-center text-gray-500">Завантаження...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+                            <div class="p-4 border-b">
+                                <h3 class="font-bold">Журнал модерації</h3>
+                            </div>
+                            <div class="p-4 space-y-3 max-h-[60vh] overflow-auto" id="moderation-log">
+                                <p class="text-gray-500">Завантаження...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Reports Page -->
                 <div id="page-reports" class="p-6 hidden">
                     <h2 class="text-2xl font-bold mb-6">Звіти</h2>
@@ -266,6 +305,8 @@
                 loadListings();
             } else if (page === 'users') {
                 loadUsers();
+            } else if (page === 'moderation') {
+                loadModeration();
             } else if (page === 'reports') {
                 loadReports();
             }
@@ -326,7 +367,15 @@
                         <td class="px-6 py-4 text-sm">${l.city}</td>
                         <td class="px-6 py-4 text-sm">₴${l.price.toLocaleString()}</td>
                         <td class="px-6 py-4">
-                            <span class="px-2 py-1 rounded text-xs font-semibold ${l.status === 'published' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}">
+                            <span class="px-2 py-1 rounded text-xs font-semibold ${
+                                l.status === 'published'
+                                    ? 'bg-green-100 text-green-800'
+                                    : l.status === 'rejected'
+                                        ? 'bg-red-100 text-red-800'
+                                        : l.status === 'pending'
+                                            ? 'bg-yellow-100 text-yellow-800'
+                                            : 'bg-gray-100 text-gray-800'
+                            }">
                                 ${l.status}
                             </span>
                         </td>
@@ -503,6 +552,72 @@
                 document.getElementById('users-table').innerHTML = html;
             } catch (err) {
                 console.error('Failed to load users:', err);
+            }
+        }
+
+        async function loadModeration() {
+            try {
+                const [queueRes, logsRes] = await Promise.all([
+                    fetch(API_BASE + '/moderation/queue', { headers: getAuthHeaders() }),
+                    fetch(API_BASE + '/moderation/logs', { headers: getAuthHeaders() })
+                ]);
+
+                const queueData = await queueRes.json();
+                const logsData = await logsRes.json();
+
+                const queueHtml = (queueData.queue || []).map(item => `
+                    <tr>
+                        <td class="px-4 py-3 text-sm font-semibold">${item.title}</td>
+                        <td class="px-4 py-3 text-sm">${item.city}</td>
+                        <td class="px-4 py-3 text-sm">${item.status}</td>
+                        <td class="px-4 py-3 text-sm space-x-2">
+                            <button onclick="moderateListing(${item.id}, 'approve')" class="text-green-600 hover:underline">Approve</button>
+                            <button onclick="moderateListing(${item.id}, 'reject')" class="text-red-600 hover:underline">Reject</button>
+                        </td>
+                    </tr>
+                `).join('');
+                document.getElementById('moderation-table').innerHTML = queueHtml || '<tr><td colspan="4" class="px-4 py-4 text-center text-gray-500">Черга порожня</td></tr>';
+
+                const logHtml = (logsData.logs || []).map(log => `
+                    <div class="p-3 rounded border border-gray-200">
+                        <div class="text-sm font-semibold">${log.title} • ${log.action}</div>
+                        <div class="text-xs text-gray-600">${log.city} • ${log.admin_name || 'system'} • ${log.created_at}</div>
+                        ${log.reason ? `<div class="text-xs text-gray-700 mt-1">Причина: ${log.reason}</div>` : ''}
+                    </div>
+                `).join('');
+                document.getElementById('moderation-log').innerHTML = logHtml || '<p class="text-gray-500">Логів ще немає</p>';
+            } catch (err) {
+                console.error('Failed to load moderation:', err);
+            }
+        }
+
+        async function moderateListing(id, action) {
+            let reason = '';
+            if (action === 'reject') {
+                reason = prompt('Вкажіть причину відхилення') || '';
+                if (!reason.trim()) return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/listings/${id}/moderate`, {
+                    method: 'POST',
+                    headers: {
+                        ...getAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ action, reason })
+                });
+
+                if (res.ok) {
+                    loadModeration();
+                    loadListings();
+                    loadDashboard();
+                } else {
+                    const err = await res.json();
+                    alert(err.error || 'Не вдалося виконати модерацію');
+                }
+            } catch (err) {
+                alert('Помилка модерації');
             }
         }
 

@@ -49,6 +49,13 @@ def require_auth_admin(f):
     return wrapper
 
 
+def log_moderation_action(db, listing_id, action, reason=None):
+    db.execute(
+        "INSERT INTO moderation_log (listing_id, admin_id, action, reason) VALUES (?, ?, ?, ?)",
+        (listing_id, g.user_id, action, reason)
+    )
+
+
 # ─── Admin Auth ──────────────────────────────────────────────────────
 
 @admin_bp.route("/auth/register", methods=["POST"])
@@ -408,9 +415,84 @@ def admin_publish_listing(listing_id):
         "UPDATE listings SET status = ? WHERE id = ?",
         (status, listing_id)
     )
+    log_moderation_action(db, listing_id, "publish" if published else "unpublish")
     db.commit()
     
     return jsonify(ok=True, status=status)
+
+
+@admin_bp.route("/moderation/queue", methods=["GET"])
+@require_auth_admin
+def admin_moderation_queue():
+    from app import get_db
+
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT id, title, city, district, price, rooms, area, status, created_at
+        FROM listings
+        WHERE status IN ('draft', 'pending', 'rejected')
+        ORDER BY created_at ASC
+        """
+    ).fetchall()
+    return jsonify(queue=[dict(row) for row in rows])
+
+
+@admin_bp.route("/moderation/logs", methods=["GET"])
+@require_auth_admin
+def admin_moderation_logs():
+    from app import get_db
+
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT ml.id, ml.listing_id, ml.action, ml.reason, ml.created_at,
+               l.title, l.city,
+               u.name AS admin_name
+        FROM moderation_log ml
+        JOIN listings l ON l.id = ml.listing_id
+        LEFT JOIN users u ON u.id = ml.admin_id
+        ORDER BY ml.created_at DESC
+        LIMIT 50
+        """
+    ).fetchall()
+    return jsonify(logs=[dict(row) for row in rows])
+
+
+@admin_bp.route("/listings/<int:listing_id>/moderate", methods=["POST"])
+@require_auth_admin
+def admin_moderate_listing(listing_id):
+    from app import get_db
+
+    db = get_db()
+    data = request.get_json() or {}
+    action = (data.get("action") or "").strip().lower()
+    reason = (data.get("reason") or "").strip() or None
+
+    listing = db.execute(
+        "SELECT id, status FROM listings WHERE id = ?",
+        (listing_id,)
+    ).fetchone()
+    if not listing:
+        return jsonify(error="Listing not found"), 404
+
+    if action == "approve":
+        new_status = "published"
+    elif action == "reject":
+        new_status = "rejected"
+    elif action == "hold":
+        new_status = "pending"
+    else:
+        return jsonify(error="Invalid moderation action"), 400
+
+    db.execute(
+        "UPDATE listings SET status = ? WHERE id = ?",
+        (new_status, listing_id)
+    )
+    log_moderation_action(db, listing_id, action, reason)
+    db.commit()
+
+    return jsonify(ok=True, status=new_status)
 
 
 # ─── Image Management ────────────────────────────────────────────────
