@@ -22,7 +22,7 @@ jobs:
 
 
   deploy-frontend:
-    name: Deploy frontend to Netlify
+    name: Build frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,16 +30,14 @@ jobs:
         env:
           UA_HOMES_API: ${{ secrets.UA_HOMES_API }}
         run: python3 scripts/build-real-estate-demo.py
-      - name: Deploy to Netlify
-        env:
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+      - name: Upload to Netlify (manual)
         run: |
-          npm install -g netlify-cli
-          if [ -n "$NETLIFY_SITE_ID" ] && [ -n "$NETLIFY_AUTH_TOKEN" ]; then
-            netlify deploy --prod --site=$NETLIFY_SITE_ID --dir=web
-            echo "Frontend deployed to Netlify"
-          else
-            echo "Netlify credentials not set. Frontend files are ready in web/ directory."
-            echo "To deploy: netlify deploy --prod --site=<SITE_ID> --dir=web"
-          fi
+          echo "✅ Frontend built successfully"
+          echo "📦 Frontend files: web/"
+          echo ""
+          echo "🚀 To deploy to Netlify:"
+          echo "1. Go to https://app.netlify.com"
+          echo "2. Connect this GitHub repo or upload web/ folder"
+          echo "3. Set build command: python3 scripts/build-real-estate-demo.py"
+          echo "4. Set publish directory: web/"
+          ls -la web/ | head -10
