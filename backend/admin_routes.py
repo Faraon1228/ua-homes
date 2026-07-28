@@ -3,7 +3,7 @@ UA Homes Admin API Routes
 Endpoints for admin panel property/user management
 """
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, g, jsonify, request, Response
 from functools import wraps
 import csv
 import io
@@ -675,6 +675,109 @@ def admin_bulk_moderate():
 
     db.commit()
     return jsonify(ok=True, status=new_status, updated=len(ids))
+
+
+@admin_bp.route("/listings/bulk-delete", methods=["POST"])
+@require_auth_admin
+def admin_bulk_delete():
+    from app import get_db
+
+    db = get_db()
+    data = request.get_json() or {}
+    listing_ids = data.get("listing_ids") or []
+
+    if not isinstance(listing_ids, list) or not listing_ids:
+        return jsonify(error="listing_ids must be a non-empty array"), 400
+
+    try:
+        ids = [int(item) for item in listing_ids]
+    except (TypeError, ValueError):
+        return jsonify(error="listing_ids must contain integers"), 400
+
+    existing = db.execute(
+        f"SELECT id FROM listings WHERE id IN ({','.join('?' for _ in ids)})",
+        ids
+    ).fetchall()
+    existing_ids = {row["id"] for row in existing}
+    missing = [listing_id for listing_id in ids if listing_id not in existing_ids]
+    if missing:
+        return jsonify(error="Some listings were not found", missing_ids=missing), 404
+
+    for listing_id in ids:
+        db.execute("DELETE FROM listing_images WHERE listing_id = ?", (listing_id,))
+        db.execute("DELETE FROM listings WHERE id = ?", (listing_id,))
+
+    db.commit()
+    return jsonify(ok=True, deleted=len(ids))
+
+
+@admin_bp.route("/export/csv", methods=["GET"])
+@require_auth_admin
+def admin_export_csv():
+    from app import get_db
+
+    db = get_db()
+    ids_arg = (request.args.get("listing_ids") or "").strip()
+    params = []
+    query = """
+        SELECT id, title, city, district, property_type, condition_type,
+               price, rooms, area, floor, total_floors, year_built, e_oselya,
+               status, description, latitude, longitude, images, created_at
+        FROM listings
+    """
+
+    if ids_arg:
+        try:
+            ids = [int(item) for item in ids_arg.split(",") if item.strip()]
+        except ValueError:
+            return jsonify(error="listing_ids must contain integers"), 400
+        if not ids:
+            return jsonify(error="listing_ids cannot be empty"), 400
+        query += f" WHERE id IN ({','.join('?' for _ in ids)})"
+        params.extend(ids)
+
+    query += " ORDER BY created_at DESC"
+    rows = db.execute(query, params).fetchall()
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([
+        "id", "title", "city", "district", "property_type", "condition_type",
+        "price", "rooms", "area", "floor", "total_floors", "year_built",
+        "e_oselya", "status", "description", "latitude", "longitude", "images",
+        "created_at"
+    ])
+    for row in rows:
+        writer.writerow([
+            row["id"],
+            row["title"],
+            row["city"],
+            row["district"],
+            row["property_type"],
+            row["condition_type"],
+            row["price"],
+            row["rooms"],
+            row["area"],
+            row["floor"],
+            row["total_floors"],
+            row["year_built"],
+            row["e_oselya"],
+            row["status"],
+            row["description"],
+            row["latitude"],
+            row["longitude"],
+            row["images"],
+            row["created_at"],
+        ])
+
+    filename = "ua-homes-listings.csv"
+    return Response(
+        buffer.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
 
 
 # ─── Image Management ────────────────────────────────────────────────

@@ -109,15 +109,26 @@
                 <div id="page-listings" class="p-6 hidden">
                     <div class="mb-6 flex justify-between items-center">
                         <h2 class="text-2xl font-bold">Управління нерухомістю</h2>
-                        <button onclick="showPage('new-listing')" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
-                            <i class="fas fa-plus mr-2"></i>Додати
-                        </button>
+                        <div class="flex gap-2 flex-wrap justify-end">
+                            <button onclick="exportSelectedListings()" class="bg-slate-700 text-white px-4 py-2 rounded-lg hover:bg-slate-800">
+                                <i class="fas fa-file-export mr-2"></i>Експорт
+                            </button>
+                            <button onclick="bulkDeleteListings()" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">
+                                <i class="fas fa-trash mr-2"></i>Видалити
+                            </button>
+                            <button onclick="showPage('new-listing')" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                                <i class="fas fa-plus mr-2"></i>Додати
+                            </button>
+                        </div>
                     </div>
 
                     <div class="bg-white rounded-lg shadow-sm overflow-hidden">
                         <table class="w-full">
                             <thead class="bg-gray-50 border-b">
                                 <tr>
+                                    <th class="px-6 py-3 text-left text-sm font-semibold w-10">
+                                        <input type="checkbox" id="listings-select-all" onchange="toggleListingsSelection(this.checked)">
+                                    </th>
                                     <th class="px-6 py-3 text-left text-sm font-semibold">Назва</th>
                                     <th class="px-6 py-3 text-left text-sm font-semibold">Місто</th>
                                     <th class="px-6 py-3 text-left text-sm font-semibold">Ціна</th>
@@ -200,6 +211,14 @@
                             Завантаж CSV з колонками: <code>title, city, district, price, rooms, area</code>.
                             Додатково можна додати: <code>property_type, condition_type, floor, total_floors, year_built, e_oselya, description, status, latitude, longitude, images</code>.
                         </p>
+                        <div
+                            id="csv-dropzone"
+                            class="rounded-2xl border-2 border-dashed border-blue-300 bg-blue-50/40 p-6 text-center transition hover:border-blue-500 hover:bg-blue-50"
+                        >
+                            <div class="text-3xl mb-2">📥</div>
+                            <div class="font-semibold text-slate-800">Перетягніть CSV сюди</div>
+                            <div class="text-sm text-slate-500">або натисніть кнопку вибору файлу нижче</div>
+                        </div>
                         <input type="file" id="csv-file" accept=".csv,text/csv" class="w-full p-2 border border-gray-300 rounded">
                         <div class="flex gap-3">
                             <button type="button" onclick="importCsv()" class="flex-1 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700">
@@ -303,6 +322,7 @@
         let authToken = localStorage.getItem('admin_token');
         let listingsCache = [];
         let editingListingId = null;
+        let selectedListingIds = new Set();
 
         // Check auth
         window.addEventListener('load', async () => {
@@ -336,6 +356,7 @@
                 loadListings();
             } else if (page === 'csv-import') {
                 document.getElementById('csv-message').innerHTML = '';
+                setupCsvDropzone();
             } else if (page === 'users') {
                 loadUsers();
             } else if (page === 'moderation') {
@@ -393,9 +414,13 @@
                 });
                 const data = await res.json();
                 listingsCache = data.listings || [];
+                selectedListingIds.clear();
 
                 const html = listingsCache.map(l => `
                     <tr>
+                        <td class="px-6 py-4">
+                            <input type="checkbox" class="listing-select-checkbox" value="${l.id}" onchange="syncSelectedListingIds()">
+                        </td>
                         <td class="px-6 py-4 font-semibold text-sm">${l.title}</td>
                         <td class="px-6 py-4 text-sm">${l.city}</td>
                         <td class="px-6 py-4 text-sm">₴${l.price.toLocaleString()}</td>
@@ -420,8 +445,29 @@
                 `).join('');
 
                 document.getElementById('listings-table').innerHTML = html;
+                document.getElementById('listings-select-all').checked = false;
             } catch (err) {
                 console.error('Failed to load listings:', err);
+            }
+        }
+
+        function toggleListingsSelection(checked) {
+            document.querySelectorAll('.listing-select-checkbox').forEach(cb => {
+                cb.checked = checked;
+            });
+            syncSelectedListingIds();
+        }
+
+        function syncSelectedListingIds() {
+            selectedListingIds = new Set(
+                Array.from(document.querySelectorAll('.listing-select-checkbox:checked')).map(cb => Number(cb.value))
+            );
+            const total = document.querySelectorAll('.listing-select-checkbox').length;
+            const selected = selectedListingIds.size;
+            const selectAll = document.getElementById('listings-select-all');
+            if (selectAll) {
+                selectAll.checked = total > 0 && selected === total;
+                selectAll.indeterminate = selected > 0 && selected < total;
             }
         }
 
@@ -505,6 +551,63 @@
                 }
             } catch (err) {
                 console.error('Delete failed', err);
+            }
+        }
+
+        async function bulkDeleteListings() {
+            const listingIds = Array.from(selectedListingIds);
+            if (!listingIds.length) {
+                alert('Оберіть хоча б одне оголошення');
+                return;
+            }
+            if (!confirm(`Видалити ${listingIds.length} обраних оголошень?`)) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/listings/bulk-delete`, {
+                    method: 'POST',
+                    headers: {
+                        ...getAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ listing_ids: listingIds })
+                });
+
+                if (res.ok) {
+                    await loadListings();
+                    loadDashboard();
+                } else {
+                    const err = await res.json();
+                    alert(err.error || 'Не вдалося видалити оголошення');
+                }
+            } catch (err) {
+                alert('Помилка масового видалення');
+            }
+        }
+
+        async function exportSelectedListings() {
+            const listingIds = Array.from(selectedListingIds);
+            const url = listingIds.length
+                ? `${API_BASE}/export/csv?listing_ids=${listingIds.join(',')}`
+                : `${API_BASE}/export/csv`;
+
+            try {
+                const res = await fetch(url, { headers: getAuthHeaders() });
+                if (!res.ok) {
+                    const err = await res.json();
+                    alert(err.error || 'Не вдалося експортувати CSV');
+                    return;
+                }
+
+                const blob = await res.blob();
+                const dl = document.createElement('a');
+                dl.href = URL.createObjectURL(blob);
+                dl.download = 'ua-homes-listings.csv';
+                document.body.appendChild(dl);
+                dl.click();
+                document.body.removeChild(dl);
+                URL.revokeObjectURL(dl.href);
+            } catch (err) {
+                alert('Помилка експорту CSV');
             }
         }
 
@@ -602,7 +705,8 @@
         function downloadCsvTemplate() {
             const csv = [
                 'title,city,district,price,rooms,area,property_type,condition_type,floor,total_floors,year_built,e_oselya,description,status,latitude,longitude,images',
-                'Преміум квартира,Київ,Печерський,125000,2,68,квартира,нова будова,8,24,2021,true,Сучасна квартира,published,50.4422,30.5178,"https://example.com/photo1.jpg,https://example.com/photo2.jpg"'
+                'Преміум квартира,Київ,Печерський,125000,2,68,квартира,нова будова,8,24,2021,true,Сучасна квартира,published,50.4422,30.5178,"https://example.com/photo1.jpg,https://example.com/photo2.jpg"',
+                'Сімейний будинок,Львів,Франківський,98000,4,120,будинок,вторинка,2,2,2014,false,Будинок з садом,draft,49.8400,24.0200,https://example.com/house1.jpg'
             ].join('\n');
 
             const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -614,6 +718,41 @@
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
+        }
+
+        function setupCsvDropzone() {
+            const dropzone = document.getElementById('csv-dropzone');
+            const input = document.getElementById('csv-file');
+            if (!dropzone || !input || dropzone.dataset.bound === '1') return;
+
+            const highlight = () => dropzone.classList.add('border-blue-500', 'bg-blue-100');
+            const unhighlight = () => dropzone.classList.remove('border-blue-500', 'bg-blue-100');
+
+            dropzone.addEventListener('click', () => input.click());
+            dropzone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                highlight();
+            });
+            dropzone.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                unhighlight();
+            });
+            dropzone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                unhighlight();
+                if (e.dataTransfer.files && e.dataTransfer.files.length) {
+                    const dt = new DataTransfer();
+                    Array.from(e.dataTransfer.files).forEach(file => dt.items.add(file));
+                    input.files = dt.files;
+                }
+            });
+
+            input.addEventListener('change', () => {
+                dropzone.querySelector('.font-semibold').textContent =
+                    input.files && input.files.length ? input.files[0].name : 'Перетягніть CSV сюди';
+            });
+
+            dropzone.dataset.bound = '1';
         }
 
         // Load users
