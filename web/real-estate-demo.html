@@ -46,10 +46,16 @@
 const {useEffect,useMemo,useCallback,useState,useRef} = React;
 
 /* ─── Constants ─── */
-// Auto-detect: use network IP when accessed from mobile, localhost otherwise
-const API   = (location.hostname === "localhost" || location.hostname === "127.0.0.1")
-  ? "http://localhost:5050"
-  : `http://${location.hostname.includes("192.168") ? location.hostname : "192.168.1.114"}:5050`;
+// Production: set window.UA_HOMES_API before this script, or use env placeholder
+// Local dev: auto-detect network IP vs localhost
+const API = (() => {
+  if (window.UA_HOMES_API) return window.UA_HOMES_API;
+  const h = location.hostname;
+  if (h === "localhost" || h === "127.0.0.1") return "http://localhost:5050";
+  // Same host but different port (e.g. Vercel proxies /api to backend)
+  if (!h.includes("192.168") && !h.match(/^\d+\.\d+/)) return `https://${h.replace(/^www\./,'')}`.replace(/\/$/, '') + '/api-backend';
+  return `http://${h}:5050`;
+})();
 const TOKEN = "uah.token";
 const SESS  = "uah.session";
 const FP    = "re.";
