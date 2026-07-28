@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UA Homes — Admin Panel</title>
+    <link href="https://cdn.tailwindcss.com" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * { --clr: #1e40af; }
+        .nav-active { @apply bg-blue-100 text-blue-900; }
+        .loading { @apply opacity-50 pointer-events-none; }
+        .error { @apply text-red-600 font-semibold; }
+        .success { @apply text-green-600 font-semibold; }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="flex h-screen">
+        <!-- Sidebar -->
+        <div class="w-64 bg-white shadow-lg">
+            <div class="p-6 border-b border-gray-200">
+                <h1 class="text-2xl font-black text-blue-600">UA_DOM</h1>
+                <p class="text-xs text-gray-500 mt-1">Admin Panel</p>
+            </div>
+            
+            <nav class="mt-6">
+                <button onclick="showPage('dashboard')" class="nav-active w-full text-left px-6 py-3 hover:bg-blue-100 transition">
+                    <i class="fas fa-chart-line mr-2"></i> Dashboard
+                </button>
+                <button onclick="showPage('listings')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
+                    <i class="fas fa-building mr-2"></i> Нерухомість
+                </button>
+                <button onclick="showPage('new-listing')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
+                    <i class="fas fa-plus-circle mr-2"></i> Додати об'єкт
+                </button>
+                <button onclick="showPage('users')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
+                    <i class="fas fa-users mr-2"></i> Користувачі
+                </button>
+                <button onclick="showPage('reports')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
+                    <i class="fas fa-chart-bar mr-2"></i> Звіти
+                </button>
+                <hr class="my-4">
+                <button onclick="logout()" class="w-full text-left px-6 py-3 text-red-600 hover:bg-red-50 transition">
+                    <i class="fas fa-sign-out-alt mr-2"></i> Вийти
+                </button>
+            </nav>
+        </div>
+
+        <!-- Main Content -->
+        <div class="flex-1 flex flex-col overflow-hidden">
+            <!-- Top Bar -->
+            <div class="bg-white shadow-sm border-b border-gray-200 px-6 py-4 flex justify-between items-center">
+                <h2 id="pageTitle" class="text-xl font-bold text-gray-800">Dashboard</h2>
+                <div class="flex items-center space-x-4">
+                    <span id="adminName" class="text-sm text-gray-600"></span>
+                    <i class="fas fa-bell text-gray-600 cursor-pointer hover:text-gray-900"></i>
+                </div>
+            </div>
+
+            <!-- Content Area -->
+            <div class="flex-1 overflow-auto">
+                <!-- Dashboard Page -->
+                <div id="page-dashboard" class="p-6">
+                    <div class="grid grid-cols-4 gap-4 mb-8">
+                        <div class="bg-white p-6 rounded-lg shadow-sm border-l-4 border-blue-600">
+                            <div class="text-gray-600 text-sm">Всього об'єктів</div>
+                            <div id="stat-listings" class="text-3xl font-bold text-blue-600 mt-2">-</div>
+                        </div>
+                        <div class="bg-white p-6 rounded-lg shadow-sm border-l-4 border-green-600">
+                            <div class="text-gray-600 text-sm">Опубліковано</div>
+                            <div id="stat-published" class="text-3xl font-bold text-green-600 mt-2">-</div>
+                        </div>
+                        <div class="bg-white p-6 rounded-lg shadow-sm border-l-4 border-purple-600">
+                            <div class="text-gray-600 text-sm">Користувачів</div>
+                            <div id="stat-users" class="text-3xl font-bold text-purple-600 mt-2">-</div>
+                        </div>
+                        <div class="bg-white p-6 rounded-lg shadow-sm border-l-4 border-orange-600">
+                            <div class="text-gray-600 text-sm">Агентів</div>
+                            <div id="stat-agents" class="text-3xl font-bold text-orange-600 mt-2">-</div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-6">
+                        <!-- Recent Listings -->
+                        <div class="bg-white p-6 rounded-lg shadow-sm">
+                            <h3 class="text-lg font-bold mb-4">Останні об'єкти</h3>
+                            <div id="recent-listings" class="space-y-3">
+                                <p class="text-gray-500">Завантаження...</p>
+                            </div>
+                        </div>
+
+                        <!-- By City -->
+                        <div class="bg-white p-6 rounded-lg shadow-sm">
+                            <h3 class="text-lg font-bold mb-4">За містами</h3>
+                            <div id="by-city" class="space-y-2">
+                                <p class="text-gray-500">Завантаження...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Listings Page -->
+                <div id="page-listings" class="p-6 hidden">
+                    <div class="mb-6 flex justify-between items-center">
+                        <h2 class="text-2xl font-bold">Управління нерухомістю</h2>
+                        <button onclick="showPage('new-listing')" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                            <i class="fas fa-plus mr-2"></i>Додати
+                        </button>
+                    </div>
+
+                    <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+                        <table class="w-full">
+                            <thead class="bg-gray-50 border-b">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-sm font-semibold">Назва</th>
+                                    <th class="px-6 py-3 text-left text-sm font-semibold">Місто</th>
+                                    <th class="px-6 py-3 text-left text-sm font-semibold">Ціна</th>
+                                    <th class="px-6 py-3 text-left text-sm font-semibold">Статус</th>
+                                    <th class="px-6 py-3 text-left text-sm font-semibold">Дії</th>
+                                </tr>
+                            </thead>
+                            <tbody id="listings-table" class="divide-y">
+                                <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500">Завантаження...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- New Listing Page -->
+                <div id="page-new-listing" class="p-6 hidden max-w-2xl">
+                    <h2 class="text-2xl font-bold mb-6">Додати новий об'єкт</h2>
+                    <form onsubmit="saveNewListing(event)" class="bg-white p-6 rounded-lg shadow-sm space-y-4">
+                        <input type="text" placeholder="Назва об'єкта" id="form-title" required class="w-full p-2 border border-gray-300 rounded">
+                        <input type="text" placeholder="Місто" id="form-city" required class="w-full p-2 border border-gray-300 rounded">
+                        <input type="text" placeholder="Район" id="form-district" required class="w-full p-2 border border-gray-300 rounded">
+                        <input type="number" placeholder="Ціна (₴)" id="form-price" required class="w-full p-2 border border-gray-300 rounded">
+                        <input type="number" placeholder="Кімнат" id="form-rooms" required class="w-full p-2 border border-gray-300 rounded">
+                        <input type="number" placeholder="Площа (м²)" id="form-area" step="0.1" required class="w-full p-2 border border-gray-300 rounded">
+                        <textarea placeholder="Опис" id="form-description" class="w-full p-2 border border-gray-300 rounded" rows="4"></textarea>
+                        <label class="flex items-center">
+                            <input type="checkbox" id="form-eoselya" class="mr-2">
+                            <span>Під програму єОселя</span>
+                        </label>
+                        <div id="form-message"></div>
+                        <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700">
+                            Зберегти об'єкт
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Users Page -->
+                <div id="page-users" class="p-6 hidden">
+                    <h2 class="text-2xl font-bold mb-6">Користувачі</h2>
+                    <div class="bg-white rounded-lg shadow-sm overflow-hidden">
+                        <table class="w-full">
+                            <thead class="bg-gray-50 border-b">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-sm font-semibold">Ім'я</th>
+                                    <th class="px-6 py-3 text-left text-sm font-semibold">Email</th>
+                                    <th class="px-6 py-3 text-left text-sm font-semibold">Роль</th>
+                                    <th class="px-6 py-3 text-left text-sm font-semibold">Статус</th>
+                                </tr>
+                            </thead>
+                            <tbody id="users-table" class="divide-y">
+                                <tr><td colspan="4" class="px-6 py-4 text-center text-gray-500">Завантаження...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Reports Page -->
+                <div id="page-reports" class="p-6 hidden">
+                    <h2 class="text-2xl font-bold mb-6">Звіти</h2>
+                    <div class="grid grid-cols-2 gap-6">
+                        <div class="bg-white p-6 rounded-lg shadow-sm">
+                            <h3 class="font-bold mb-4">За містами (топ-5)</h3>
+                            <div id="report-by-city" class="space-y-2">
+                                <p class="text-gray-500">Завантаження...</p>
+                            </div>
+                        </div>
+                        <div class="bg-white p-6 rounded-lg shadow-sm">
+                            <h3 class="font-bold mb-4">Статистика</h3>
+                            <div id="report-stats" class="space-y-2">
+                                <p class="text-gray-500">Завантаження...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api/admin';
+        let authToken = localStorage.getItem('admin_token');
+
+        // Check auth
+        window.addEventListener('load', async () => {
+            if (!authToken) {
+                window.location.href = '/admin/login.html';
+                return;
+            }
+            
+            try {
+                const res = await fetch(API_BASE + '/dashboard/stats', {
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                if (res.status === 401) {
+                    window.location.href = '/admin/login.html';
+                }
+            } catch (err) {
+                console.error('Auth check failed:', err);
+            }
+
+            loadDashboard();
+        });
+
+        // Show page
+        function showPage(page) {
+            document.querySelectorAll('[id^="page-"]').forEach(el => el.classList.add('hidden'));
+            document.getElementById(`page-${page}`).classList.remove('hidden');
+            
+            if (page === 'dashboard') {
+                loadDashboard();
+            } else if (page === 'listings') {
+                loadListings();
+            } else if (page === 'users') {
+                loadUsers();
+            } else if (page === 'reports') {
+                loadReports();
+            }
+        }
+
+        // Load dashboard
+        async function loadDashboard() {
+            try {
+                const res = await fetch(API_BASE + '/dashboard/stats', {
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                const data = await res.json();
+
+                document.getElementById('stat-listings').textContent = data.total_listings;
+                document.getElementById('stat-published').textContent = data.published_listings;
+                document.getElementById('stat-users').textContent = data.total_users;
+                document.getElementById('stat-agents').textContent = data.total_agents;
+
+                const recentHTML = data.recent_listings.map(l => `
+                    <div class="p-3 bg-gray-50 rounded">
+                        <div class="font-semibold text-sm">${l.title}</div>
+                        <div class="text-xs text-gray-600">${l.city} • ₴${l.price.toLocaleString()}</div>
+                    </div>
+                `).join('');
+                document.getElementById('recent-listings').innerHTML = recentHTML;
+
+                const byCity = data.by_city.map(c => `
+                    <div class="flex justify-between">
+                        <span>${c.city}</span>
+                        <span class="font-bold">${c.count}</span>
+                    </div>
+                `).join('');
+                document.getElementById('by-city').innerHTML = byCity;
+            } catch (err) {
+                console.error('Failed to load dashboard:', err);
+            }
+        }
+
+        // Load listings
+        async function loadListings() {
+            try {
+                const res = await fetch(API_BASE + '/listings?limit=50', {
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                const data = await res.json();
+
+                const html = data.listings.map(l => `
+                    <tr>
+                        <td class="px-6 py-4 font-semibold text-sm">${l.title}</td>
+                        <td class="px-6 py-4 text-sm">${l.city}</td>
+                        <td class="px-6 py-4 text-sm">₴${l.price.toLocaleString()}</td>
+                        <td class="px-6 py-4">
+                            <span class="px-2 py-1 rounded text-xs font-semibold ${l.status === 'published' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}">
+                                ${l.status}
+                            </span>
+                        </td>
+                        <td class="px-6 py-4">
+                            <button onclick="alert('Редагування буде реалізовано')" class="text-blue-600 hover:underline text-sm">Редагувати</button>
+                        </td>
+                    </tr>
+                `).join('');
+
+                document.getElementById('listings-table').innerHTML = html;
+            } catch (err) {
+                console.error('Failed to load listings:', err);
+            }
+        }
+
+        // Save new listing
+        async function saveNewListing(e) {
+            e.preventDefault();
+
+            const listing = {
+                title: document.getElementById('form-title').value,
+                city: document.getElementById('form-city').value,
+                district: document.getElementById('form-district').value,
+                price: parseInt(document.getElementById('form-price').value),
+                rooms: parseInt(document.getElementById('form-rooms').value),
+                area: parseFloat(document.getElementById('form-area').value),
+                description: document.getElementById('form-description').value,
+                e_oselya: document.getElementById('form-eoselya').checked
+            };
+
+            try {
+                const res = await fetch(API_BASE + '/listings', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(listing)
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    document.getElementById('form-message').innerHTML = '<div class="success">✓ Об\'єкт збережено!</div>';
+                    e.target.reset();
+                    setTimeout(() => loadListings(), 1000);
+                } else {
+                    const err = await res.json();
+                    document.getElementById('form-message').innerHTML = `<div class="error">✗ ${err.error}</div>`;
+                }
+            } catch (err) {
+                document.getElementById('form-message').innerHTML = `<div class="error">✗ Помилка</div>`;
+            }
+        }
+
+        // Load users
+        async function loadUsers() {
+            try {
+                const res = await fetch(API_BASE + '/users', {
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                const data = await res.json();
+
+                const html = data.users.map(u => `
+                    <tr>
+                        <td class="px-6 py-4 font-semibold text-sm">${u.name}</td>
+                        <td class="px-6 py-4 text-sm">${u.email}</td>
+                        <td class="px-6 py-4 text-sm">${u.role || 'user'}</td>
+                        <td class="px-6 py-4 text-sm">${u.status || 'active'}</td>
+                    </tr>
+                `).join('');
+
+                document.getElementById('users-table').innerHTML = html;
+            } catch (err) {
+                console.error('Failed to load users:', err);
+            }
+        }
+
+        // Load reports
+        async function loadReports() {
+            try {
+                const res = await fetch(API_BASE + '/reports/listings-by-city', {
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                const data = await res.json();
+
+                const html = data.data.map(c => `
+                    <div class="flex justify-between py-2 border-b">
+                        <span>${c.city}</span>
+                        <span><strong>${c.count}</strong></span>
+                    </div>
+                `).join('');
+
+                document.getElementById('report-by-city').innerHTML = html;
+            } catch (err) {
+                console.error('Failed to load reports:', err);
+            }
+        }
+
+        // Logout
+        function logout() {
+            localStorage.removeItem('admin_token');
+            window.location.href = '/admin/login.html';
+        }
+    </script>
+</body>
+</html>

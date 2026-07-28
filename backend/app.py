@@ -190,6 +190,26 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_listings_user_id   ON listings(user_id);
         CREATE INDEX IF NOT EXISTS idx_listings_type      ON listings(property_type);
         CREATE INDEX IF NOT EXISTS idx_reviews_listing_id ON reviews(listing_id);
+        
+        CREATE TABLE IF NOT EXISTS listing_images (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+            image_url  TEXT    NOT NULL,
+            'order'    INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        
+        CREATE TABLE IF NOT EXISTS moderation_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+            admin_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+            action     TEXT    NOT NULL,
+            reason     TEXT,
+            created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_listing_images ON listing_images(listing_id);
+        CREATE INDEX IF NOT EXISTS idx_moderation_log ON moderation_log(listing_id);
     """)
     db.commit()
 
@@ -661,9 +681,21 @@ def analytics_summary():
 
 # ─── Health check ─────────────────────────────────────────────────────────────
 
+# ─── Health check ─────────────────────────────────────────────────────────────
+
 @app.route("/api/health")
 def health():
     return jsonify(status="ok", service="UA Homes API v2")
+
+
+# ─── Register Blueprints ──────────────────────────────────────────────────
+
+# Import and register admin blueprint
+try:
+    from admin_routes import admin_bp
+    app.register_blueprint(admin_bp)
+except ImportError:
+    print("Warning: admin_routes not found")
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────

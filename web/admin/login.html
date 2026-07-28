@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UA Homes — Admin Login</title>
+    <link href="https://cdn.tailwindcss.com" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+</head>
+<body class="bg-gradient-to-br from-blue-600 to-blue-900 min-h-screen flex items-center justify-center">
+    <div class="w-full max-w-md">
+        <div class="bg-white rounded-2xl shadow-2xl p-8">
+            <!-- Logo -->
+            <div class="text-center mb-8">
+                <h1 class="text-4xl font-black text-blue-600">UA_DOM</h1>
+                <p class="text-gray-600 mt-2">Admin Panel</p>
+            </div>
+
+            <!-- Login Form -->
+            <form onsubmit="handleLogin(event)" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-2">Email</label>
+                    <input 
+                        type="email" 
+                        id="email" 
+                        placeholder="admin@ua-homes.com" 
+                        required 
+                        class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
+                    >
+                </div>
+
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-2">Пароль</label>
+                    <input 
+                        type="password" 
+                        id="password" 
+                        placeholder="••••••••" 
+                        required 
+                        class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
+                    >
+                </div>
+
+                <div id="message" class="hidden p-4 rounded-lg text-sm"></div>
+
+                <button 
+                    type="submit" 
+                    id="submitBtn"
+                    class="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition"
+                >
+                    <i class="fas fa-sign-in-alt mr-2"></i>Увійти
+                </button>
+            </form>
+
+            <!-- Info -->
+            <div class="mt-8 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                <p class="text-xs text-gray-700">
+                    <strong>Demo Credentials:</strong><br>
+                    Email: <code class="bg-gray-200 px-1">admin@ua-homes.com</code><br>
+                    Password: <code class="bg-gray-200 px-1">admin1234</code>
+                </p>
+            </div>
+
+            <!-- Register Link -->
+            <div class="mt-6 text-center">
+                <p class="text-gray-600 text-sm">
+                    Вперше тут? 
+                    <button onclick="showRegister()" class="text-blue-600 hover:underline font-semibold">
+                        Зареєструватися як адмін
+                    </button>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Register Modal -->
+    <div id="registerModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-2xl font-bold text-gray-800">Реєстрація адміна</h2>
+                <button onclick="hideRegister()" class="text-gray-400 hover:text-gray-600">
+                    <i class="fas fa-times text-2xl"></i>
+                </button>
+            </div>
+
+            <form onsubmit="handleRegister(event)" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-2">Ім'я</label>
+                    <input 
+                        type="text" 
+                        id="regName" 
+                        placeholder="Ім'я адміна" 
+                        required 
+                        class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
+                    >
+                </div>
+
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-2">Email</label>
+                    <input 
+                        type="email" 
+                        id="regEmail" 
+                        placeholder="admin@ua-homes.com" 
+                        required 
+                        class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
+                    >
+                </div>
+
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-2">Пароль (8+ символів)</label>
+                    <input 
+                        type="password" 
+                        id="regPassword" 
+                        placeholder="••••••••" 
+                        minlength="8"
+                        required 
+                        class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
+                    >
+                </div>
+
+                <div id="regMessage" class="hidden p-4 rounded-lg text-sm"></div>
+
+                <button 
+                    type="submit" 
+                    id="regBtn"
+                    class="w-full bg-blue-600 text-white font-bold py-2 rounded-lg hover:bg-blue-700 transition"
+                >
+                    Зареєструватися
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api/admin';
+
+        // Check if already logged in
+        if (localStorage.getItem('admin_token')) {
+            window.location.href = '/admin/dashboard.html';
+        }
+
+        // Login handler
+        async function handleLogin(e) {
+            e.preventDefault();
+
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const messageEl = document.getElementById('message');
+            const submitBtn = document.getElementById('submitBtn');
+
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Завантаження...';
+
+            try {
+                const res = await fetch(API_BASE + '/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+
+                const data = await res.json();
+
+                if (res.ok && data.token) {
+                    localStorage.setItem('admin_token', data.token);
+                    messageEl.classList.remove('hidden', 'bg-red-100', 'text-red-800');
+                    messageEl.classList.add('bg-green-100', 'text-green-800');
+                    messageEl.textContent = '✓ Успішний вхід! Перенаправлення...';
+                    setTimeout(() => {
+                        window.location.href = '/admin/dashboard.html';
+                    }, 1000);
+                } else {
+                    messageEl.classList.remove('hidden', 'bg-green-100', 'text-green-800');
+                    messageEl.classList.add('bg-red-100', 'text-red-800');
+                    messageEl.textContent = `✗ ${data.error || 'Помилка входу'}`;
+                }
+            } catch (err) {
+                messageEl.classList.remove('hidden', 'bg-green-100', 'text-green-800');
+                messageEl.classList.add('bg-red-100', 'text-red-800');
+                messageEl.textContent = '✗ Помилка мережі';
+            }
+
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Увійти';
+        }
+
+        // Register handler
+        async function handleRegister(e) {
+            e.preventDefault();
+
+            const name = document.getElementById('regName').value;
+            const email = document.getElementById('regEmail').value;
+            const password = document.getElementById('regPassword').value;
+            const messageEl = document.getElementById('regMessage');
+            const regBtn = document.getElementById('regBtn');
+
+            regBtn.disabled = true;
+            regBtn.textContent = 'Реєстрація...';
+
+            try {
+                const res = await fetch(API_BASE + '/auth/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, email, password })
+                });
+
+                const data = await res.json();
+
+                if (res.ok) {
+                    messageEl.classList.remove('hidden', 'bg-red-100', 'text-red-800');
+                    messageEl.classList.add('bg-green-100', 'text-green-800');
+                    messageEl.textContent = '✓ Адмін створений! Входьте через форму зверху.';
+                    setTimeout(() => hideRegister(), 2000);
+                } else {
+                    messageEl.classList.remove('hidden', 'bg-green-100', 'text-green-800');
+                    messageEl.classList.add('bg-red-100', 'text-red-800');
+                    messageEl.textContent = `✗ ${data.error}`;
+                }
+            } catch (err) {
+                messageEl.classList.remove('hidden', 'bg-green-100', 'text-green-800');
+                messageEl.classList.add('bg-red-100', 'text-red-800');
+                messageEl.textContent = '✗ Помилка мережі';
+            }
+
+            regBtn.disabled = false;
+            regBtn.textContent = 'Зареєструватися';
+        }
+
+        // Modal helpers
+        function showRegister() {
+            document.getElementById('registerModal').classList.remove('hidden');
+        }
+
+        function hideRegister() {
+            document.getElementById('registerModal').classList.add('hidden');
+            document.getElementById('regMessage').classList.add('hidden');
+        }
+
+        // Close modal on outside click
+        document.getElementById('registerModal').addEventListener('click', (e) => {
+            if (e.target.id === 'registerModal') {
+                hideRegister();
+            }
+        });
+    </script>
+</body>
+</html>
