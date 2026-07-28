@@ -1,0 +1,22 @@
+{
+  "appId": "com.uadom.realestate",
+  "appName": "UA Homes",
+  "webDir": "web",
+  "server": {
+    "androidScheme": "https"
+  },
+  "ios": {
+    "contentInset": "automatic"
+  },
+  "android": {
+    "allowMixedContent": true
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 2000,
+      "backgroundColor": "#1e40af",
+      "showSpinner": true,
+      "spinnerColor": "#ffffff"
+    }
+  }
+}

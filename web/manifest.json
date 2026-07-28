@@ -1,13 +1,26 @@
 {
-    "name": "drive_community",
-    "short_name": "drive_community",
-    "start_url": ".",
+    "name": "UA Homes - Нерухомість в Україні",
+    "short_name": "UA_DOM",
+    "start_url": "/real-estate-demo.html",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#1e40af",
+    "theme_color": "#1e40af",
+    "description": "Пошук нерухомості в Україні. Квартири, будинки, офіси під єОселя",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
+    "categories": ["real-estate", "shopping"],
+    "screenshots": [
+        {
+            "src": "/screenshots/narrow.png",
+            "sizes": "540x720",
+            "form_factor": "narrow"
+        },
+        {
+            "src": "/screenshots/wide.png",
+            "sizes": "1280x720",
+            "form_factor": "wide"
+        }
+    ],
     "icons": [
         {
             "src": "icons/Icon-192.png",
