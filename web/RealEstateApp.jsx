@@ -16,8 +16,10 @@ const MOCK_PROPERTIES = [
     rooms: 2,
     area: 68,
     eOselya: true,
-    image:
+    images: [
       "https://images.unsplash.com/photo-1560185007-c5ca9d2c014d?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?auto=format&fit=crop&w=1200&q=80",
+    ],
   },
   {
     id: 2,
@@ -28,8 +30,10 @@ const MOCK_PROPERTIES = [
     rooms: 1,
     area: 32,
     eOselya: true,
-    image:
+    images: [
       "https://images.unsplash.com/photo-1493809842364-78817add7ffb?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1484154218962-a197022b5858?auto=format&fit=crop&w=1200&q=80",
+    ],
   },
   {
     id: 3,
@@ -40,8 +44,10 @@ const MOCK_PROPERTIES = [
     rooms: 3,
     area: 85,
     eOselya: false,
-    image:
+    images: [
       "https://images.unsplash.com/photo-1484154218962-a197022b5858?auto=format&fit=crop&w=1200&q=80",
+      "https://images.unsplash.com/photo-1493809842364-78817add7ffb?auto=format&fit=crop&w=1200&q=80",
+    ],
   },
 ];
 
@@ -49,6 +55,53 @@ function getStored(key, fallback) {
   if (typeof window === "undefined") return fallback;
   const value = window.localStorage.getItem(key);
   return value ?? fallback;
+}
+
+function PhotoGallery({ images, title }) {
+  const [index, setIndex] = useState(0);
+  const items = Array.isArray(images) ? images : [];
+
+  if (!items.length) {
+    return (
+      <div className="flex h-56 items-center justify-center bg-gray-200 text-5xl text-gray-400">
+        🏠
+      </div>
+    );
+  }
+
+  const prev = (e) => {
+    e.stopPropagation();
+    setIndex((current) => (current - 1 + items.length) % items.length);
+  };
+
+  const next = (e) => {
+    e.stopPropagation();
+    setIndex((current) => (current + 1) % items.length);
+  };
+
+  return (
+    <div className="relative h-56 overflow-hidden bg-gray-200">
+      <img src={items[index]} alt={title} className="h-full w-full object-cover" />
+      {items.length > 1 && (
+        <>
+          <button
+            type="button"
+            onClick={prev}
+            className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full bg-black/50 px-3 py-1 text-white hover:bg-black/70"
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            onClick={next}
+            className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full bg-black/50 px-3 py-1 text-white hover:bg-black/70"
+          >
+            ›
+          </button>
+        </>
+      )}
+    </div>
+  );
 }
 
 export default function RealEstateApp() {
@@ -260,9 +313,7 @@ export default function RealEstateApp() {
               key={property.id}
               className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100"
             >
-              <div className="relative h-56 overflow-hidden bg-gray-200">
-                <img src={property.image} alt={property.title} className="w-full h-full object-cover" />
-              </div>
+              <PhotoGallery images={property.images} title={property.title} />
               <div className="p-5">
                 <h3 className="font-bold text-lg mb-2">{property.title}</h3>
                 <div className="flex gap-4 text-sm text-gray-500 font-medium mb-4">

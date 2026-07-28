@@ -33,6 +33,9 @@
                 <button onclick="showPage('new-listing')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
                     <i class="fas fa-plus-circle mr-2"></i> Додати об'єкт
                 </button>
+                <button onclick="showPage('csv-import')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
+                    <i class="fas fa-file-csv mr-2"></i> CSV Імпорт
+                </button>
                 <button onclick="showPage('users')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
                     <i class="fas fa-users mr-2"></i> Користувачі
                 </button>
@@ -189,6 +192,27 @@
                     </form>
                 </div>
 
+                <!-- CSV Import Page -->
+                <div id="page-csv-import" class="p-6 hidden max-w-2xl">
+                    <h2 class="text-2xl font-bold mb-6">CSV Імпорт оголошень</h2>
+                    <div class="bg-white p-6 rounded-lg shadow-sm space-y-4">
+                        <p class="text-sm text-gray-600">
+                            Завантаж CSV з колонками: <code>title, city, district, price, rooms, area</code>.
+                            Додатково можна додати: <code>property_type, condition_type, floor, total_floors, year_built, e_oselya, description, status, latitude, longitude, images</code>.
+                        </p>
+                        <input type="file" id="csv-file" accept=".csv,text/csv" class="w-full p-2 border border-gray-300 rounded">
+                        <div class="flex gap-3">
+                            <button type="button" onclick="importCsv()" class="flex-1 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700">
+                                Імпортувати CSV
+                            </button>
+                            <button type="button" onclick="downloadCsvTemplate()" class="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg hover:bg-gray-300">
+                                Шаблон CSV
+                            </button>
+                        </div>
+                        <div id="csv-message"></div>
+                    </div>
+                </div>
+
                 <!-- Users Page -->
                 <div id="page-users" class="p-6 hidden">
                     <h2 class="text-2xl font-bold mb-6">Користувачі</h2>
@@ -214,13 +238,20 @@
                     <h2 class="text-2xl font-bold mb-6">Черга модерації</h2>
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div class="bg-white rounded-lg shadow-sm overflow-hidden">
-                            <div class="p-4 border-b">
+                            <div class="p-4 border-b flex items-center justify-between gap-3">
                                 <h3 class="font-bold">Очікуючі оголошення</h3>
+                                <div class="flex gap-2">
+                                    <button onclick="bulkModerate('approve')" class="rounded-lg bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-700">Approve selected</button>
+                                    <button onclick="bulkModerate('reject')" class="rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700">Reject selected</button>
+                                </div>
                             </div>
                             <div class="overflow-auto">
                                 <table class="w-full">
                                     <thead class="bg-gray-50 border-b">
                                         <tr>
+                                            <th class="px-4 py-3 text-left text-sm font-semibold w-10">
+                                                <input type="checkbox" id="moderation-select-all" onchange="toggleModerationSelection(this.checked)" />
+                                            </th>
                                             <th class="px-4 py-3 text-left text-sm font-semibold">Назва</th>
                                             <th class="px-4 py-3 text-left text-sm font-semibold">Місто</th>
                                             <th class="px-4 py-3 text-left text-sm font-semibold">Статус</th>
@@ -303,6 +334,8 @@
                 loadDashboard();
             } else if (page === 'listings') {
                 loadListings();
+            } else if (page === 'csv-import') {
+                document.getElementById('csv-message').innerHTML = '';
             } else if (page === 'users') {
                 loadUsers();
             } else if (page === 'moderation') {
@@ -532,6 +565,57 @@
             }
         }
 
+        async function importCsv() {
+            const input = document.getElementById('csv-file');
+            const message = document.getElementById('csv-message');
+            if (!input.files || !input.files.length) {
+                message.innerHTML = '<div class="error">✗ Оберіть CSV файл</div>';
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', input.files[0]);
+
+            try {
+                const res = await fetch(`${API_BASE}/import/csv`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: formData
+                });
+
+                const data = await res.json();
+                if (res.ok) {
+                    message.innerHTML = `<div class="success">✓ Імпортовано ${data.imported} оголошень</div>`;
+                    input.value = '';
+                    loadListings();
+                    loadDashboard();
+                    loadModeration();
+                } else {
+                    const details = data.details ? `<br><span class="text-xs">${data.details.join('<br>')}</span>` : '';
+                    message.innerHTML = `<div class="error">✗ ${data.error || 'Помилка імпорту'}${details}</div>`;
+                }
+            } catch (err) {
+                message.innerHTML = '<div class="error">✗ Помилка завантаження CSV</div>';
+            }
+        }
+
+        function downloadCsvTemplate() {
+            const csv = [
+                'title,city,district,price,rooms,area,property_type,condition_type,floor,total_floors,year_built,e_oselya,description,status,latitude,longitude,images',
+                'Преміум квартира,Київ,Печерський,125000,2,68,квартира,нова будова,8,24,2021,true,Сучасна квартира,published,50.4422,30.5178,"https://example.com/photo1.jpg,https://example.com/photo2.jpg"'
+            ].join('\n');
+
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'ua-homes-template.csv';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
         // Load users
         async function loadUsers() {
             try {
@@ -567,6 +651,9 @@
 
                 const queueHtml = (queueData.queue || []).map(item => `
                     <tr>
+                        <td class="px-4 py-3">
+                            <input type="checkbox" class="moderation-item-checkbox" value="${item.id}">
+                        </td>
                         <td class="px-4 py-3 text-sm font-semibold">${item.title}</td>
                         <td class="px-4 py-3 text-sm">${item.city}</td>
                         <td class="px-4 py-3 text-sm">${item.status}</td>
@@ -576,7 +663,7 @@
                         </td>
                     </tr>
                 `).join('');
-                document.getElementById('moderation-table').innerHTML = queueHtml || '<tr><td colspan="4" class="px-4 py-4 text-center text-gray-500">Черга порожня</td></tr>';
+                document.getElementById('moderation-table').innerHTML = queueHtml || '<tr><td colspan="5" class="px-4 py-4 text-center text-gray-500">Черга порожня</td></tr>';
 
                 const logHtml = (logsData.logs || []).map(log => `
                     <div class="p-3 rounded border border-gray-200">
@@ -586,9 +673,20 @@
                     </div>
                 `).join('');
                 document.getElementById('moderation-log').innerHTML = logHtml || '<p class="text-gray-500">Логів ще немає</p>';
+                document.getElementById('moderation-select-all').checked = false;
             } catch (err) {
                 console.error('Failed to load moderation:', err);
             }
+        }
+
+        function toggleModerationSelection(checked) {
+            document.querySelectorAll('.moderation-item-checkbox').forEach(cb => {
+                cb.checked = checked;
+            });
+        }
+
+        function getSelectedModerationIds() {
+            return Array.from(document.querySelectorAll('.moderation-item-checkbox:checked')).map(cb => Number(cb.value));
         }
 
         async function moderateListing(id, action) {
@@ -618,6 +716,42 @@
                 }
             } catch (err) {
                 alert('Помилка модерації');
+            }
+        }
+
+        async function bulkModerate(action) {
+            const listingIds = getSelectedModerationIds();
+            if (!listingIds.length) {
+                alert('Оберіть хоча б одне оголошення');
+                return;
+            }
+
+            let reason = '';
+            if (action === 'reject') {
+                reason = prompt('Вкажіть причину відхилення для вибраних оголошень') || '';
+                if (!reason.trim()) return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/listings/bulk-moderate`, {
+                    method: 'POST',
+                    headers: {
+                        ...getAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ action, reason, listing_ids: listingIds })
+                });
+
+                if (res.ok) {
+                    loadModeration();
+                    loadListings();
+                    loadDashboard();
+                } else {
+                    const err = await res.json();
+                    alert(err.error || 'Не вдалося виконати масову модерацію');
+                }
+            } catch (err) {
+                alert('Помилка масової модерації');
             }
         }
 

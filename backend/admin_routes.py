@@ -5,6 +5,8 @@ Endpoints for admin panel property/user management
 
 from flask import Blueprint, g, jsonify, request
 from functools import wraps
+import csv
+import io
 import json
 
 # Create blueprint
@@ -54,6 +56,73 @@ def log_moderation_action(db, listing_id, action, reason=None):
         "INSERT INTO moderation_log (listing_id, admin_id, action, reason) VALUES (?, ?, ?, ?)",
         (listing_id, g.user_id, action, reason)
     )
+
+
+def parse_csv_bool(value):
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "так", "дa", "да"}
+
+
+def parse_csv_images(value):
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()][:10]
+    except json.JSONDecodeError:
+        pass
+    return [part.strip() for part in text.split(",") if part.strip()][:10]
+
+
+def parse_csv_row(row, row_number):
+    required = ["title", "city", "district", "price", "rooms", "area"]
+    missing = [field for field in required if not str(row.get(field, "")).strip()]
+    if missing:
+        return None, f"Row {row_number}: missing required fields: {', '.join(missing)}"
+
+    try:
+        price = int(float(row.get("price")))
+        rooms = int(float(row.get("rooms")))
+        area = float(row.get("area"))
+        floor = int(float(row.get("floor", 1) or 1))
+        total_floors = int(float(row.get("total_floors", 1) or 1))
+        year_built = row.get("year_built")
+        year_built = int(float(year_built)) if str(year_built).strip() else None
+        latitude = row.get("latitude")
+        latitude = float(latitude) if str(latitude).strip() else None
+        longitude = row.get("longitude")
+        longitude = float(longitude) if str(longitude).strip() else None
+    except ValueError as exc:
+        return None, f"Row {row_number}: invalid number value ({exc})"
+
+    status = (row.get("status") or "draft").strip().lower()
+    if status not in {"draft", "published", "pending", "rejected", "archived"}:
+        status = "draft"
+
+    property_type = (row.get("property_type") or "квартира").strip() or "квартира"
+    condition_type = (row.get("condition_type") or "вторинка").strip() or "вторинка"
+
+    listing = {
+        "title": str(row.get("title")).strip()[:200],
+        "city": str(row.get("city")).strip()[:100],
+        "district": str(row.get("district")).strip()[:100],
+        "property_type": property_type[:50],
+        "condition_type": condition_type[:50],
+        "price": price,
+        "rooms": rooms,
+        "area": area,
+        "floor": floor,
+        "total_floors": total_floors,
+        "year_built": year_built,
+        "e_oselya": 1 if parse_csv_bool(row.get("e_oselya")) else 0,
+        "description": str(row.get("description") or "").strip()[:2000],
+        "status": status,
+        "latitude": latitude,
+        "longitude": longitude,
+        "images": json.dumps(parse_csv_images(row.get("images"))),
+    }
+    return listing, None
 
 
 # ─── Admin Auth ──────────────────────────────────────────────────────
@@ -421,6 +490,71 @@ def admin_publish_listing(listing_id):
     return jsonify(ok=True, status=status)
 
 
+@admin_bp.route("/import/csv", methods=["POST"])
+@require_auth_admin
+def admin_import_csv():
+    from app import get_db
+
+    db = get_db()
+    upload = request.files.get("file") or request.files.get("csv")
+    if not upload:
+        return jsonify(error="CSV file is required"), 400
+
+    raw = upload.read().decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(raw))
+    if not reader.fieldnames:
+        return jsonify(error="CSV header is required"), 400
+
+    imported = []
+    errors = []
+    admin_id = g.user_id
+
+    for row_number, row in enumerate(reader, start=2):
+        listing, error = parse_csv_row(row, row_number)
+        if error:
+            errors.append(error)
+            continue
+
+        cur = db.execute(
+            """
+            INSERT INTO listings (
+                user_id, title, city, district, property_type, condition_type,
+                price, rooms, area, floor, total_floors, year_built, e_oselya,
+                views, images, status, latitude, longitude, description
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                admin_id,
+                listing["title"],
+                listing["city"],
+                listing["district"],
+                listing["property_type"],
+                listing["condition_type"],
+                listing["price"],
+                listing["rooms"],
+                listing["area"],
+                listing["floor"],
+                listing["total_floors"],
+                listing["year_built"],
+                listing["e_oselya"],
+                0,
+                listing["images"],
+                listing["status"],
+                listing["latitude"],
+                listing["longitude"],
+                listing["description"],
+            ),
+        )
+        imported.append(cur.lastrowid)
+
+    if errors:
+        db.rollback()
+        return jsonify(error="CSV import failed", details=errors[:20]), 422
+
+    db.commit()
+    return jsonify(ok=True, imported=len(imported), listing_ids=imported), 201
+
+
 @admin_bp.route("/moderation/queue", methods=["GET"])
 @require_auth_admin
 def admin_moderation_queue():
@@ -493,6 +627,54 @@ def admin_moderate_listing(listing_id):
     db.commit()
 
     return jsonify(ok=True, status=new_status)
+
+
+@admin_bp.route("/listings/bulk-moderate", methods=["POST"])
+@require_auth_admin
+def admin_bulk_moderate():
+    from app import get_db
+
+    db = get_db()
+    data = request.get_json() or {}
+    action = (data.get("action") or "").strip().lower()
+    reason = (data.get("reason") or "").strip() or None
+    listing_ids = data.get("listing_ids") or []
+
+    if not isinstance(listing_ids, list) or not listing_ids:
+        return jsonify(error="listing_ids must be a non-empty array"), 400
+
+    try:
+        ids = [int(item) for item in listing_ids]
+    except (TypeError, ValueError):
+        return jsonify(error="listing_ids must contain integers"), 400
+
+    if action == "approve":
+        new_status = "published"
+    elif action == "reject":
+        new_status = "rejected"
+    elif action == "hold":
+        new_status = "pending"
+    else:
+        return jsonify(error="Invalid moderation action"), 400
+
+    existing = db.execute(
+        f"SELECT id FROM listings WHERE id IN ({','.join('?' for _ in ids)})",
+        ids
+    ).fetchall()
+    existing_ids = {row["id"] for row in existing}
+    missing = [listing_id for listing_id in ids if listing_id not in existing_ids]
+    if missing:
+        return jsonify(error="Some listings were not found", missing_ids=missing), 404
+
+    for listing_id in ids:
+        db.execute(
+            "UPDATE listings SET status = ? WHERE id = ?",
+            (new_status, listing_id)
+        )
+        log_moderation_action(db, listing_id, action, reason)
+
+    db.commit()
+    return jsonify(ok=True, status=new_status, updated=len(ids))
 
 
 # ─── Image Management ────────────────────────────────────────────────
