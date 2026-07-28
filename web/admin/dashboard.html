@@ -124,6 +124,42 @@
                             </tbody>
                         </table>
                     </div>
+
+                    <div id="edit-listing-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center p-4 z-50">
+                        <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-auto">
+                            <div class="p-6 border-b border-gray-200">
+                                <div class="flex justify-between items-center">
+                                    <h3 class="text-xl font-bold">Редагувати об'єкт</h3>
+                                    <button type="button" onclick="closeEditModal()" class="text-gray-500 hover:text-gray-700">
+                                        <i class="fas fa-times text-xl"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <form onsubmit="saveEditedListing(event)" class="p-6 space-y-4">
+                                <input type="text" id="edit-title" class="w-full p-2 border border-gray-300 rounded" required>
+                                <input type="text" id="edit-city" class="w-full p-2 border border-gray-300 rounded" required>
+                                <input type="text" id="edit-district" class="w-full p-2 border border-gray-300 rounded" required>
+                                <input type="number" id="edit-price" class="w-full p-2 border border-gray-300 rounded" required>
+                                <input type="number" id="edit-rooms" class="w-full p-2 border border-gray-300 rounded" required>
+                                <input type="number" id="edit-area" step="0.1" class="w-full p-2 border border-gray-300 rounded" required>
+                                <textarea id="edit-description" class="w-full p-2 border border-gray-300 rounded" rows="4"></textarea>
+                                <select id="edit-status" class="w-full p-2 border border-gray-300 rounded">
+                                    <option value="draft">draft</option>
+                                    <option value="published">published</option>
+                                    <option value="archived">archived</option>
+                                </select>
+                                <label class="flex items-center text-sm">
+                                    <input type="checkbox" id="edit-eoselya" class="mr-2">
+                                    <span>Під програму єОселя</span>
+                                </label>
+                                <div id="edit-message"></div>
+                                <div class="flex gap-3">
+                                    <button type="submit" class="flex-1 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700">Зберегти</button>
+                                    <button type="button" onclick="closeEditModal()" class="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg hover:bg-gray-300">Скасувати</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- New Listing Page -->
@@ -137,6 +173,8 @@
                         <input type="number" placeholder="Кімнат" id="form-rooms" required class="w-full p-2 border border-gray-300 rounded">
                         <input type="number" placeholder="Площа (м²)" id="form-area" step="0.1" required class="w-full p-2 border border-gray-300 rounded">
                         <textarea placeholder="Опис" id="form-description" class="w-full p-2 border border-gray-300 rounded" rows="4"></textarea>
+                        <input type="file" id="form-images" multiple accept="image/*" class="w-full p-2 border border-gray-300 rounded">
+                        <p class="text-sm text-gray-500">Можна завантажити кілька фото</p>
                         <label class="flex items-center">
                             <input type="checkbox" id="form-eoselya" class="mr-2">
                             <span>Під програму єОселя</span>
@@ -193,6 +231,8 @@
     <script>
         const API_BASE = '/api/admin';
         let authToken = localStorage.getItem('admin_token');
+        let listingsCache = [];
+        let editingListingId = null;
 
         // Check auth
         window.addEventListener('load', async () => {
@@ -231,11 +271,18 @@
             }
         }
 
+        function getAuthHeaders(extra = {}) {
+            return {
+                'Authorization': `Bearer ${authToken}`,
+                ...extra
+            };
+        }
+
         // Load dashboard
         async function loadDashboard() {
             try {
                 const res = await fetch(API_BASE + '/dashboard/stats', {
-                    headers: { 'Authorization': `Bearer ${authToken}` }
+                    headers: getAuthHeaders()
                 });
                 const data = await res.json();
 
@@ -268,11 +315,12 @@
         async function loadListings() {
             try {
                 const res = await fetch(API_BASE + '/listings?limit=50', {
-                    headers: { 'Authorization': `Bearer ${authToken}` }
+                    headers: getAuthHeaders()
                 });
                 const data = await res.json();
+                listingsCache = data.listings || [];
 
-                const html = data.listings.map(l => `
+                const html = listingsCache.map(l => `
                     <tr>
                         <td class="px-6 py-4 font-semibold text-sm">${l.title}</td>
                         <td class="px-6 py-4 text-sm">${l.city}</td>
@@ -282,8 +330,9 @@
                                 ${l.status}
                             </span>
                         </td>
-                        <td class="px-6 py-4">
-                            <button onclick="alert('Редагування буде реалізовано')" class="text-blue-600 hover:underline text-sm">Редагувати</button>
+                        <td class="px-6 py-4 space-x-2">
+                            <button onclick="openEditModalFromId(${l.id})" class="text-blue-600 hover:underline text-sm">Редагувати</button>
+                            <button onclick="deleteListing(${l.id})" class="text-red-600 hover:underline text-sm">Видалити</button>
                         </td>
                     </tr>
                 `).join('');
@@ -291,6 +340,102 @@
                 document.getElementById('listings-table').innerHTML = html;
             } catch (err) {
                 console.error('Failed to load listings:', err);
+            }
+        }
+
+        function openEditModalFromId(id) {
+            const listing = listingsCache.find(item => item.id === id);
+            if (!listing) return;
+            openEditModal(listing);
+        }
+
+        function openEditModal(listing) {
+            editingListingId = listing.id;
+            document.getElementById('edit-title').value = listing.title || '';
+            document.getElementById('edit-city').value = listing.city || '';
+            document.getElementById('edit-district').value = listing.district || '';
+            document.getElementById('edit-price').value = listing.price || '';
+            document.getElementById('edit-rooms').value = listing.rooms || '';
+            document.getElementById('edit-area').value = listing.area || '';
+            document.getElementById('edit-description').value = listing.description || '';
+            document.getElementById('edit-status').value = listing.status || 'draft';
+            document.getElementById('edit-eoselya').checked = Boolean(listing.e_oselya);
+            document.getElementById('edit-message').innerHTML = '';
+            document.getElementById('edit-listing-modal').classList.remove('hidden');
+            document.getElementById('edit-listing-modal').classList.add('flex');
+        }
+
+        function closeEditModal() {
+            editingListingId = null;
+            document.getElementById('edit-listing-modal').classList.add('hidden');
+            document.getElementById('edit-listing-modal').classList.remove('flex');
+            document.getElementById('edit-message').innerHTML = '';
+        }
+
+        async function saveEditedListing(e) {
+            e.preventDefault();
+            if (!editingListingId) return;
+
+            const payload = {
+                title: document.getElementById('edit-title').value,
+                city: document.getElementById('edit-city').value,
+                district: document.getElementById('edit-district').value,
+                price: parseInt(document.getElementById('edit-price').value, 10),
+                rooms: parseInt(document.getElementById('edit-rooms').value, 10),
+                area: parseFloat(document.getElementById('edit-area').value),
+                description: document.getElementById('edit-description').value,
+                status: document.getElementById('edit-status').value,
+                e_oselya: document.getElementById('edit-eoselya').checked
+            };
+
+            try {
+                const res = await fetch(`${API_BASE}/listings/${editingListingId}`, {
+                    method: 'PUT',
+                    headers: {
+                        ...getAuthHeaders(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (res.ok) {
+                    document.getElementById('edit-message').innerHTML = '<div class="success">✓ Оновлено</div>';
+                    closeEditModal();
+                    loadListings();
+                } else {
+                    const err = await res.json();
+                    document.getElementById('edit-message').innerHTML = `<div class="error">✗ ${err.error || 'Помилка'}</div>`;
+                }
+            } catch (err) {
+                document.getElementById('edit-message').innerHTML = '<div class="error">✗ Помилка збереження</div>';
+            }
+        }
+
+        async function deleteListing(id) {
+            if (!confirm('Видалити об’єкт?')) return;
+            try {
+                const res = await fetch(`${API_BASE}/listings/${id}`, {
+                    method: 'DELETE',
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    loadListings();
+                }
+            } catch (err) {
+                console.error('Delete failed', err);
+            }
+        }
+
+        async function uploadListingImages(listingId, files) {
+            if (!files.length) return;
+            for (const file of files) {
+                const formData = new FormData();
+                formData.append('image', file);
+                await fetch(`${API_BASE}/listings/${listingId}/images`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: formData
+                });
             }
         }
 
@@ -302,18 +447,19 @@
                 title: document.getElementById('form-title').value,
                 city: document.getElementById('form-city').value,
                 district: document.getElementById('form-district').value,
-                price: parseInt(document.getElementById('form-price').value),
-                rooms: parseInt(document.getElementById('form-rooms').value),
+                price: parseInt(document.getElementById('form-price').value, 10),
+                rooms: parseInt(document.getElementById('form-rooms').value, 10),
                 area: parseFloat(document.getElementById('form-area').value),
                 description: document.getElementById('form-description').value,
-                e_oselya: document.getElementById('form-eoselya').checked
+                e_oselya: document.getElementById('form-eoselya').checked,
+                status: 'published'
             };
 
             try {
                 const res = await fetch(API_BASE + '/listings', {
                     method: 'POST',
                     headers: {
-                        'Authorization': `Bearer ${authToken}`,
+                        ...getAuthHeaders(),
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify(listing)
@@ -321,6 +467,10 @@
 
                 if (res.ok) {
                     const data = await res.json();
+                    const files = Array.from(document.getElementById('form-images').files || []);
+                    if (files.length) {
+                        await uploadListingImages(data.id, files);
+                    }
                     document.getElementById('form-message').innerHTML = '<div class="success">✓ Об\'єкт збережено!</div>';
                     e.target.reset();
                     setTimeout(() => loadListings(), 1000);
@@ -337,7 +487,7 @@
         async function loadUsers() {
             try {
                 const res = await fetch(API_BASE + '/users', {
-                    headers: { 'Authorization': `Bearer ${authToken}` }
+                    headers: getAuthHeaders()
                 });
                 const data = await res.json();
 
@@ -360,7 +510,7 @@
         async function loadReports() {
             try {
                 const res = await fetch(API_BASE + '/reports/listings-by-city', {
-                    headers: { 'Authorization': `Bearer ${authToken}` }
+                    headers: getAuthHeaders()
                 });
                 const data = await res.json();
 
