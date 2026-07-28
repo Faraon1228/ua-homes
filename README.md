@@ -1,104 +1,194 @@
-# drive_community
+# 🏠 UA Homes — Платформа для пошуку нерухомості в Україні
 
-DriveCommunity — базовий Flutter додаток для демонстрації карти, stories та профілю.
+**UA Homes** — це сучасна PWA платформа для пошуку, фільтрації та аналізу нерухомості в Україні, розроблена для мобільних та веб-браузерів.
 
-## Як запустити
+## 🚀 Швидкий старт
 
-1. Перейдіть до каталогу проєкту:
-   ```bash
-   cd ~/drive_community
-   ```
-2. Завантажте залежності:
-   ```bash
-   ~/Downloads/flutter/bin/flutter pub get
-   ```
-3. Запустіть додаток:
-   ```bash
-   ~/Downloads/flutter/bin/flutter run
-   ```
+### Локальний запуск
 
-## Потрібний API ключ Google Maps
-
-Щоб карта відображалася правильно на Android та iOS, потрібно додати Google Maps API ключ.
-
-### 1. Отримайте API ключ
-
-Створіть безкоштовний ключ у [Google Cloud Console](https://console.cloud.google.com/) і увімкніть:
-
-- Google Maps SDK for Android
-- Google Maps SDK for iOS
-
-### 2. Додайте ключ для Android
-
-У файл `android/app/src/main/AndroidManifest.xml` додайте всередині тегу `<application>`:
-
-```xml
-<meta-data android:name="com.google.android.geo.API_KEY"
-           android:value="ВАШ_GOOGLE_MAPS_API_KEY"/>
-```
-
-### 3. Додайте ключ для iOS
-
-У файл `ios/Runner/AppDelegate.swift` додайте імпорт Google Maps і надайте свій ключ у методі `didFinishLaunchingWithOptions`:
-
-```swift
-import GoogleMaps
-
-@main
-@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
-  override func application(
-    _ application: UIApplication,
-    didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
-  ) -> Bool {
-    GMSServices.provideAPIKey("ВАШ_IOS_GOOGLE_MAPS_API_KEY")
-    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
-  }
-
-  func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
-    GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-  }
-}
-```
-
-Альтернативно можна додати ключ у `ios/Runner/Info.plist`:
-
-```xml
-<key>GMSApiKey</key>
-<string>YOUR_IOS_API_KEY_HERE</string>
-```
-
-## Запуск через VS Code
-
-Додано конфігурацію запуску у `./.vscode/launch.json`.
-
-Ви можете вибрати одну з наступних конфігурацій у VS Code:
-
-- `Run DriveCommunity (Flutter)`
-- `Profile DriveCommunity (Flutter)`
-- `Release DriveCommunity (Flutter)`
-
-## Примітки
-
-- Якщо ви тестуєте у емуляторі / симуляторі, переконайтеся, що пристрій запущено перед `flutter run`.
-- Для роботи вибору з галереї на iOS додано дозвіл `NSPhotoLibraryUsageDescription`.
-- Історії та чат тепер зберігаються локально у `Hive`, а також можуть синхронізуватися з локальним сервером.
-- Додано окрему сторінку “Усі розмови” для перегляду всіх чатів і пошуку.
-- Історії можна додавати як фото або відео, а відео відтворюються у переглядачі історій.
-- Код розбитий на моделі, сервіси, стани та екрани, щоб краще підтримувати подальший розвиток.
-
-## Сервер синхронізації
-
-Щоб використовувати реальну серверну синхронізацію, запустіть локальний бекенд у папці `server`:
-
+#### Фронтенд (React)
 ```bash
-cd ~/drive_community/server
-dart pub get
-dart run bin/server.dart
+cd web
+python3 -m http.server 8080
+# Відкрийте http://localhost:8080/real-estate-demo.html
 ```
 
-Після цього додаток автоматично спробує підключитися до сервера на:
+#### Бекенд (Flask)
+```bash
+cd backend
+pip install -r requirements.txt
+python3 app.py
+# API запущено на http://localhost:5050
+```
 
-- iOS симулятор: `http://localhost:8080`
-- Android емултор: `http://10.0.2.2:8080`
+## 📱 Функціональність
 
-Сервер зберігає історії та чат-потоки у файлі `server/storage.json` і повертає їх для синхронізації.
+✅ **Фільтрація нерухомості**
+- По місту (Київ, Львів тощо)
+- По кількості кімнат
+- По площі
+- За программою єОселя
+
+✅ **Деталі об'єктів**
+- Фотогалерея
+- Інтерактивна карта (Leaflet)
+- Інформація про розташування
+- Рецензії користувачів
+
+✅ **Калькулятор іпотеки**
+- Розрахунок з программи єОселя (3% / 7%)
+- Вибір кількості років
+
+✅ **Порівняння об'єктів**
+- Порівнювати до 3 об'єктів одночасно
+- Таблиця характеристик
+
+✅ **Аналітика**
+- Графіки розподілу за містами
+- Статистика по кімнатам та площі
+
+✅ **Автентифікація**
+- Реєстрація / Вхід
+- Управління обліковими записами
+- Видалення об'єктів (тільки власники)
+
+✅ **PWA (Прогресивна Веб-Додаток)**
+- Встановлення як додаток
+- Офлайн-режим
+- Кеширование статичних ресурсів
+
+## 🛠️ Архітектура
+
+### Стек технологій
+
+**Фронтенд:**
+- React 18+ (без build-системи, vanilla JS)
+- Tailwind CSS для стилізації
+- Leaflet для карт
+- localStorage для зберігання користувача
+
+**Бекенд:**
+- Flask (Python)
+- SQLite база даних
+- JWT для автентифікації
+- bcrypt для хешування паролів
+- CORS для кросс-доменних запитів
+
+**Розгортання:**
+- GitHub Actions (CI/CD)
+- Netlify (фронтенд)
+- Railway (бекенд)
+
+## 📦 Структура проекту
+
+```
+ua-homes/
+├── web/
+│   ├── real-estate-demo.html    # React SPA (960+ рядків)
+│   ├── sw.js                     # Service Worker
+│   └── ua-homes-manifest.json    # PWA manifest
+├── backend/
+│   ├── app.py                    # Flask сервер
+│   ├── requirements.txt           # Python залежності
+│   ├── Procfile                  # Railway config
+│   └── railway.toml              # Railway settings
+├── scripts/
+│   └── build-real-estate-demo.py # Build-time API URL injection
+├── .github/
+│   └── workflows/deploy.yml      # GitHub Actions workflow
+└── DEPLOYMENT_STEPS.md           # Посібник розгортання
+```
+
+## 🔧 Розвиток
+
+### Додавання нових фільтрів
+
+1. Додайте стан у `App()`:
+```javascript
+const [myFilter, setMyFilter] = useState('default');
+```
+
+2. Додайте у логіку фільтрації:
+```javascript
+const filteredProperties = MOCK_PROPERTIES.filter(item => {
+  return matchCity && matchEOselya && (myFilter === 'default' || item.yourProperty === myFilter);
+});
+```
+
+3. Додайте UI контрол у фільтри-секцію
+
+### Додавання нових об'єктів нерухомості
+
+Відредагуйте `MOCK_PROPERTIES` у `web/real-estate-demo.html`:
+```javascript
+const MOCK_PROPERTIES = [
+  {
+    id: 4,
+    title: "Нова квартира",
+    city: "Київ",
+    district: "Шевченківський",
+    price: 150000,
+    rooms: 2,
+    area: 75,
+    eOselya: true,
+    image: "https://unsplash.com/...",
+  },
+  // ...
+];
+```
+
+## 📚 API
+
+### Бекенд endpoints
+
+```
+POST   /register              # Реєстрація
+POST   /login                 # Вхід
+GET    /properties            # Список всіх об'єктів
+GET    /properties/<id>       # Деталі об'єкту
+DELETE /properties/<id>       # Видалення (JWT)
+POST   /reviews               # Додати рецензію
+GET    /reviews/<propertyId>  # Рецензії об'єкту
+POST   /logout                # Вихід
+```
+
+## 🚀 Розгортання
+
+Див. [DEPLOYMENT_STEPS.md](./DEPLOYMENT_STEPS.md) для детальних інструкцій.
+
+**Швидко:**
+1. Netlify: `https://app.netlify.com` → GitHub integration → deploy
+2. Railway: `https://railway.app` → GitHub integration → deploy
+
+## 🔐 Безпека
+
+- Паролі хешуються bcrypt
+- JWT токени з 24-годинним терміном дії
+- Rate-limiting на бекенді
+- CORS налаштовані
+- Немає чутливих даних у фронтенді
+
+## 📱 Мобільна оптимізація
+
+- 44px touch-цілей
+- Responsive дизайн (мобільний-first)
+- iOS / Android meta-теги
+- PWA для встановлення на домашній екран
+
+## 🆘 Проблемами?
+
+1. **Бекенд не запускається:**
+   ```bash
+   pip install -r backend/requirements.txt
+   python3 backend/app.py
+   ```
+
+2. **CORS помилки:**
+   Перевірте, що `UA_HOMES_API`환境 змінна правильна на Netlify
+
+3. **Локально не працює пошук:**
+   Убедитесь, що бекенд запущено на `http://localhost:5050`
+
+## 📄 Ліцензія
+
+Цей проект розроблено як демонстраційна платформа для пошуку нерухомості в Україні.
