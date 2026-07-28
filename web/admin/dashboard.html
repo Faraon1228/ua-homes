@@ -110,7 +110,7 @@
                     <div class="mb-6 flex justify-between items-center">
                         <h2 class="text-2xl font-bold">Управління нерухомістю</h2>
                         <div class="flex gap-2 flex-wrap justify-end">
-                            <button onclick="exportSelectedListings()" class="bg-slate-700 text-white px-4 py-2 rounded-lg hover:bg-slate-800">
+                            <button onclick="exportFilteredListings()" class="bg-slate-700 text-white px-4 py-2 rounded-lg hover:bg-slate-800">
                                 <i class="fas fa-file-export mr-2"></i>Експорт
                             </button>
                             <button onclick="bulkDeleteListings()" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">
@@ -119,6 +119,23 @@
                             <button onclick="showPage('new-listing')" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
                                 <i class="fas fa-plus mr-2"></i>Додати
                             </button>
+                        </div>
+                    </div>
+
+                    <div class="mb-4 grid grid-cols-1 md:grid-cols-4 gap-3 bg-white p-4 rounded-lg shadow-sm">
+                        <input id="listings-filter-city" type="text" placeholder="Місто" class="w-full p-2 border border-gray-300 rounded-lg">
+                        <select id="listings-filter-status" class="w-full p-2 border border-gray-300 rounded-lg">
+                            <option value="">Усі статуси</option>
+                            <option value="draft">draft</option>
+                            <option value="published">published</option>
+                            <option value="pending">pending</option>
+                            <option value="rejected">rejected</option>
+                            <option value="archived">archived</option>
+                        </select>
+                        <input id="listings-filter-search" type="text" placeholder="Пошук по назві або району" class="w-full p-2 border border-gray-300 rounded-lg">
+                        <div class="flex gap-2">
+                            <button type="button" onclick="loadListings()" class="flex-1 rounded-lg bg-blue-600 px-3 py-2 text-white hover:bg-blue-700">Показати</button>
+                            <button type="button" onclick="clearListingFilters()" class="flex-1 rounded-lg bg-gray-200 px-3 py-2 text-gray-700 hover:bg-gray-300">Очистити</button>
                         </div>
                     </div>
 
@@ -409,7 +426,13 @@
         // Load listings
         async function loadListings() {
             try {
-                const res = await fetch(API_BASE + '/listings?limit=50', {
+                const filters = getListingFilters();
+                const params = new URLSearchParams({ limit: '50' });
+                if (filters.city) params.set('city', filters.city);
+                if (filters.status) params.set('status', filters.status);
+                if (filters.search) params.set('search', filters.search);
+
+                const res = await fetch(`${API_BASE}/listings?${params.toString()}`, {
                     headers: getAuthHeaders()
                 });
                 const data = await res.json();
@@ -456,6 +479,21 @@
                 cb.checked = checked;
             });
             syncSelectedListingIds();
+        }
+
+        function getListingFilters() {
+            return {
+                city: document.getElementById('listings-filter-city').value.trim(),
+                status: document.getElementById('listings-filter-status').value.trim(),
+                search: document.getElementById('listings-filter-search').value.trim()
+            };
+        }
+
+        function clearListingFilters() {
+            document.getElementById('listings-filter-city').value = '';
+            document.getElementById('listings-filter-status').value = '';
+            document.getElementById('listings-filter-search').value = '';
+            loadListings();
         }
 
         function syncSelectedListingIds() {
@@ -602,6 +640,37 @@
                 const dl = document.createElement('a');
                 dl.href = URL.createObjectURL(blob);
                 dl.download = 'ua-homes-listings.csv';
+                document.body.appendChild(dl);
+                dl.click();
+                document.body.removeChild(dl);
+                URL.revokeObjectURL(dl.href);
+            } catch (err) {
+                alert('Помилка експорту CSV');
+            }
+        }
+
+        async function exportFilteredListings() {
+            const filters = getListingFilters();
+            const params = new URLSearchParams();
+            if (filters.city) params.set('city', filters.city);
+            if (filters.status) params.set('status', filters.status);
+            if (filters.search) params.set('search', filters.search);
+
+            const query = params.toString();
+            const url = query ? `${API_BASE}/export/csv?${query}` : `${API_BASE}/export/csv`;
+
+            try {
+                const res = await fetch(url, { headers: getAuthHeaders() });
+                if (!res.ok) {
+                    const err = await res.json();
+                    alert(err.error || 'Не вдалося експортувати CSV');
+                    return;
+                }
+
+                const blob = await res.blob();
+                const dl = document.createElement('a');
+                dl.href = URL.createObjectURL(blob);
+                dl.download = 'ua-homes-filtered-listings.csv';
                 document.body.appendChild(dl);
                 dl.click();
                 document.body.removeChild(dl);

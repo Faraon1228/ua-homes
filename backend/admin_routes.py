@@ -125,6 +125,41 @@ def parse_csv_row(row, row_number):
     return listing, None
 
 
+def build_listing_filters(args, allow_ids=False):
+    clauses = []
+    params = []
+
+    if allow_ids:
+        ids_arg = (args.get("listing_ids") or "").strip()
+        if ids_arg:
+            try:
+                ids = [int(item) for item in ids_arg.split(",") if item.strip()]
+            except ValueError:
+                raise ValueError("listing_ids must contain integers")
+            if not ids:
+                raise ValueError("listing_ids cannot be empty")
+            clauses.append(f"id IN ({','.join('?' for _ in ids)})")
+            params.extend(ids)
+            return clauses, params
+
+    city = (args.get("city") or "").strip()
+    status = (args.get("status") or "").strip()
+    search = (args.get("search") or "").strip()
+
+    if city:
+        clauses.append("city = ?")
+        params.append(city)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if search:
+        clauses.append("(title LIKE ? OR district LIKE ?)")
+        term = f"%{search}%"
+        params.extend([term, term])
+
+    return clauses, params
+
+
 # ─── Admin Auth ──────────────────────────────────────────────────────
 
 @admin_bp.route("/auth/register", methods=["POST"])
@@ -277,9 +312,6 @@ def admin_get_listings():
     db = get_db()
     args = request.args
     
-    city = (args.get('city') or '').strip()
-    status = (args.get('status') or '').strip()
-    search = (args.get('search') or '').strip()
     limit = min(int(args.get('limit', 50)), 200)
     offset = max(int(args.get('offset', 0)), 0)
     
@@ -288,31 +320,20 @@ def admin_get_listings():
                created_at, views, e_oselya
         FROM listings WHERE 1=1
     """
-    params = []
-    
-    if city:
-        query += " AND city = ?"
-        params.append(city)
-    if status:
-        query += " AND status = ?"
-        params.append(status)
-    if search:
-        query += " AND (title LIKE ? OR district LIKE ?)"
-        search_term = f"%{search}%"
-        params.extend([search_term, search_term])
+    clauses, params = build_listing_filters(args)
+    for clause in clauses:
+        query += f" AND {clause}"
     
     query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     
     rows = db.execute(query, params).fetchall()
     
-    total = db.execute(
-        "SELECT COUNT(*) FROM listings WHERE 1=1" +
-        (" AND city = ?" if city else "") +
-        (" AND status = ?" if status else "") +
-        (" AND (title LIKE ? OR district LIKE ?)" if search else ""),
-        params[:-2] if len(params) > 2 else params
-    ).fetchone()[0]
+    total_query = "SELECT COUNT(*) FROM listings WHERE 1=1"
+    total_params = list(params[:-2])
+    for clause in clauses:
+        total_query += f" AND {clause}"
+    total = db.execute(total_query, total_params).fetchone()[0]
     
     return jsonify(
         listings=[dict(row) for row in rows],
@@ -717,7 +738,6 @@ def admin_export_csv():
     from app import get_db
 
     db = get_db()
-    ids_arg = (request.args.get("listing_ids") or "").strip()
     params = []
     query = """
         SELECT id, title, city, district, property_type, condition_type,
@@ -726,15 +746,13 @@ def admin_export_csv():
         FROM listings
     """
 
-    if ids_arg:
-        try:
-            ids = [int(item) for item in ids_arg.split(",") if item.strip()]
-        except ValueError:
-            return jsonify(error="listing_ids must contain integers"), 400
-        if not ids:
-            return jsonify(error="listing_ids cannot be empty"), 400
-        query += f" WHERE id IN ({','.join('?' for _ in ids)})"
-        params.extend(ids)
+    try:
+        clauses, params = build_listing_filters(request.args, allow_ids=True)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
 
     query += " ORDER BY created_at DESC"
     rows = db.execute(query, params).fetchall()
