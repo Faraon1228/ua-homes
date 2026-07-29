@@ -8,9 +8,26 @@
   <meta name="apple-mobile-web-app-title" content="UA Homes"/>
   <meta name="theme-color" content="#1e293b"/>
   <meta name="description" content="Пошук нерухомості в Україні. єОселя, іпотека, карта, порівняння."/>
+  <meta name="robots" content="index, follow"/>
+  <link rel="canonical" id="canonical-link" href="__UA_HOMES_PUBLIC_URL__/real-estate-demo.html"/>
+  <link rel="alternate" hreflang="uk-UA" id="alternate-uk-link" href="__UA_HOMES_PUBLIC_URL__/real-estate-demo.html"/>
+  <link rel="alternate" hreflang="x-default" id="alternate-default-link" href="__UA_HOMES_PUBLIC_URL__/real-estate-demo.html"/>
+  <meta property="og:locale" content="uk_UA"/>
+  <meta property="og:type" content="website"/>
+  <meta property="og:site_name" content="UA Homes"/>
+  <meta property="og:title" content="UA Homes — нерухомість в Україні"/>
+  <meta property="og:description" content="Пошук нерухомості в Україні: фільтри, єОселя, карта, порівняння."/>
+  <meta property="og:url" id="og-url-meta" content="__UA_HOMES_PUBLIC_URL__/real-estate-demo.html"/>
+  <meta property="og:image" id="og-image-meta" content="__UA_HOMES_PUBLIC_URL__/favicon.png"/>
+  <meta name="twitter:card" content="summary_large_image"/>
+  <meta name="twitter:title" content="UA Homes — нерухомість в Україні"/>
+  <meta name="twitter:description" content="Пошук нерухомості в Україні: фільтри, єОселя, карта, порівняння."/>
+  <meta name="twitter:image" id="twitter-image-meta" content="__UA_HOMES_PUBLIC_URL__/favicon.png"/>
   <link rel="manifest" href="ua-homes-manifest.json"/>
   <link rel="apple-touch-icon" href="icons/Icon-192.png"/>
   <title>UA Homes — нерухомість в Україні</title>
+  <link rel="preconnect" href="https://cdn.tailwindcss.com"/>
+  <link rel="preconnect" href="https://unpkg.com" crossorigin/>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -53,21 +70,83 @@ const API = (() => {
   const configured = "__UA_HOMES_API__";
   if (configured && configured !== "__UA_HOMES_API__") return configured;
   const h = location.hostname;
+  if (!h || location.protocol === "file:") return "http://localhost:5050";
   if (h === "localhost" || h === "127.0.0.1") return "http://localhost:5050";
   // Same host but different port (e.g. Vercel proxies /api to backend)
   if (!h.includes("192.168") && !h.match(/^\d+\.\d+/)) return `https://${h.replace(/^www\./,'')}`.replace(/\/$/, '') + '/api-backend';
   return `http://${h}:5050`;
 })();
+const PUBLIC_SITE = (() => {
+  if (window.UA_HOMES_PUBLIC_URL) return window.UA_HOMES_PUBLIC_URL.replace(/\/$/, "");
+  const configured = "__UA_HOMES_PUBLIC_URL__";
+  if (configured && configured !== "__UA_HOMES_PUBLIC_URL__") return configured.replace(/\/$/, "");
+  if (location.protocol !== "file:") return location.origin;
+  return API.endsWith("/api-backend") ? API.replace(/\/api-backend$/, "") : API;
+})();
+const SEO_BASE = API.endsWith("/api-backend") ? API.replace(/\/api-backend$/, "") : API;
+const canonicalHref = `${PUBLIC_SITE}/real-estate-demo.html`;
+const canonicalEl = document.getElementById("canonical-link");
+if (canonicalEl) canonicalEl.setAttribute("href", canonicalHref);
+const alternateUkEl = document.getElementById("alternate-uk-link");
+if (alternateUkEl) alternateUkEl.setAttribute("href", canonicalHref);
+const alternateDefaultEl = document.getElementById("alternate-default-link");
+if (alternateDefaultEl) alternateDefaultEl.setAttribute("href", canonicalHref);
+const ogUrlMeta = document.getElementById("og-url-meta");
+if (ogUrlMeta) ogUrlMeta.setAttribute("content", canonicalHref);
+const ogImageMeta = document.getElementById("og-image-meta");
+if (ogImageMeta) ogImageMeta.setAttribute("content", `${PUBLIC_SITE}/favicon.png`);
+const twImageMeta = document.getElementById("twitter-image-meta");
+if (twImageMeta) twImageMeta.setAttribute("content", `${PUBLIC_SITE}/favicon.png`);
+
+const webSiteJsonLd = {
+  "@context":"https://schema.org",
+  "@type":"WebSite",
+  name:"UA Homes",
+  url:PUBLIC_SITE,
+  potentialAction:{
+    "@type":"SearchAction",
+    target:`${PUBLIC_SITE}/real-estate-demo.html?city={city}&district={district}`,
+    "query-input":[
+      "required name=city",
+      "optional name=district"
+    ]
+  }
+};
+const webSiteJsonLdScript = document.createElement("script");
+webSiteJsonLdScript.type = "application/ld+json";
+webSiteJsonLdScript.textContent = JSON.stringify(webSiteJsonLd);
+document.head.appendChild(webSiteJsonLdScript);
+
+const orgJsonLd = {
+  "@context":"https://schema.org",
+  "@type":"Organization",
+  name:"UA Homes",
+  url:PUBLIC_SITE,
+  logo:`${PUBLIC_SITE}/favicon.png`,
+  description:"Платформа для пошуку нерухомості в Україні: квартири, будинки, єОселя.",
+  contactPoint:{
+    "@type":"ContactPoint",
+    contactType:"customer support",
+    availableLanguage:"Ukrainian"
+  },
+  sameAs:["https://t.me/ua_homes","https://facebook.com/ua.homes"]
+};
+const orgJsonLdScript = document.createElement("script");
+orgJsonLdScript.type = "application/ld+json";
+orgJsonLdScript.textContent = JSON.stringify(orgJsonLd);
+document.head.appendChild(orgJsonLdScript);
+
 const TOKEN = "uah.token";
 const SESS  = "uah.session";
 const FP    = "re.";
-const FKEYS = ["cityFilter","typeFilter","onlyEOselya","minPrice","maxPrice","minRooms","maxRooms","minArea","maxArea","sortBy"];
+const FKEYS = ["cityFilter","districtFilter","typeFilter","onlyEOselya","minPrice","maxPrice","minRooms","maxRooms","minArea","maxArea","sortBy"];
 const DEFAULT_SORT  = "price-desc";
 const EOSELYA_SORT  = "price-asc";
 const CITIES    = ["Всі","Київ","Львів","Харків","Одеса","Дніпро","Запоріжжя","Вінниця","Полтава"];
 const PTYPES    = ["Всі","квартира","будинок","комерція","земля"];
 const CONDS     = ["нова будова","вторинка","після ремонту","без ремонту"];
 const MAX_COMPARE = 3;
+const URL_PARAMS = new URLSearchParams(window.location.search);
 
 /* ─── localStorage ─── */
 const ls = {
@@ -76,6 +155,18 @@ const ls = {
   del:(k)=>localStorage.removeItem(k),
 };
 const gf = (key,fb) => {const v=localStorage.getItem(FP+key);return v!==null?v:fb};
+const initFilter = (key, fb, paramName = key) => {
+  const fromUrl = URL_PARAMS.get(paramName);
+  if (fromUrl !== null && fromUrl !== "") return fromUrl;
+  return gf(key, fb);
+};
+const initBoolFilter = (key, fb, paramName = key) => {
+  const fromUrl = URL_PARAMS.get(paramName);
+  if (fromUrl !== null) {
+    return ["1", "true", "yes", "on"].includes(String(fromUrl).toLowerCase());
+  }
+  return gf(key, String(fb)) === "true";
+};
 
 /* ─── API layer ─── */
 const api = async (path,{method="GET",body,token}={}) => {
@@ -94,6 +185,13 @@ const norm = r => ({
   price:r.price, rooms:r.rooms, area:r.area,
   floor:r.floor, totalFloors:r.total_floors, yearBuilt:r.year_built,
   eOselya:Boolean(r.e_oselya), views:r.views||0,
+  status:r.status || "published",
+  source:r.source || "owner",
+  verifiedOwner:Boolean(r.verified_owner),
+  verifiedPhone:Boolean(r.verified_phone),
+  verifiedDocs:Boolean(r.verified_docs),
+  trustScore:Number(r.trust_score || 0),
+  publishedAt:r.published_at || null,
   images:Array.isArray(r.images)?r.images:[],
   latitude:r.latitude, longitude:r.longitude,
   description:r.description||"",
@@ -116,6 +214,31 @@ function Modal({title,onClose,wide,children}){
           <h2 className="text-xl font-black text-slate-900">{title}</h2>
           <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 transition" style={{minHeight:"auto"}}>✕</button>
         </div>
+
+        <div className="mt-6">
+          <div className="mb-2 text-xs font-black uppercase tracking-wide text-slate-500">Схожі пропозиції</div>
+          {recLoading ? (
+            <p className="text-sm text-slate-400">Підбираємо рекомендації…</p>
+          ) : recommendations.length === 0 ? (
+            <p className="text-sm text-slate-400">Наразі схожих оголошень не знайдено.</p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {recommendations.map(item=>(
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={()=>onOpenRecommendation && onOpenRecommendation(item)}
+                  className="rounded-2xl border border-slate-200 bg-white p-3 text-left hover:border-blue-300 hover:bg-blue-50 transition"
+                  style={{minHeight:"auto"}}
+                >
+                  <div className="text-xs text-slate-400">{item.city}, {item.district}</div>
+                  <div className="text-sm font-bold text-slate-800 line-clamp-1">{item.title}</div>
+                  <div className="mt-1 text-sm font-black text-blue-600">${Number(item.price).toLocaleString("uk-UA")}</div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         {children}
       </div>
     </div>
@@ -133,7 +256,7 @@ function PhotoGallery({images,large}){
   const next=()=>setIdx(i=>(i+1)%imgs.length);
   return(
     <div className={`relative overflow-hidden bg-slate-200 ${large?"h-72 sm:h-96":"h-48 sm:h-full"}`}>
-      <img key={idx} src={imgs[idx]} alt="" className={`gallery-img h-full w-full object-cover ${large?"":"group-hover:scale-105"} transition duration-500`}/>
+      <img key={idx} src={imgs[idx]} alt="" loading={idx===0?"eager":"lazy"} className={`gallery-img h-full w-full object-cover ${large?"":"group-hover:scale-105"} transition duration-500`}/>
       {imgs.length>1&&(
         <>
           <button onClick={e=>{e.stopPropagation();prev()}} className="absolute left-2 top-1/2 -translate-y-1/2 flex h-8 w-8 items-center justify-center rounded-full bg-black/50 text-white text-lg hover:bg-black/70 transition" style={{minHeight:"auto"}}>‹</button>
@@ -186,6 +309,7 @@ function MortgageCalcModal({onClose}){
   const [price,setPrice]=useState("100000");
   const [down,setDown]=useState("20");
   const [rate,setRate]=useState("7");
+  const [customRate,setCustomRate]=useState(false);
   const [years,setYears]=useState("20");
 
   const result = useMemo(()=>{
@@ -208,10 +332,11 @@ function MortgageCalcModal({onClose}){
           <div>
             <label className="mb-1 block text-xs font-black uppercase tracking-wide text-slate-500">Ставка, %</label>
             <div className="flex gap-2">
-              <button onClick={()=>setRate("3")} className={`flex-1 rounded-xl py-2 text-sm font-bold transition ${rate==="3"?"bg-blue-600 text-white":"bg-slate-100 text-slate-600 hover:bg-slate-200"}`} style={{minHeight:"auto"}}>3% єОселя</button>
-              <button onClick={()=>setRate("7")} className={`flex-1 rounded-xl py-2 text-sm font-bold transition ${rate==="7"?"bg-blue-600 text-white":"bg-slate-100 text-slate-600 hover:bg-slate-200"}`} style={{minHeight:"auto"}}>7% єОселя</button>
+              <button onClick={()=>{setRate("3");setCustomRate(false)}} className={`flex-1 rounded-xl py-2 text-sm font-bold transition ${rate==="3"&&!customRate?"bg-blue-600 text-white":"bg-slate-100 text-slate-600 hover:bg-slate-200"}`} style={{minHeight:"auto"}}>3% єОселя</button>
+              <button onClick={()=>{setRate("7");setCustomRate(false)}} className={`flex-1 rounded-xl py-2 text-sm font-bold transition ${rate==="7"&&!customRate?"bg-blue-600 text-white":"bg-slate-100 text-slate-600 hover:bg-slate-200"}`} style={{minHeight:"auto"}}>7% єОселя</button>
+              <button onClick={()=>{setCustomRate(true);if(rate==="3"||rate==="7")setRate("10")}} className={`rounded-xl px-3 py-2 text-sm font-bold transition ${customRate?"bg-slate-700 text-white":"bg-slate-100 text-slate-600 hover:bg-slate-200"}`} style={{minHeight:"auto"}}>Своя</button>
             </div>
-            <input type="number" step="0.1" value={rate} onChange={e=>setRate(e.target.value)} className={`mt-2 ${fi}`}/>
+            {customRate&&<input type="number" step="0.1" min="0.1" value={rate} onChange={e=>setRate(e.target.value)} className={`mt-2 ${fi}`}/>}
           </div>
           <div><label className="mb-1 block text-xs font-black uppercase tracking-wide text-slate-500">Строк, років</label><select value={years} onChange={e=>setYears(e.target.value)} className={fi}>{[5,10,15,20,25,30].map(y=><option key={y}>{y}</option>)}</select></div>
         </div>
@@ -310,14 +435,27 @@ function CompareModal({items,onClose}){
 }
 
 /* ─── PROPERTY DETAIL MODAL ─── */
-function PropertyDetailModal({property,currentUser,token,onClose,onDelete,onReviewAdded}){
+function PropertyDetailModal({property,currentUser,token,onClose,onDelete,onReviewAdded,onOpenRecommendation}){
   const [reviews,setReviews]=useState(property.reviews||[]);
   const [rating,setRating]=useState(0);
   const [comment,setComment]=useState("");
   const [submitting,setSubmitting]=useState(false);
   const [revErr,setRevErr]=useState("");
+  const [recommendations,setRecommendations]=useState([]);
+  const [recLoading,setRecLoading]=useState(true);
+  const [alertState,setAlertState]=useState({loading:false,message:"",error:""});
 
   const avgRating = reviews.length ? (reviews.reduce((s,r)=>s+r.rating,0)/reviews.length).toFixed(1) : null;
+
+  useEffect(()=>{
+    let alive=true;
+    setRecLoading(true);
+    api(`/api/recommendations?listing_id=${property.id}&limit=4`)
+      .then(res=>{ if(alive) setRecommendations((res.recommendations||[]).map(norm)); })
+      .catch(()=>{ if(alive) setRecommendations([]); })
+      .finally(()=>{ if(alive) setRecLoading(false); });
+    return()=>{alive=false};
+  },[property.id]);
 
   const submitReview = async e => {
     e.preventDefault();
@@ -330,6 +468,37 @@ function PropertyDetailModal({property,currentUser,token,onClose,onDelete,onRevi
       setRating(0);setComment("");
     }catch(err){setRevErr(err.error||"Помилка")}
     finally{setSubmitting(false);}
+  };
+
+  const createAlert = async () => {
+    setAlertState({loading:true,message:"",error:""});
+    const payload = {
+      name: `Схожі: ${property.city}, ${property.propertyType}`,
+      city: property.city,
+      district: property.district,
+      type: property.propertyType,
+      minPrice: Math.max(1, Math.round(property.price * 0.85)),
+      maxPrice: Math.round(property.price * 1.15),
+      minRooms: Math.max(0, property.rooms - 1),
+      maxRooms: property.rooms + 1,
+      eOselya: property.eOselya
+    };
+
+    if (!currentUser) {
+      const email = window.prompt("Вкажіть email для алертів");
+      if (!email) {
+        setAlertState({loading:false,message:"",error:"Алерт скасовано"});
+        return;
+      }
+      payload.email = email;
+    }
+
+    try {
+      await api("/api/alerts", { method:"POST", token, body:payload });
+      setAlertState({loading:false,message:"Алерт збережено. Нові схожі об'єкти надійдуть на email.",error:""});
+    } catch (err) {
+      setAlertState({loading:false,message:"",error:err.error||"Не вдалося створити алерт"});
+    }
   };
 
   return(
@@ -354,6 +523,8 @@ function PropertyDetailModal({property,currentUser,token,onClose,onDelete,onRevi
                 ["Рік будівлі",property.yearBuilt||"—"],
                 ["Перегляди","👁 "+property.views],
                 ["Продавець",property.ownerName||property.ownerEmail],
+                ["Джерело",property.source||"owner"],
+                ["Довіра",`${property.trustScore||0}/100`],
               ].map(([k,v])=>(
                 <tr key={k} className="border-t border-slate-100">
                   <td className="py-1.5 text-xs font-bold uppercase tracking-wide text-slate-400">{k}</td>
@@ -362,6 +533,19 @@ function PropertyDetailModal({property,currentUser,token,onClose,onDelete,onRevi
               ))}
             </tbody>
           </table>
+          <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
+            <div className="text-xs font-black uppercase tracking-wide text-emerald-700">Верифікація</div>
+            <div className="mt-2 flex flex-wrap gap-2 text-xs">
+              <span className={`rounded-full px-2.5 py-1 font-semibold ${property.verifiedOwner?"bg-emerald-100 text-emerald-700":"bg-slate-100 text-slate-500"}`}>Власник {property.verifiedOwner?"✓":"—"}</span>
+              <span className={`rounded-full px-2.5 py-1 font-semibold ${property.verifiedPhone?"bg-emerald-100 text-emerald-700":"bg-slate-100 text-slate-500"}`}>Телефон {property.verifiedPhone?"✓":"—"}</span>
+              <span className={`rounded-full px-2.5 py-1 font-semibold ${property.verifiedDocs?"bg-emerald-100 text-emerald-700":"bg-slate-100 text-slate-500"}`}>Документи {property.verifiedDocs?"✓":"—"}</span>
+            </div>
+            <button onClick={createAlert} disabled={alertState.loading} className="mt-3 min-h-[40px] rounded-2xl bg-emerald-600 px-4 text-xs font-bold text-white hover:bg-emerald-700 transition disabled:opacity-60">
+              {alertState.loading?"Збереження…":"Алерт на схожі оголошення"}
+            </button>
+            {alertState.message&&<p className="mt-2 text-xs text-emerald-700">{alertState.message}</p>}
+            {alertState.error&&<p className="mt-2 text-xs text-red-600">{alertState.error}</p>}
+          </div>
         </div>
         <div>
           <div className="text-xs font-black uppercase tracking-wide text-slate-400 mb-2">Локація</div>
@@ -565,6 +749,11 @@ function AnalyticsSection({stats}){
 /* ─── PROPERTY CARD ─── */
 function PropertyCard({property,currentUser,onDelete,onDetail,onCompare,isCompared}){
   const isOwner=currentUser&&currentUser.email===property.ownerEmail;
+  const trustBadges = [
+    property.verifiedOwner && "Власник",
+    property.verifiedPhone && "Телефон",
+    property.verifiedDocs && "Документи",
+  ].filter(Boolean);
   return(
     <article className="group overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg cursor-pointer" onClick={()=>onDetail(property)}>
       <div className="grid gap-0 sm:grid-cols-[0.9fr_1.1fr]">
@@ -573,6 +762,7 @@ function PropertyCard({property,currentUser,onDelete,onDetail,onCompare,isCompar
           <div className="absolute left-3 top-3 flex flex-wrap gap-1.5" onClick={e=>e.stopPropagation()}>
             {property.eOselya&&<span className="rounded-full bg-blue-600 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-white">єОселя</span>}
             {property.propertyType!=="квартира"&&<span className="rounded-full bg-amber-400 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-slate-900">{property.propertyType}</span>}
+            {trustBadges.length>0&&<span className="rounded-full bg-emerald-500 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-white">Верифіковано</span>}
           </div>
           {isOwner&&(
             <button onClick={e=>{e.stopPropagation();onDelete(property)}} className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full bg-white/90 text-red-500 shadow hover:bg-red-600 hover:text-white transition" style={{minHeight:"auto"}} title="Видалити">✕</button>
@@ -590,6 +780,7 @@ function PropertyCard({property,currentUser,onDelete,onDetail,onCompare,isCompar
             </div>
             <div className="mt-1.5 text-xs text-slate-400 flex items-center gap-2">
               <span>👁 {property.views}</span>
+              {property.publishedAt&&<span>🕒 {String(property.publishedAt).slice(0,10)}</span>}
               <span className={`font-medium ${{"нова будова":"text-green-600","вторинка":"text-slate-500","після ремонту":"text-blue-500","без ремонту":"text-orange-500"}[property.conditionType]||""}`}>{property.conditionType}</span>
             </div>
           </div>
@@ -667,22 +858,23 @@ function App(){
   const compareItems = useMemo(()=>listings.filter(l=>compareIds.includes(l.id)),[listings,compareIds]);
 
   /* ── filters ── */
-  const [cityFilter,setCityFilter]     = useState(()=>gf("cityFilter","Всі"));
-  const [typeFilter,setTypeFilter]     = useState(()=>gf("typeFilter","Всі"));
-  const [onlyEO,setOnlyEO]             = useState(()=>gf("onlyEOselya","false")==="true");
-  const [minP,setMinP]                 = useState(()=>gf("minPrice",""));
-  const [maxP,setMaxP]                 = useState(()=>gf("maxPrice",""));
-  const [minR,setMinR]                 = useState(()=>gf("minRooms",""));
-  const [maxR,setMaxR]                 = useState(()=>gf("maxRooms",""));
-  const [minA,setMinA]                 = useState(()=>gf("minArea",""));
-  const [maxA,setMaxA]                 = useState(()=>gf("maxArea",""));
-  const [sortBy,setSortBy]             = useState(()=>gf("sortBy",DEFAULT_SORT));
+  const [cityFilter,setCityFilter]     = useState(()=>initFilter("cityFilter","Всі","city"));
+  const [districtFilter,setDistrictFilter] = useState(()=>initFilter("districtFilter","","district"));
+  const [typeFilter,setTypeFilter]     = useState(()=>initFilter("typeFilter","Всі","type"));
+  const [onlyEO,setOnlyEO]             = useState(()=>initBoolFilter("onlyEOselya",false,"eOselya"));
+  const [minP,setMinP]                 = useState(()=>initFilter("minPrice","","minPrice"));
+  const [maxP,setMaxP]                 = useState(()=>initFilter("maxPrice","","maxPrice"));
+  const [minR,setMinR]                 = useState(()=>initFilter("minRooms","","minRooms"));
+  const [maxR,setMaxR]                 = useState(()=>initFilter("maxRooms","","maxRooms"));
+  const [minA,setMinA]                 = useState(()=>initFilter("minArea","","minArea"));
+  const [maxA,setMaxA]                 = useState(()=>initFilter("maxArea","","maxArea"));
+  const [sortBy,setSortBy]             = useState(()=>initFilter("sortBy",DEFAULT_SORT,"sort"));
 
   /* ── fetch listings ── */
   const fetchListings = useCallback(async()=>{
     setLoading(true);setLoadErr(null);
     try{
-      const res = await api("/api/listings");
+      const res = await api("/api/listings?status=published&limit=200&sort=newest");
       setListings(res.listings.map(norm));
     }catch{setLoadErr("Не вдалося завантажити. Переконайтесь що сервер запущено.")}
     finally{setLoading(false);}
@@ -701,14 +893,15 @@ function App(){
 
   /* ── persist filters ── */
   useEffect(()=>{
-    const m={cityFilter,typeFilter,onlyEOselya:String(onlyEO),minPrice:minP,maxPrice:maxP,minRooms:minR,maxRooms:maxR,minArea:minA,maxArea:maxA,sortBy};
+    const m={cityFilter,districtFilter,typeFilter,onlyEOselya:String(onlyEO),minPrice:minP,maxPrice:maxP,minRooms:minR,maxRooms:maxR,minArea:minA,maxArea:maxA,sortBy};
     FKEYS.forEach(k=>localStorage.setItem(FP+k,m[k]));
-  },[cityFilter,typeFilter,onlyEO,minP,maxP,minR,maxR,minA,maxA,sortBy]);
+  },[cityFilter,districtFilter,typeFilter,onlyEO,minP,maxP,minR,maxR,minA,maxA,sortBy]);
 
   /* ── filtered + sorted ── */
   const filtered = useMemo(()=>{
     const f=listings.filter(p=>{
       if(cityFilter!=="Всі"&&p.city!==cityFilter) return false;
+      if(districtFilter&&!(p.district||"").toLowerCase().includes(districtFilter.toLowerCase())) return false;
       if(typeFilter!=="Всі"&&p.propertyType!==typeFilter) return false;
       if(onlyEO&&!p.eOselya) return false;
       if(minP!==""&&p.price<Number(minP)) return false;
@@ -727,7 +920,31 @@ function App(){
       if(sortBy==="views-desc") return b.views-a.views;
       return 0;
     });
-  },[listings,cityFilter,typeFilter,onlyEO,minP,maxP,minR,maxR,minA,maxA,sortBy]);
+  },[listings,cityFilter,districtFilter,typeFilter,onlyEO,minP,maxP,minR,maxR,minA,maxA,sortBy]);
+
+  const filterSummary = useMemo(()=>{
+    if(!filtered.length) return {avgPrice:0, eoCount:0, pricePerSqm:0};
+    const totalPrice = filtered.reduce((sum,p)=>sum + Number(p.price || 0), 0);
+    const totalArea = filtered.reduce((sum,p)=>sum + Number(p.area || 0), 0);
+    return {
+      avgPrice: Math.round(totalPrice / filtered.length),
+      eoCount: filtered.filter(p=>p.eOselya).length,
+      pricePerSqm: totalArea ? Math.round(totalPrice / totalArea) : 0
+    };
+  },[filtered]);
+
+  const activeFilters = [
+    cityFilter!=="Всі" && {label:`Місто: ${cityFilter}`, clear:()=>setCityFilter("Всі")},
+    districtFilter && {label:`Район: ${districtFilter}`, clear:()=>setDistrictFilter("")},
+    typeFilter!=="Всі" && {label:`Тип: ${typeFilter}`, clear:()=>setTypeFilter("Всі")},
+    onlyEO && {label:"єОселя", clear:()=>setOnlyEO(false)},
+    minP && {label:`Ціна від $${Number(minP).toLocaleString("uk-UA")}`, clear:()=>setMinP("")},
+    maxP && {label:`Ціна до $${Number(maxP).toLocaleString("uk-UA")}`, clear:()=>setMaxP("")},
+    minR && {label:`Кімнат від ${minR}`, clear:()=>setMinR("")},
+    maxR && {label:`Кімнат до ${maxR}`, clear:()=>setMaxR("")},
+    minA && {label:`Площа від ${minA} м²`, clear:()=>setMinA("")},
+    maxA && {label:`Площа до ${maxA} м²`, clear:()=>setMaxA("")},
+  ].filter(Boolean);
 
   /* ── handlers ── */
   const handleAuth=(newToken,newUser)=>{localStorage.setItem(TOKEN,newToken);ls.set(SESS,newUser);setToken(newToken);setUser(newUser);setShowAuth(false)};
@@ -755,7 +972,7 @@ function App(){
       return [...prev,p.id];
     });
   };
-  const resetFilters=()=>{setCityFilter("Всі");setTypeFilter("Всі");setOnlyEO(false);setMinP("");setMaxP("");setMinR("");setMaxR("");setMinA("");setMaxA("");setSortBy(DEFAULT_SORT)};
+  const resetFilters=()=>{setCityFilter("Всі");setDistrictFilter("");setTypeFilter("Всі");setOnlyEO(false);setMinP("");setMaxP("");setMinR("");setMaxR("");setMinA("");setMaxA("");setSortBy(DEFAULT_SORT)};
   const clearSaved=()=>{FKEYS.forEach(k=>localStorage.removeItem(FP+k));resetFilters()};
 
   const FC="min-h-[48px] rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm outline-none transition focus:border-blue-500 focus:bg-white";
@@ -804,6 +1021,20 @@ function App(){
                 <button onClick={()=>setShowMortgage(true)} className="min-h-[40px] rounded-2xl bg-white/15 border border-white/25 px-4 text-sm font-bold backdrop-blur hover:bg-white/25 transition">🏦 Калькулятор іпотеки</button>
                 <button onClick={()=>setShowSafety(true)} className="min-h-[40px] rounded-2xl bg-white/15 border border-white/25 px-4 text-sm font-bold backdrop-blur hover:bg-white/25 transition">✅ Чек-лист документів</button>
               </div>
+              <div className="mt-4">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-300">SEO сторінки міст</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {CITIES.filter(c=>c!=="Всі").slice(0,7).map(city=>(
+                    <a
+                      key={city}
+                      href={`${SEO_BASE}/seo/${encodeURIComponent(city)}`}
+                      className="rounded-full border border-white/20 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/20 transition"
+                    >
+                      {city}
+                    </a>
+                  ))}
+                </div>
+              </div>
             </div>
             {stats&&(
               <div className="flex gap-4 flex-wrap">
@@ -833,6 +1064,10 @@ function App(){
                 <select value={typeFilter} onChange={e=>setTypeFilter(e.target.value)} className={`w-full ${FC} font-semibold`}>
                   {PTYPES.map(t=><option key={t} value={t}>{t==="Всі"?"Всі типи":t}</option>)}
                 </select>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-black uppercase tracking-wide text-slate-400">Район</label>
+                <input type="text" placeholder="Пошук району" value={districtFilter} onChange={e=>setDistrictFilter(e.target.value)} className={FC}/>
               </div>
               <div>
                 <label className="mb-1.5 block text-xs font-black uppercase tracking-wide text-slate-400">Ціна, $</label>
@@ -873,6 +1108,20 @@ function App(){
                 <div className="mt-1 text-4xl font-black">{filtered.length}</div>
                 <div className="mt-1 text-sm text-slate-300">пропозицій</div>
               </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-2xl bg-white/10 p-3">
+                  <div className="text-[11px] uppercase tracking-wide text-slate-400">Середня ціна</div>
+                  <div className="mt-1 text-sm font-black">${filterSummary.avgPrice.toLocaleString("uk-UA") || "0"}</div>
+                </div>
+                <div className="rounded-2xl bg-white/10 p-3">
+                  <div className="text-[11px] uppercase tracking-wide text-slate-400">єОселя</div>
+                  <div className="mt-1 text-sm font-black">{filterSummary.eoCount}</div>
+                </div>
+                <div className="rounded-2xl bg-white/10 p-3">
+                  <div className="text-[11px] uppercase tracking-wide text-slate-400">$/м²</div>
+                  <div className="mt-1 text-sm font-black">{filterSummary.pricePerSqm ? `$${filterSummary.pricePerSqm.toLocaleString("uk-UA")}` : "—"}</div>
+                </div>
+              </div>
               <label className="flex cursor-pointer items-center gap-3">
                 <input type="checkbox" checked={onlyEO} onChange={e=>setOnlyEO(e.target.checked)} className="h-5 w-5"/>
                 <span className="text-sm font-semibold">Тільки <span className="text-blue-400">єОселя</span></span>
@@ -884,6 +1133,30 @@ function App(){
             </div>
           </div>
         </section>
+
+        {!!activeFilters.length && (
+          <section className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <div className="text-xs font-black uppercase tracking-wide text-slate-400">Активні фільтри</div>
+                <p className="text-sm text-slate-500">Швидко вимикайте окремі умови або скиньте все одним кліком.</p>
+              </div>
+              <button onClick={resetFilters} className="min-h-[44px] rounded-2xl border border-slate-200 px-4 text-sm font-bold text-slate-600 hover:bg-slate-50 transition">Скинути все</button>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {activeFilters.map(item=>(
+                <button
+                  key={item.label}
+                  onClick={item.clear}
+                  className="min-h-[40px] rounded-full bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition"
+                  style={{minHeight:"auto"}}
+                >
+                  {item.label} <span className="ml-1 text-slate-400">✕</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* ── Listings + Sidebar ── */}
         <div className="grid gap-6 lg:grid-cols-[1.35fr_0.65fr]">
@@ -943,7 +1216,7 @@ function App(){
       {showAuth&&<AuthModal onClose={()=>setShowAuth(false)} onAuth={handleAuth}/>}
       {showAddListing&&<AddListingModal onClose={()=>setShowAddListing(false)} onSave={handleSave} token={token}/>}
       {deleteTarget&&<DeleteModal title={deleteTarget.title} onClose={()=>setDeleteTarget(null)} onConfirm={handleDeleteConfirm}/>}
-      {detailProp&&<PropertyDetailModal property={detailProp} currentUser={user} token={token} onClose={()=>setDetailProp(null)} onDelete={setDeleteTarget} onReviewAdded={()=>{}}/>}
+      {detailProp&&<PropertyDetailModal property={detailProp} currentUser={user} token={token} onClose={()=>setDetailProp(null)} onDelete={setDeleteTarget} onReviewAdded={()=>{}} onOpenRecommendation={handleDetail}/>}
       {showMortgage&&<MortgageCalcModal onClose={()=>setShowMortgage(false)}/>}
       {showSafety&&<SafetyModal onClose={()=>setShowSafety(false)}/>}
       {showCompareModal&&compareItems.length>=2&&<CompareModal items={compareItems} onClose={()=>setShowCompareModal(false)}/>}

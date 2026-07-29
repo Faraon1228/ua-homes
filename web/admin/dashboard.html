@@ -110,6 +110,9 @@
                     <div class="mb-6 flex justify-between items-center">
                         <h2 class="text-2xl font-bold">Управління нерухомістю</h2>
                         <div class="flex gap-2 flex-wrap justify-end">
+                            <button onclick="selectAllFilteredListings()" class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600">
+                                <i class="fas fa-check-double mr-2"></i>Оберіть усі відфільтровані
+                            </button>
                             <button onclick="exportFilteredListings()" class="bg-slate-700 text-white px-4 py-2 rounded-lg hover:bg-slate-800">
                                 <i class="fas fa-file-export mr-2"></i>Експорт
                             </button>
@@ -396,6 +399,26 @@
                 loadModeration();
             } else if (page === 'reports') {
                 loadReports();
+            }
+        }
+
+        async function selectAllFilteredListings() {
+            try {
+                const filters = getListingFilters();
+                const params = new URLSearchParams({ limit: '200' });
+                if (filters.city) params.set('city', filters.city);
+                if (filters.status) params.set('status', filters.status);
+                if (filters.search) params.set('search', filters.search);
+
+                const res = await fetch(`${API_BASE}/listings?${params.toString()}`, {
+                    headers: getAuthHeaders()
+                });
+                const data = await res.json();
+                const ids = (data.listings || []).map(item => Number(item.id));
+                selectedListingIds = new Set(ids);
+                renderSelectedListingCheckboxes();
+            } catch (err) {
+                alert('Помилка вибору відфільтрованих оголошень');
             }
         }
 
@@ -877,6 +900,37 @@
             return { headers, rows };
         }
 
+        function validateCsvPreviewRow(row, rowNumber) {
+            const required = ['title', 'city', 'district', 'price', 'rooms', 'area'];
+            const errors = [];
+            required.forEach(field => {
+                if (!String(row[field] || '').trim()) errors.push(`Missing ${field}`);
+            });
+
+            const numericFields = [
+                ['price', v => Number(v) > 0, 'Price must be > 0'],
+                ['rooms', v => Number(v) >= 0, 'Rooms must be >= 0'],
+                ['area', v => Number(v) > 0, 'Area must be > 0'],
+                ['floor', v => v === '' || Number(v) >= 1, 'Floor must be >= 1'],
+                ['total_floors', v => v === '' || Number(v) >= 1, 'Total floors must be >= 1']
+            ];
+
+            numericFields.forEach(([field, test, message]) => {
+                const value = row[field];
+                if (String(value || '').trim() && !test(value)) errors.push(message);
+            });
+
+            const status = String(row.status || '').trim();
+            if (status && !['draft', 'published', 'pending', 'rejected', 'archived'].includes(status)) {
+                errors.push('Invalid status');
+            }
+
+            return {
+                rowNumber,
+                errors
+            };
+        }
+
         function renderCsvPreview() {
             const message = document.getElementById('csv-preview-message');
             const table = document.getElementById('csv-preview-table');
@@ -895,10 +949,17 @@
             const missingHeaders = required.filter(field => !csvPreviewHeaders.includes(field));
             const previewRows = csvPreviewRows.slice(0, 5);
 
-            head.innerHTML = `<tr>${csvPreviewHeaders.map(h => `<th class="px-3 py-2 text-left text-xs font-bold uppercase tracking-wide ${required.includes(h) ? 'text-slate-700' : 'text-slate-500'}">${h}</th>`).join('')}</tr>`;
-            body.innerHTML = previewRows.map(row => {
-                const missing = required.filter(field => !String(row[field] || '').trim());
-                return `<tr class="${missing.length ? 'bg-red-50' : ''}">${csvPreviewHeaders.map(header => `<td class="px-3 py-2 text-xs">${String(row[header] || '')}</td>`).join('')}</tr>`;
+            head.innerHTML = `<tr>${['#', ...csvPreviewHeaders, 'errors'].map(h => `<th class="px-3 py-2 text-left text-xs font-bold uppercase tracking-wide ${required.includes(h) ? 'text-slate-700' : 'text-slate-500'}">${h}</th>`).join('')}</tr>`;
+            body.innerHTML = previewRows.map((row, index) => {
+                const validation = validateCsvPreviewRow(row, index + 2);
+                const rowErrors = validation.errors;
+                return `<tr class="${rowErrors.length ? 'bg-red-50' : ''}">
+                    <td class="px-3 py-2 text-xs font-semibold">${index + 2}</td>
+                    ${csvPreviewHeaders.map(header => `<td class="px-3 py-2 text-xs">${String(row[header] || '')}</td>`).join('')}
+                    <td class="px-3 py-2 text-xs ${rowErrors.length ? 'text-red-700 font-semibold' : 'text-green-700'}">
+                        ${rowErrors.length ? rowErrors.join('; ') : 'OK'}
+                    </td>
+                </tr>`;
             }).join('');
 
             table.classList.remove('hidden');
@@ -1038,6 +1099,19 @@
 
         function getSelectedModerationIds() {
             return Array.from(document.querySelectorAll('.moderation-item-checkbox:checked')).map(cb => Number(cb.value));
+        }
+
+        function renderSelectedListingCheckboxes() {
+            document.querySelectorAll('.listing-select-checkbox').forEach(cb => {
+                cb.checked = selectedListingIds.has(Number(cb.value));
+            });
+            const total = document.querySelectorAll('.listing-select-checkbox').length;
+            const selected = selectedListingIds.size;
+            const selectAll = document.getElementById('listings-select-all');
+            if (selectAll) {
+                selectAll.checked = total > 0 && selected === total;
+                selectAll.indeterminate = selected > 0 && selected < total;
+            }
         }
 
         async function moderateListing(id, action) {

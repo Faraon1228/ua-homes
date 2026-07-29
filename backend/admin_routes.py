@@ -492,6 +492,8 @@ def admin_delete_listing(listing_id):
 @require_auth_admin
 def admin_duplicate_listing(listing_id):
     from app import get_db
+    import os
+    import shutil
 
     db = get_db()
     source = db.execute(
@@ -549,10 +551,24 @@ def admin_duplicate_listing(listing_id):
         'SELECT image_url, "order" as image_order FROM listing_images WHERE listing_id = ? ORDER BY "order"',
         (listing_id,)
     ).fetchall()
+    new_image_rows = []
     for image in images:
+        image_url = image["image_url"]
+        if image_url.startswith("/images/listings/"):
+            source_path = os.path.join("web", image_url.lstrip("/"))
+            filename = os.path.basename(source_path)
+            target_dir = os.path.join("web", "images", "listings", str(new_listing_id))
+            os.makedirs(target_dir, exist_ok=True)
+            target_path = os.path.join(target_dir, filename)
+            if os.path.exists(source_path):
+                shutil.copy2(source_path, target_path)
+                image_url = f"/images/listings/{new_listing_id}/{filename}"
+        new_image_rows.append((new_listing_id, image_url, image["image_order"]))
+
+    for row in new_image_rows:
         db.execute(
             "INSERT INTO listing_images (listing_id, image_url, 'order') VALUES (?, ?, ?)",
-            (new_listing_id, image["image_url"], image["image_order"])
+            row
         )
 
     db.commit()

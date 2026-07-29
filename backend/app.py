@@ -8,11 +8,13 @@ import re
 import sqlite3
 import secrets
 import datetime
+from html import escape
 from functools import wraps
+from urllib.parse import quote, urlencode
 
 import bcrypt
 import jwt
-from flask import Flask, g, jsonify, request
+from flask import Flask, Response, g, jsonify, request
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -37,6 +39,8 @@ limiter = Limiter(
     default_limits=["300 per minute"],
     storage_uri="memory://",
 )
+
+PUBLIC_SITE_URL = os.environ.get("UA_HOMES_PUBLIC_URL", "").strip().rstrip("/")
 
 # ─── Database ────────────────────────────────────────────────────────────────
 
@@ -173,6 +177,11 @@ def init_db():
             views          INTEGER NOT NULL DEFAULT 0,
             images         TEXT    NOT NULL DEFAULT '[]',
             status         TEXT    NOT NULL DEFAULT 'draft',
+            source         TEXT    NOT NULL DEFAULT 'owner',
+            verified_owner INTEGER NOT NULL DEFAULT 0,
+            verified_phone INTEGER NOT NULL DEFAULT 0,
+            verified_docs  INTEGER NOT NULL DEFAULT 0,
+            published_at   TEXT,
             latitude       REAL,
             longitude      REAL,
             description    TEXT    NOT NULL DEFAULT '',
@@ -214,7 +223,37 @@ def init_db():
         
         CREATE INDEX IF NOT EXISTS idx_listing_images ON listing_images(listing_id);
         CREATE INDEX IF NOT EXISTS idx_moderation_log ON moderation_log(listing_id);
+
+        CREATE TABLE IF NOT EXISTS listing_alerts (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id      INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            email        TEXT    NOT NULL,
+            name         TEXT,
+            filters      TEXT    NOT NULL,
+            is_active    INTEGER NOT NULL DEFAULT 1,
+            last_sent_at TEXT,
+            created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_alerts_user ON listing_alerts(user_id);
+        CREATE INDEX IF NOT EXISTS idx_listing_alerts_email ON listing_alerts(email);
     """)
+
+    # Backward-compatible migration for existing databases.
+    listing_columns = {
+        row[1] for row in db.execute("PRAGMA table_info(listings)").fetchall()
+    }
+    if "source" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN source TEXT NOT NULL DEFAULT 'owner'")
+    if "verified_owner" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN verified_owner INTEGER NOT NULL DEFAULT 0")
+    if "verified_phone" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN verified_phone INTEGER NOT NULL DEFAULT 0")
+    if "verified_docs" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN verified_docs INTEGER NOT NULL DEFAULT 0")
+    if "published_at" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN published_at TEXT")
+
+    db.execute("UPDATE listings SET source = COALESCE(NULLIF(source, ''), 'owner')")
     db.commit()
 
     if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
@@ -227,11 +266,28 @@ def init_db():
         db.executemany(
             """INSERT INTO listings
                (user_id,title,city,district,property_type,condition_type,price,rooms,area,
-                floor,total_floors,year_built,e_oselya,images,description,latitude,longitude)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                floor,total_floors,year_built,e_oselya,images,description,latitude,longitude,
+                status,published_at,verified_owner,verified_phone,verified_docs,source)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',datetime('now'),1,1,1,'seed')""",
             [(demo_id, *row) for row in SEED_LISTINGS],
         )
         db.commit()
+
+    # Ensure seed/demo rows are publicly visible after migrations.
+    db.execute(
+        """
+        UPDATE listings
+        SET status = 'published',
+            published_at = COALESCE(published_at, created_at),
+            verified_owner = 1,
+            verified_phone = 1,
+            verified_docs = 1,
+            source = COALESCE(NULLIF(source, ''), 'seed')
+        WHERE user_id IN (SELECT id FROM users WHERE email = ?)
+        """,
+        ("demo@ua-homes.com",),
+    )
+    db.commit()
 
     db.close()
 
@@ -306,7 +362,48 @@ def pos_float(val) -> float | None:
 def _row_to_listing(r) -> dict:
     d = dict(r)
     d["images"] = json.loads(d.get("images") or "[]")
+    d["verified_owner"] = bool(d.get("verified_owner"))
+    d["verified_phone"] = bool(d.get("verified_phone"))
+    d["verified_docs"] = bool(d.get("verified_docs"))
+    trust_score = (
+        (40 if d["verified_owner"] else 0)
+        + (30 if d["verified_phone"] else 0)
+        + (30 if d["verified_docs"] else 0)
+    )
+    d["trust_score"] = trust_score
     return d
+
+
+def public_base_url() -> str:
+    if PUBLIC_SITE_URL:
+        return PUBLIC_SITE_URL
+    return request.url_root.rstrip("/")
+
+
+def _seo_landing_stats(db: sqlite3.Connection, limit: int = 8):
+    city_rows = db.execute(
+        """
+        SELECT city, COUNT(*) as cnt, ROUND(AVG(price)) as avg_price
+        FROM listings
+        WHERE status = 'published'
+        GROUP BY city
+        ORDER BY cnt DESC, city ASC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    district_rows = db.execute(
+        """
+        SELECT city, district, COUNT(*) as cnt, ROUND(AVG(price)) as avg_price
+        FROM listings
+        WHERE status = 'published'
+        GROUP BY city, district
+        ORDER BY cnt DESC, city ASC, district ASC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return city_rows, district_rows
 
 
 # ─── Routes: Auth ─────────────────────────────────────────────────────────────
@@ -392,7 +489,8 @@ LISTING_SELECT = """
     SELECT l.id, l.title, l.city, l.district, l.property_type, l.condition_type,
            l.price, l.rooms, l.area, l.floor, l.total_floors, l.year_built,
            l.e_oselya, l.views, l.images, l.latitude, l.longitude, l.description,
-           l.created_at, u.name AS owner_name, u.email AS owner_email
+           l.status, l.source, l.verified_owner, l.verified_phone, l.verified_docs,
+           l.published_at, l.created_at, u.name AS owner_name, u.email AS owner_email
     FROM   listings l
     JOIN   users u ON u.id = l.user_id
 """
@@ -412,15 +510,28 @@ def get_listings():
     min_area      = pos_float(args.get("minArea"))
     max_area      = pos_float(args.get("maxArea"))
     e_oselya      = args.get("eOselya") == "1"
+    district      = strip(args.get("district", ""), 100)
+    search        = strip(args.get("search", ""), 120)
+    status        = strip(args.get("status", "published"), 20).lower()
+    limit         = nonneg_int(args.get("limit")) or 60
+    offset        = nonneg_int(args.get("offset")) or 0
+    limit         = min(max(limit, 1), 200)
     sort_key      = args.get("sort", "newest")
     order_by      = ALLOWED_SORT.get(sort_key, ALLOWED_SORT["newest"])
 
     query  = LISTING_SELECT + " WHERE 1=1"
     params: list = []
 
+    if status and status != "all":
+        query += " AND l.status = ?"
+        params.append(status)
+
     if city:
         query += " AND l.city = ?"
         params.append(city)
+    if district:
+        query += " AND l.district = ?"
+        params.append(district)
     if prop_type:
         query += " AND l.property_type = ?"
         params.append(prop_type)
@@ -444,11 +555,25 @@ def get_listings():
         params.append(max_area)
     if e_oselya:
         query += " AND l.e_oselya = 1"
+    if search:
+        query += " AND (l.title LIKE ? OR l.city LIKE ? OR l.district LIKE ? OR l.description LIKE ?)"
+        token = f"%{search}%"
+        params.extend([token, token, token, token])
 
-    query += f" ORDER BY {order_by} LIMIT 200"
+    count_query = f"SELECT COUNT(*) FROM ({query})"
+    total = db.execute(count_query, params).fetchone()[0]
+    query += f" ORDER BY {order_by} LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
 
     rows = db.execute(query, params).fetchall()
-    return jsonify(listings=[_row_to_listing(r) for r in rows])
+    listings = [_row_to_listing(r) for r in rows]
+    return jsonify(
+        listings=listings,
+        total=total,
+        limit=limit,
+        offset=offset,
+        has_more=(offset + len(listings)) < total,
+    )
 
 
 @app.route("/api/listings/<int:lid>", methods=["GET"])
@@ -563,8 +688,9 @@ def create_listing():
     cur = db.execute(
         """INSERT INTO listings
            (user_id,title,city,district,property_type,condition_type,price,rooms,area,
-            floor,total_floors,year_built,e_oselya,images,latitude,longitude,description)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            floor,total_floors,year_built,e_oselya,images,latitude,longitude,description,
+            status,published_at,source)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',datetime('now'),'owner')""",
         (g.user_id, title, city, district, prop_type, condition, price, rooms, area,
          floor, total_floors, year_built, int(e_oselya), images, lat, lng, description),
     )
@@ -587,6 +713,139 @@ def delete_listing(listing_id: int):
     db.execute("DELETE FROM listings WHERE id = ?", (listing_id,))
     db.commit()
     return jsonify(ok=True)
+
+
+@app.route("/api/listings/<int:listing_id>/verification", methods=["PATCH"])
+@require_auth
+def update_listing_verification(listing_id: int):
+    db = get_db()
+    listing = db.execute("SELECT user_id FROM listings WHERE id = ?", (listing_id,)).fetchone()
+    if not listing:
+        return jsonify(error="Оголошення не знайдено"), 404
+
+    actor = db.execute("SELECT role FROM users WHERE id = ?", (g.user_id,)).fetchone()
+    is_admin = bool(actor and actor["role"] == "admin")
+    if listing["user_id"] != g.user_id and not is_admin:
+        return jsonify(error="Недостатньо прав"), 403
+
+    data = request.get_json(silent=True) or {}
+    verified_owner = 1 if bool(data.get("verified_owner")) else 0
+    verified_phone = 1 if bool(data.get("verified_phone")) else 0
+    verified_docs = 1 if bool(data.get("verified_docs")) else 0
+
+    db.execute(
+        """
+        UPDATE listings
+        SET verified_owner = ?, verified_phone = ?, verified_docs = ?
+        WHERE id = ?
+        """,
+        (verified_owner, verified_phone, verified_docs, listing_id),
+    )
+    db.commit()
+
+    row = db.execute(LISTING_SELECT + " WHERE l.id = ?", (listing_id,)).fetchone()
+    return jsonify(listing=_row_to_listing(row))
+
+
+@app.route("/api/alerts", methods=["POST"])
+def create_listing_alert():
+    db = get_db()
+    data = request.get_json(silent=True) or {}
+    name = strip(data.get("name"), 120)
+    city = strip(data.get("city"), 100)
+    district = strip(data.get("district"), 100)
+    prop_type = strip(data.get("type"), 50)
+    min_price = pos_int(data.get("minPrice"))
+    max_price = pos_int(data.get("maxPrice"))
+    min_rooms = nonneg_int(data.get("minRooms"))
+    max_rooms = nonneg_int(data.get("maxRooms"))
+    e_oselya = bool(data.get("eOselya"))
+
+    user_id = None
+    email = strip(data.get("email"), 254).lower()
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            payload = decode_token(auth[7:])
+            user_id = int(payload["sub"])
+            row = db.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
+            if row:
+                email = row["email"]
+        except jwt.PyJWTError:
+            user_id = None
+
+    if not email or not validate_email(email):
+        return jsonify(error="Потрібен валідний email для алерта"), 422
+
+    filters = {
+        "city": city or None,
+        "district": district or None,
+        "type": prop_type or None,
+        "minPrice": min_price,
+        "maxPrice": max_price,
+        "minRooms": min_rooms,
+        "maxRooms": max_rooms,
+        "eOselya": e_oselya,
+    }
+    cur = db.execute(
+        """
+        INSERT INTO listing_alerts (user_id, email, name, filters)
+        VALUES (?, ?, ?, ?)
+        """,
+        (user_id, email, name or "Listing alert", json.dumps(filters, ensure_ascii=False)),
+    )
+    db.commit()
+    return jsonify(ok=True, id=cur.lastrowid)
+
+
+@app.route("/api/recommendations", methods=["GET"])
+def get_recommendations():
+    db = get_db()
+    listing_id = nonneg_int(request.args.get("listing_id"))
+    limit = nonneg_int(request.args.get("limit")) or 6
+    limit = min(max(limit, 1), 20)
+
+    if listing_id is None:
+        return jsonify(error="listing_id is required"), 422
+
+    source = db.execute(
+        "SELECT id, city, district, property_type, rooms, price FROM listings WHERE id = ?",
+        (listing_id,),
+    ).fetchone()
+    if not source:
+        return jsonify(error="Оголошення не знайдено"), 404
+
+    candidates = db.execute(
+        LISTING_SELECT
+        + """
+          WHERE l.id != ?
+            AND l.status = 'published'
+            AND (l.city = ? OR l.property_type = ?)
+          ORDER BY l.created_at DESC
+          LIMIT 120
+        """,
+        (listing_id, source["city"], source["property_type"]),
+    ).fetchall()
+
+    scored = []
+    for row in candidates:
+        listing = _row_to_listing(row)
+        score = 0
+        if listing["city"] == source["city"]:
+            score += 35
+        if listing["district"] == source["district"]:
+            score += 25
+        if listing["property_type"] == source["property_type"]:
+            score += 20
+        score += max(0, 12 - abs((listing["rooms"] or 0) - (source["rooms"] or 0)) * 4)
+        price_diff = abs((listing["price"] or 0) - (source["price"] or 0))
+        score += max(0, 20 - int(price_diff / 5000))
+        score += int(min((listing.get("trust_score") or 0) / 10, 8))
+        scored.append((score, listing))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    recommendations = [item[1] for item in scored[:limit]]
+    return jsonify(recommendations=recommendations)
 
 
 # ─── Map (geo-based search) ──────────────────────────────────────────────────
@@ -683,7 +942,589 @@ def analytics_summary():
     )
 
 
-# ─── Health check ─────────────────────────────────────────────────────────────
+@app.route("/seo/<city>", methods=["GET"])
+def seo_city_page(city: str):
+    return _render_seo_page(city=city, district=None)
+
+
+@app.route("/seo/<city>/<district>", methods=["GET"])
+def seo_district_page(city: str, district: str):
+    return _render_seo_page(city=city, district=district)
+
+
+def _render_seo_page(city: str, district: str | None):
+    db = get_db()
+    city_name = strip(city, 100)
+    district_name = strip(district, 100) if district else None
+    page = nonneg_int(request.args.get("page")) or 1
+    page = max(1, page)
+    page_size = min(max(nonneg_int(request.args.get("page_size")) or 30, 5), 60)
+
+    where = ["status = 'published'", "city = ?"]
+    params: list = [city_name]
+    title_suffix = city_name
+    if district_name:
+        where.append("district = ?")
+        params.append(district_name)
+        title_suffix = f"{city_name}, {district_name}"
+
+    total_count = int(
+        db.execute(
+            f"SELECT COUNT(*) FROM listings WHERE {' AND '.join(where)}",
+            params,
+        ).fetchone()[0]
+    )
+    offset = (page - 1) * page_size
+    listings = db.execute(
+        f"""
+        SELECT id, title, city, district, price, rooms, area, created_at
+        FROM listings
+        WHERE {" AND ".join(where)}
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        [*params, page_size, offset],
+    ).fetchall()
+    count = len(listings)
+    total_pages = max(1, (total_count + page_size - 1) // page_size)
+    if page > total_pages:
+        page = total_pages
+        offset = (page - 1) * page_size
+        listings = db.execute(
+            f"""
+            SELECT id, title, city, district, price, rooms, area, created_at
+            FROM listings
+            WHERE {" AND ".join(where)}
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            [*params, page_size, offset],
+        ).fetchall()
+        count = len(listings)
+    avg_price = int(
+        db.execute(
+            f"SELECT COALESCE(ROUND(AVG(price)), 0) FROM listings WHERE {' AND '.join(where)}",
+            params,
+        ).fetchone()[0]
+    )
+    districts = db.execute(
+        """
+        SELECT district, COUNT(*) as cnt
+        FROM listings
+        WHERE status = 'published' AND city = ?
+        GROUP BY district
+        ORDER BY cnt DESC
+        LIMIT 25
+        """,
+        (city_name,),
+    ).fetchall()
+    top_cities, top_districts = _seo_landing_stats(db, limit=6)
+
+    base = public_base_url()
+    canonical_path = f"/seo/{quote(city_name)}"
+    if district_name:
+        canonical_path += f"/{quote(district_name)}"
+    canonical = f"{base}{canonical_path}" if page <= 1 else f"{base}{canonical_path}?{urlencode({'page': page})}"
+    app_link = f"{base}/real-estate-demo.html?city={quote(city_name)}"
+    if district_name:
+        app_link += f"&district={quote(district_name)}"
+    og_image = f"{base}/favicon.png"
+    prev_url = None
+    next_url = None
+    if page > 1:
+        prev_url = (
+            f"{base}{canonical_path}"
+            if page == 2
+            else f"{base}{canonical_path}?{urlencode({'page': page - 1})}"
+        )
+    if page < total_pages:
+        next_url = f"{base}{canonical_path}?{urlencode({'page': page + 1})}"
+
+    listing_items = "".join(
+        (
+            "<li>"
+            f"<strong>{escape(item['title'])}</strong> — "
+            f"{escape(item['district'])}, ${int(item['price']):,}, {int(item['area'])} м², {int(item['rooms'])} кімн."
+            "</li>"
+        )
+        for item in listings[:30]
+    ) or "<li>Наразі оголошень не знайдено.</li>"
+
+    district_links = "".join(
+        f'<li><a href="/seo/{quote(city_name)}/{quote(row["district"])}">{escape(row["district"])} ({row["cnt"]})</a></li>'
+        for row in districts
+    )
+    top_city_links = "".join(
+        f'<li><a href="{base}/seo/{quote(row["city"])}">{escape(row["city"])} ({row["cnt"]})</a> · ${int(row["avg_price"] or 0):,}</li>'
+        for row in top_cities
+    ) or "<li>Немає даних по містах.</li>"
+    top_district_links = "".join(
+        f'<li><a href="{base}/seo/{quote(row["city"])}/{quote(row["district"])}">{escape(row["city"])}, {escape(row["district"])}</a> ({row["cnt"]})</li>'
+        for row in top_districts
+    ) or "<li>Немає даних по районах.</li>"
+
+    alternate_links = [
+        f'<link rel="alternate" hreflang="uk-UA" href="{canonical}" />',
+        f'<link rel="alternate" hreflang="x-default" href="{base}/real-estate-demo.html" />',
+    ]
+    if district_name:
+        alternate_links.append(
+            f'<link rel="alternate" hreflang="uk-UA" href="{base}/seo/{quote(city_name)}" />'
+        )
+
+    page_json_ld = {
+        "@context": "https://schema.org",
+        "@type": "CollectionPage",
+        "name": f"Нерухомість: {title_suffix}",
+        "description": f"Актуальні оголошення в локації {title_suffix}. Сторінка {page} з {total_pages}.",
+        "url": canonical,
+        "mainEntity": {
+            "@type": "ItemList",
+            "numberOfItems": total_count,
+            "itemListElement": [
+                {
+                    "@type": "ListItem",
+                    "position": offset + idx + 1,
+                    "url": f"{app_link}&listing_id={item['id']}",
+                    "name": item["title"],
+                }
+                for idx, item in enumerate(listings[:20])
+            ],
+        },
+    }
+    city_dataset_json_ld = {
+        "@context": "https://schema.org",
+        "@type": "Dataset",
+        "name": f"Ринок нерухомості — {title_suffix}",
+        "description": f"{count} оголошень, середня ціна {avg_price} доларів.",
+        "url": canonical,
+        "keywords": ["нерухомість", city_name, district_name or ""],
+        "license": "https://creativecommons.org/licenses/by/4.0/",
+    }
+    breadcrumb_json_ld = {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            {
+                "@type": "ListItem",
+                "position": 1,
+                "name": "UA Homes",
+                "item": f"{base}/real-estate-demo.html",
+            },
+            {
+                "@type": "ListItem",
+                "position": 2,
+                "name": city_name,
+                "item": f"{base}/seo/{quote(city_name)}",
+            },
+        ],
+    }
+    if district_name:
+        breadcrumb_json_ld["itemListElement"].append(
+            {
+                "@type": "ListItem",
+                "position": 3,
+                "name": district_name,
+                "item": f"{base}/seo/{quote(city_name)}/{quote(district_name)}",
+            }
+        )
+    faq_entries = [
+        {
+            "q": f"Скільки оголошень зараз у {title_suffix}?",
+            "a": f"Зараз доступно {total_count} опублікованих оголошень у цій локації.",
+        },
+        {
+            "q": f"Яка середня ціна у {title_suffix}?",
+            "a": f"Середня ціна становить приблизно ${avg_price:,}.",
+        },
+        {
+            "q": "Як отримувати нові оголошення автоматично?",
+            "a": "Відкрийте картку об'єкта та натисніть «Алерт на схожі оголошення».",
+        },
+    ]
+    faq_json_ld = {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+            {
+                "@type": "Question",
+                "name": item["q"],
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": item["a"],
+                },
+            }
+            for item in faq_entries
+        ],
+    }
+    organization_json_ld = {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": "UA Homes",
+        "url": f"{base}/real-estate-demo.html",
+        "logo": f"{base}/favicon.png",
+        "description": "Платформа для пошуку нерухомості в Україні: квартири, будинки, єОселя.",
+        "contactPoint": {
+            "@type": "ContactPoint",
+            "contactType": "customer support",
+            "availableLanguage": "Ukrainian",
+        },
+        "sameAs": [
+            "https://t.me/ua_homes",
+            "https://facebook.com/ua.homes",
+        ],
+    }
+    webpage_json_ld = {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": f"Купити нерухомість — {title_suffix} | UA Homes",
+        "url": canonical,
+        "description": f"Актуальні оголошення в локації {title_suffix}: {total_count} об'єктів, середня ціна ${avg_price:,}.",
+        "inLanguage": "uk-UA",
+        "isPartOf": {"@type": "WebSite", "name": "UA Homes", "url": f"{base}/real-estate-demo.html"},
+        "speakable": {
+            "@type": "SpeakableSpecification",
+            "cssSelector": ["#main-h1", "#page-description"],
+        },
+    }
+    faq_html = "".join(
+        f"<details><summary>{escape(item['q'])}</summary><p>{escape(item['a'])}</p></details>"
+        for item in faq_entries
+    )
+    pagination_rel_links = []
+    if prev_url:
+        pagination_rel_links.append(f'<link rel="prev" href="{prev_url}" />')
+    if next_url:
+        pagination_rel_links.append(f'<link rel="next" href="{next_url}" />')
+    pagination_nav = []
+    if page > 1:
+        prev_href = (
+            f"/seo/{quote(city_name)}"
+            if page == 2 and not district_name
+            else (f"/seo/{quote(city_name)}/{quote(district_name)}" if page == 2 else f"{canonical_path}?{urlencode({'page': page - 1})}")
+        )
+        pagination_nav.append(f'<a href="{prev_href}">← Попередня</a>')
+    pagination_nav.append(f"<span>Сторінка {page} з {total_pages}</span>")
+    if page < total_pages:
+        pagination_nav.append(f'<a href="{canonical_path}?{urlencode({"page": page + 1})}">Наступна →</a>')
+    pagination_nav_html = " ".join(pagination_nav)
+
+    html = f"""<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Купити нерухомість — {escape(title_suffix)} | UA Homes</title>
+  <meta name="description" content="Актуальні оголошення в локації {escape(title_suffix)}: {total_count} об'єктів, середня ціна ${avg_price:,}. Сторінка {page} з {total_pages}." />
+  <link rel="canonical" href="{canonical}" />
+  {''.join(pagination_rel_links)}
+  {''.join(alternate_links)}
+  <meta property="og:locale" content="uk_UA" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="UA Homes" />
+  <meta property="og:title" content="Купити нерухомість — {escape(title_suffix)} | UA Homes" />
+  <meta property="og:description" content="Актуальні оголошення в локації {escape(title_suffix)}: {total_count} об'єктів, середня ціна ${avg_price:,}. Сторінка {page} з {total_pages}." />
+  <meta property="og:url" content="{canonical}" />
+  <meta property="og:image" content="{og_image}" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Купити нерухомість — {escape(title_suffix)} | UA Homes" />
+  <meta name="twitter:description" content="Актуальні оголошення в локації {escape(title_suffix)}: {total_count} об'єктів, середня ціна ${avg_price:,}. Сторінка {page} з {total_pages}." />
+  <meta name="twitter:image" content="{og_image}" />
+  <script type="application/ld+json">{json.dumps(organization_json_ld, ensure_ascii=False)}</script>
+  <script type="application/ld+json">{json.dumps(webpage_json_ld, ensure_ascii=False)}</script>
+  <script type="application/ld+json">{json.dumps(page_json_ld, ensure_ascii=False)}</script>
+  <script type="application/ld+json">{json.dumps(city_dataset_json_ld, ensure_ascii=False)}</script>
+  <script type="application/ld+json">{json.dumps(breadcrumb_json_ld, ensure_ascii=False)}</script>
+  <script type="application/ld+json">{json.dumps(faq_json_ld, ensure_ascii=False)}</script>
+  <style>
+    body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:900px;margin:0 auto;padding:24px;line-height:1.55;color:#0f172a}}
+    a{{color:#2563eb;text-decoration:none}} a:hover{{text-decoration:underline}}
+    .kpi{{display:flex;gap:12px;flex-wrap:wrap;margin:14px 0 18px}} .card{{background:#eff6ff;padding:10px 14px;border-radius:12px}}
+    .pager{{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0 18px}}
+    .breadcrumbs{{display:flex;gap:8px;flex-wrap:wrap;font-size:14px;color:#475569;margin-bottom:8px}}
+    details{{border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;margin:8px 0}} summary{{cursor:pointer;font-weight:600}}
+  </style>
+</head>
+<body>
+  <nav class="breadcrumbs">
+    <a href="{base}/real-estate-demo.html">UA Homes</a>
+    <span>›</span>
+    <a href="{base}/seo/{quote(city_name)}">{escape(city_name)}</a>
+    {f'<span>›</span><span>{escape(district_name)}</span>' if district_name else ''}
+  </nav>
+  <h1 id="main-h1">Нерухомість: {escape(title_suffix)}</h1>
+  <p id="page-description">UA Homes: перевірені оголошення з фото, єОселя та картою.</p>
+  <div class="kpi">
+    <div class="card"><strong>{total_count}</strong> оголошень</div>
+    <div class="card"><strong>${avg_price:,}</strong> середня ціна</div>
+  </div>
+  <div class="pager">{pagination_nav_html}</div>
+  <p><a href="{app_link}">Відкрити інтерактивний пошук у застосунку →</a></p>
+  <h2>Останні об'єкти</h2>
+  <ul>{listing_items}</ul>
+  <h2>Райони {escape(city_name)}</h2>
+  <ul>{district_links or '<li>Немає даних по районах.</li>'}</ul>
+  <h2>Топ-міста для пошуку</h2>
+  <ul>{top_city_links}</ul>
+  <h2>Топ-райони</h2>
+  <ul>{top_district_links}</ul>
+  <h2>FAQ</h2>
+  {faq_html}
+</body>
+</html>"""
+    return Response(html, mimetype="text/html; charset=utf-8")
+
+
+@app.route("/sitemap.xml", methods=["GET"])
+def sitemap_xml():
+    db = get_db()
+    base = public_base_url()
+    rows = db.execute(
+        """
+        SELECT city, district, MAX(created_at) as updated_at
+        FROM listings
+        WHERE status = 'published'
+        GROUP BY city, district
+        ORDER BY city, district
+        """
+    ).fetchall()
+
+    items = [
+        f"<url><loc>{base}/real-estate-demo.html</loc></url>",
+    ]
+    seen_cities = set()
+    for row in rows:
+        city = row["city"]
+        district = row["district"]
+        updated = (row["updated_at"] or "")[:10]
+        if city not in seen_cities:
+            seen_cities.add(city)
+            items.append(
+                f"<url><loc>{base}/seo/{quote(city)}</loc><lastmod>{updated}</lastmod></url>"
+            )
+        items.append(
+            f"<url><loc>{base}/seo/{quote(city)}/{quote(district)}</loc><lastmod>{updated}</lastmod></url>"
+        )
+
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        + "".join(items)
+        + "</urlset>"
+    )
+    return Response(xml, mimetype="application/xml; charset=utf-8")
+
+
+@app.route("/seo/snippets/top", methods=["GET"])
+def seo_top_snippets():
+    db = get_db()
+    limit = nonneg_int(request.args.get("limit")) or 8
+    limit = min(max(limit, 1), 30)
+    base = public_base_url()
+    top_cities, top_districts = _seo_landing_stats(db, limit=limit)
+
+    city_cards = "".join(
+        (
+            '<a class="seo-card" href="'
+            f'{base}/seo/{quote(row["city"])}'
+            '">'
+            f'<strong>{escape(row["city"])}</strong>'
+            f'<span>{row["cnt"]} об.</span>'
+            f'<span>${int(row["avg_price"] or 0):,}</span>'
+            "</a>"
+        )
+        for row in top_cities
+    )
+    district_cards = "".join(
+        (
+            '<a class="seo-card" href="'
+            f'{base}/seo/{quote(row["city"])}/{quote(row["district"])}'
+            '">'
+            f'<strong>{escape(row["city"])}, {escape(row["district"])}</strong>'
+            f'<span>{row["cnt"]} об.</span>'
+            f'<span>${int(row["avg_price"] or 0):,}</span>'
+            "</a>"
+        )
+        for row in top_districts
+    )
+
+    html = f"""
+<section data-seo-snippets="top">
+  <style>
+    .seo-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}}
+    .seo-card{{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:12px;text-decoration:none;color:#0f172a;background:#fff}}
+    .seo-card:hover{{border-color:#93c5fd;background:#eff6ff}}
+    .seo-card span{{font-size:12px;color:#64748b}}
+  </style>
+  <h2>Топ-міста</h2>
+  <div class="seo-grid">{city_cards or '<p>Немає даних.</p>'}</div>
+  <h2>Топ-райони</h2>
+  <div class="seo-grid">{district_cards or '<p>Немає даних.</p>'}</div>
+</section>
+"""
+    return Response(html, mimetype="text/html; charset=utf-8")
+
+
+@app.route("/robots.txt", methods=["GET"])
+def robots_txt():
+    base = public_base_url()
+    body = "\n".join(
+        [
+            "User-agent: *",
+            "Allow: /",
+            "Disallow: /admin/",
+            "Disallow: /api/admin/",
+            f"Sitemap: {base}/sitemap.xml",
+            "",
+        ]
+    )
+    return Response(body, mimetype="text/plain; charset=utf-8")
+
+
+@app.route("/seo/audit", methods=["GET"])
+def seo_audit():
+    """
+    Core Web Vitals + SEO audit report for UA Homes.
+    Returns a structured JSON audit with priority levels (critical/high/medium/low).
+    """
+    base = public_base_url()
+    audit = {
+        "generated_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        "site": base,
+        "score_summary": {
+            "lcp": "needs_improvement",
+            "cls": "good",
+            "inp": "needs_improvement",
+            "seo": "good",
+            "overall": "needs_improvement",
+        },
+        "findings": [
+            {
+                "id": "cwv-lcp-cdn-scripts",
+                "metric": "LCP",
+                "priority": "critical",
+                "title": "Babel standalone blocks LCP (~250 kB parse on main thread)",
+                "detail": (
+                    "The SPA loads @babel/standalone from unpkg CDN and compiles JSX in-browser. "
+                    "This delays Time to Interactive and LCP by 1–3s on mid-range mobile devices."
+                ),
+                "recommendation": (
+                    "Pre-compile JSX with Vite/esbuild and ship a plain JS bundle. "
+                    "Remove @babel/standalone from production HTML. Expected LCP gain: 1–2 s."
+                ),
+            },
+            {
+                "id": "cwv-lcp-image-priority",
+                "metric": "LCP",
+                "priority": "high",
+                "title": "Hero/first card image not marked as LCP priority",
+                "detail": (
+                    "Images in PropertyCard use no fetchpriority or preload hint. "
+                    "The browser discovers them late (after React hydration) causing a late LCP."
+                ),
+                "recommendation": (
+                    "Add fetchpriority='high' to the first visible card image. "
+                    "For SSR pages add <link rel='preload' as='image' href='...'> for the top listing image."
+                ),
+            },
+            {
+                "id": "cwv-cls-image-dimensions",
+                "metric": "CLS",
+                "priority": "high",
+                "title": "Gallery images have no explicit width/height — CLS risk",
+                "detail": (
+                    "img elements in the gallery do not declare width/height attributes. "
+                    "Without them the browser cannot reserve layout space before the image loads, "
+                    "causing layout shifts (CLS) that hurt ranking."
+                ),
+                "recommendation": (
+                    "Add width and height attributes matching the aspect ratio of the container "
+                    "(e.g. width='640' height='360') and let CSS override with object-fit:cover. "
+                    "Alternatively use aspect-ratio:16/9 on the container."
+                ),
+            },
+            {
+                "id": "cwv-inp-tailwind-cdn",
+                "metric": "INP",
+                "priority": "high",
+                "title": "Tailwind CDN stylesheet is unoptimised (~350 kB)",
+                "detail": (
+                    "cdn.tailwindcss.com serves the full Tailwind build. "
+                    "Parsing this on first paint adds ~80 ms style recalc on mobile."
+                ),
+                "recommendation": (
+                    "Use the Tailwind CLI / Vite plugin to generate a purged CSS file "
+                    "(<10 kB). Serve it from the same origin with Cache-Control: max-age=31536000."
+                ),
+            },
+            {
+                "id": "seo-lazy-loading",
+                "metric": "LCP",
+                "priority": "medium",
+                "title": "All gallery images load eagerly",
+                "detail": (
+                    "Images inside off-screen PropertyCard components are fetched immediately, "
+                    "consuming bandwidth and delaying the LCP image."
+                ),
+                "recommendation": (
+                    "Add loading='lazy' to all card images except the first visible one. "
+                    "This is a one-line JSX fix with measurable LCP and bandwidth savings."
+                ),
+            },
+            {
+                "id": "seo-preconnect",
+                "metric": "LCP",
+                "priority": "medium",
+                "title": "No <link rel='preconnect'> for external CDN hosts",
+                "detail": (
+                    "unpkg.com, cdn.tailwindcss.com, and the API origin each require a new TCP+TLS handshake "
+                    "before any resource can load. This adds 100–300 ms on first visit."
+                ),
+                "recommendation": (
+                    "Add <link rel='preconnect' href='https://unpkg.com'>, "
+                    "<link rel='preconnect' href='https://cdn.tailwindcss.com'>, "
+                    "and <link rel='dns-prefetch' href='{api_origin}'> in the <head>."
+                ).replace("{api_origin}", base),
+            },
+            {
+                "id": "seo-meta-robots",
+                "metric": "SEO",
+                "priority": "low",
+                "title": "SPA is missing <meta name='robots'> tag",
+                "detail": "Without an explicit robots meta tag, indexing behaviour depends on crawler defaults.",
+                "recommendation": "Add <meta name='robots' content='index, follow'> to the SPA <head>.",
+            },
+            {
+                "id": "seo-structured-data-review",
+                "metric": "SEO",
+                "priority": "low",
+                "title": "No Review / AggregateRating schema on listing pages",
+                "detail": "Listing detail views have user reviews but no structured data for them.",
+                "recommendation": (
+                    "Add AggregateRating + Review JSON-LD when a listing detail modal opens "
+                    "(dynamic injection via React useEffect)."
+                ),
+            },
+        ],
+        "already_implemented": [
+            "WebSite schema with SearchAction",
+            "Organization schema",
+            "CollectionPage + ItemList schema on SEO landing pages",
+            "Dataset schema per city/district",
+            "BreadcrumbList schema",
+            "FAQPage schema with visible <details> blocks",
+            "WebPage + Speakable schema on SEO landing pages",
+            "Pagination rel=prev/next",
+            "Canonical URLs with UA_HOMES_PUBLIC_URL env var",
+            "hreflang uk-UA + x-default",
+            "OpenGraph + Twitter card meta",
+            "sitemap.xml with city/district URLs",
+            "robots.txt with Disallow for admin routes",
+            "Pre-render snippet endpoint /seo/snippets/top",
+        ],
+    }
+    return jsonify(audit)
+
 
 # ─── Health check ─────────────────────────────────────────────────────────────
 

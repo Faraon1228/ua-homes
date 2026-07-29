@@ -184,7 +184,7 @@ POST   /logout                # Вихід
    ```
 
 2. **CORS помилки:**
-   Перевірте, що `UA_HOMES_API`환境 змінна правильна на Netlify
+   Перевірте, що змінні `UA_HOMES_API` та `UA_HOMES_PUBLIC_URL` коректно задані у Netlify/Railway.
 
 3. **Локально не працює пошук:**
    Убедитесь, що бекенд запущено на `http://localhost:5050`

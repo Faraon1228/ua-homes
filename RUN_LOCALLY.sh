@@ -17,27 +17,6 @@ cd "$PROJECT_DIR"
 echo "📁 Project directory: $PROJECT_DIR"
 echo ""
 
-# Функція для запуску сервісу в фоновому режимі
-run_service() {
-    local service_name=$1
-    local service_cmd=$2
-    local service_dir=$3
-    
-    echo "🚀 Starting $service_name..."
-    echo "   Command: $service_cmd"
-    echo "   Directory: $service_dir"
-    echo ""
-    
-    cd "$service_dir"
-    eval "$service_cmd" &
-    local pid=$!
-    echo "   ✅ $service_name started (PID: $pid)"
-    echo ""
-    
-    # Повернутись до кореня
-    cd "$PROJECT_DIR"
-}
-
 # Перевіримо, чи встановлено Python
 if ! command -v python3 &> /dev/null; then
     echo "❌ Python3 не знайдено. Встановіть Python3 і спробуйте ще раз."
@@ -67,8 +46,13 @@ if [ ! -f "requirements.txt" ]; then
 fi
 
 echo "📦 Installing Python dependencies..."
-pip install -q -r requirements.txt
-echo "✅ Dependencies installed"
+if python3 -m pip --version >/dev/null 2>&1; then
+    python3 -m pip install -q -r requirements.txt
+    echo "✅ Dependencies installed"
+else
+    echo "⚠️  pip module is not available; skipping dependency install"
+    echo "   Make sure dependencies are installed in your Python environment."
+fi
 echo ""
 
 # Запускаємо Flask сервер
