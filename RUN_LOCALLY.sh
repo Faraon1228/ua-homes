@@ -84,6 +84,41 @@ fi
 
 cd web
 
+# Rebuild compiled JS and purged CSS if esbuild/tailwind binaries are available
+ESBUILD_BIN=""
+TAILWIND_BIN=""
+for p in /tmp/esbuild "$PROJECT_DIR/tools/esbuild" "$(which esbuild 2>/dev/null)"; do
+  [ -x "$p" ] && ESBUILD_BIN="$p" && break
+done
+for p in /tmp/tailwindcss "$PROJECT_DIR/tools/tailwindcss" "$(which tailwindcss 2>/dev/null)"; do
+  [ -x "$p" ] && TAILWIND_BIN="$p" && break
+done
+
+if [ -n "$ESBUILD_BIN" ] && [ -f "../web/real-estate-app.js" ]; then
+  echo "🔨 Skipping JSX recompile (compiled file present). Run scripts/rebuild-frontend.sh to force."
+elif [ -n "$ESBUILD_BIN" ]; then
+  echo "🔨 Compiling JSX → real-estate-app.js ..."
+  python3 - <<'PYEOF'
+import re
+with open('../web/real-estate-demo.html') as f: html = f.read()
+m = re.search(r'<script type="text/babel">(.*?)</script>', html, re.DOTALL)
+if m:
+    open('/tmp/ua-homes-app.jsx','w').write(m.group(1))
+PYEOF
+  "$ESBUILD_BIN" /tmp/ua-homes-app.jsx \
+    --bundle=false --jsx=transform --jsx-factory=React.createElement \
+    --jsx-fragment=React.Fragment --target=es2020 --minify-whitespace \
+    --charset=utf8 --outfile=real-estate-app.js 2>&1 && echo "  ✅ real-estate-app.js compiled"
+fi
+
+if [ -n "$TAILWIND_BIN" ] && [ ! -f "ua-homes.css" ]; then
+  echo "🎨 Generating purged Tailwind CSS ..."
+  "$TAILWIND_BIN" \
+    -i /dev/null -o ua-homes.css \
+    --content "./real-estate-demo.html,./real-estate-app.js" \
+    --minify 2>&1 | tail -1 && echo "  ✅ ua-homes.css generated"
+fi
+
 echo "🌐 Starting HTTP server on port 8080..."
 python3 -m http.server 8080 &
 FRONTEND_PID=$!
