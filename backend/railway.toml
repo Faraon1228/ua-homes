@@ -2,9 +2,8 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 60"
+startCommand = "gunicorn -c gunicorn.conf.py app:app"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30
 restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 5
-
-[variables]
-PYTHON_VERSION = "3.11"
+restartPolicyMaxRetries = 3

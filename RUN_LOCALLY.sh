@@ -55,11 +55,18 @@ else
 fi
 echo ""
 
-# Запускаємо Flask сервер
-echo "🚀 Starting Flask backend on port 5050..."
-python3 app.py &
-BACKEND_PID=$!
-echo "✅ Backend started (PID: $BACKEND_PID)"
+# Запускаємо бекенд — Gunicorn якщо доступний, інакше Flask dev server
+echo "🚀 Starting backend on port 5050..."
+if command -v gunicorn &> /dev/null || python3 -m gunicorn --version &> /dev/null 2>&1; then
+    python3 -m gunicorn -c gunicorn.conf.py app:app &
+    BACKEND_PID=$!
+    echo "✅ Backend started via Gunicorn (PID: $BACKEND_PID)"
+else
+    echo "ℹ️  Gunicorn not found — using Flask dev server (single-threaded)"
+    python3 app.py &
+    BACKEND_PID=$!
+    echo "✅ Backend started via Flask dev server (PID: $BACKEND_PID)"
+fi
 sleep 2
 
 # Перевіримо, чи запустився бекенд

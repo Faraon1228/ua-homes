@@ -1,6 +1,14 @@
 from __future__ import annotations
-"""UA Homes backend — Flask + SQLite.
+"""UA Homes backend — Flask + SQLite (dev) / PostgreSQL (prod).
 Security: bcrypt passwords, JWT auth, rate limiting, CORS, parameterised queries.
+
+Environment variables:
+  UA_HOMES_SECRET     — JWT signing secret (auto-generated if absent)
+  UA_HOMES_PUBLIC_URL — Canonical public URL for SEO/CORS
+  DATABASE_URL        — PostgreSQL DSN (e.g. postgres://user:pass@host/db).
+                        If absent, falls back to local SQLite ua_homes.db.
+  REDIS_URL           — Redis DSN for rate-limiter shared state across workers.
+                        If absent, falls back to in-process memory (dev only).
 """
 import base64
 import json
@@ -29,16 +37,65 @@ SECRET_KEY = os.environ.get("UA_HOMES_SECRET", secrets.token_hex(32))
 JWT_ALGO   = "HS256"
 JWT_EXP_H  = 72
 
+# PostgreSQL DSN — if set, the app uses psycopg2 instead of SQLite.
+DATABASE_URL: str | None = os.environ.get("DATABASE_URL", "").strip() or None
+
+# Redis DSN — if set, rate-limiter stores counters in Redis (safe for multi-worker).
+REDIS_URL: str | None = os.environ.get("REDIS_URL", "").strip() or None
+
+# ─── Database adapter ────────────────────────────────────────────────────────
+# Thin compatibility shim so the rest of the app never needs to know which DB
+# engine is being used.  Both sqlite3.Row and psycopg2's DictRow support dict().
+
+def _is_postgres() -> bool:
+    return DATABASE_URL is not None
+
+
+def get_db():
+    """Return a per-request DB connection (stored in Flask's g)."""
+    if "db" not in g:
+        if _is_postgres():
+            try:
+                import psycopg2
+                import psycopg2.extras
+                conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+                conn.autocommit = False
+            except ImportError:
+                raise RuntimeError(
+                    "psycopg2 is not installed. "
+                    "Add 'psycopg2-binary' to requirements.txt or unset DATABASE_URL."
+                )
+        else:
+            conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+        g.db = conn
+    return g.db
+
+
+def db_placeholder() -> str:
+    """Return the correct positional placeholder for the current DB driver."""
+    return "%s" if _is_postgres() else "?"
+
+
 # ─── App setup ───────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
+# Rate-limiter storage: Redis when available (multi-worker safe), else in-memory.
+_limiter_storage = f"redis://{REDIS_URL.replace('redis://','')}" if REDIS_URL else "memory://"
+if REDIS_URL and not REDIS_URL.startswith("redis://"):
+    _limiter_storage = REDIS_URL  # accept full DSN as-is
+
 limiter = Limiter(
     get_remote_address,
     app=app,
-    default_limits=["300 per minute"],
-    storage_uri="memory://",
+    # Public browsing endpoints: generous — real users never hit this.
+    # Sensitive mutation endpoints keep tighter per-route limits below.
+    default_limits=["1000 per minute"],
+    storage_uri=_limiter_storage,
 )
 
 PUBLIC_SITE_URL = os.environ.get("UA_HOMES_PUBLIC_URL", "").strip().rstrip("/")
@@ -59,6 +116,11 @@ def get_db() -> sqlite3.Connection:
 def close_db(_exc=None):
     db = g.pop("db", None)
     if db is not None:
+        if _is_postgres():
+            try:
+                db.commit()
+            except Exception:
+                pass
         db.close()
 
 
@@ -311,6 +373,22 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_listing_alerts_user ON listing_alerts(user_id);
         CREATE INDEX IF NOT EXISTS idx_listing_alerts_email ON listing_alerts(email);
+
+        CREATE TABLE IF NOT EXISTS lead_funnel_events (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            listing_id   INTEGER REFERENCES listings(id) ON DELETE SET NULL,
+            event        TEXT    NOT NULL,
+            intent       TEXT    NOT NULL,
+            source       TEXT    NOT NULL,
+            listing_type TEXT,
+            price        INTEGER,
+            session_id   TEXT,
+            created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_lead_funnel_created ON lead_funnel_events(created_at);
+        CREATE INDEX IF NOT EXISTS idx_lead_funnel_source ON lead_funnel_events(source);
+        CREATE INDEX IF NOT EXISTS idx_lead_funnel_event ON lead_funnel_events(event);
+        CREATE INDEX IF NOT EXISTS idx_lead_funnel_listing ON lead_funnel_events(listing_id);
     """)
 
     # Backward-compatible migration for existing databases.
@@ -345,6 +423,25 @@ def init_db():
         db.execute("ALTER TABLE listings ADD COLUMN has_photo_tour INTEGER NOT NULL DEFAULT 0")
     if "has_video_tour" not in listing_columns:
         db.execute("ALTER TABLE listings ADD COLUMN has_video_tour INTEGER NOT NULL DEFAULT 0")
+
+    # Users table migrations for email/phone verification
+    user_columns = {
+        row[1] for row in db.execute("PRAGMA table_info(users)").fetchall()
+    }
+    if "email_verified" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0")
+    if "email_verify_token" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN email_verify_token TEXT")
+    if "email_verify_expires" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN email_verify_expires TEXT")
+    if "phone" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN phone TEXT")
+    if "phone_verify_code" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN phone_verify_code TEXT")
+    if "phone_verify_expires" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN phone_verify_expires TEXT")
+    if "phone_verified" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN phone_verified INTEGER NOT NULL DEFAULT 0")
 
     db.execute("UPDATE listings SET source = COALESCE(NULLIF(source, ''), 'owner')")
     db.execute("UPDATE listings SET listing_status = COALESCE(NULLIF(listing_status, ''), 'active')")
@@ -428,6 +525,41 @@ def init_db():
 
     db.close()
 
+    # FTS5 virtual table for full-text search.
+    # Done in a fresh connection AFTER all schema migrations and data updates are
+    # committed, so FTS triggers won't fire during the migration UPDATEs above.
+    try:
+        fts_conn = sqlite3.connect(DB_PATH)
+        fts_conn.execute("PRAGMA journal_mode=WAL")
+        fts_conn.executescript("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS listings_fts USING fts5(
+                title, city, district, description,
+                content='listings', content_rowid='id'
+            );
+            CREATE TRIGGER IF NOT EXISTS listings_fts_insert AFTER INSERT ON listings BEGIN
+              INSERT INTO listings_fts(rowid, title, city, district, description)
+                VALUES (new.id, new.title, new.city, new.district, new.description);
+            END;
+            CREATE TRIGGER IF NOT EXISTS listings_fts_update AFTER UPDATE ON listings BEGIN
+              INSERT INTO listings_fts(listings_fts, rowid, title, city, district, description)
+                VALUES ('delete', old.id, old.title, old.city, old.district, old.description);
+              INSERT INTO listings_fts(rowid, title, city, district, description)
+                VALUES (new.id, new.title, new.city, new.district, new.description);
+            END;
+            CREATE TRIGGER IF NOT EXISTS listings_fts_delete AFTER DELETE ON listings BEGIN
+              INSERT INTO listings_fts(listings_fts, rowid, title, city, district, description)
+                VALUES ('delete', old.id, old.title, old.city, old.district, old.description);
+            END;
+        """)
+        # Rebuild the full FTS index from scratch to stay consistent.
+        fts_conn.execute("INSERT INTO listings_fts(listings_fts) VALUES ('rebuild')")
+        fts_conn.commit()
+        fts_conn.close()
+    except Exception as _fts_err:
+        # FTS unavailable — app will fall back to LIKE search.
+        import sys
+        print(f"[init_db] FTS5 setup skipped: {_fts_err}", file=sys.stderr)
+
 
 # ─── Auth helpers ─────────────────────────────────────────────────────────────
 
@@ -475,6 +607,93 @@ def get_optional_actor(db) -> tuple[int | None, bool]:
     user_id = int(payload["sub"])
     row = db.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
     return user_id, bool(row and row["role"] == "admin")
+
+
+# ─── Email / SMS helpers ─────────────────────────────────────────────────────
+
+def send_email_verify(to_email: str, token: str) -> bool:
+    """Send verification email. Uses SendGrid if SENDGRID_API_KEY is set,
+    otherwise SMTP (SMTP_HOST/SMTP_USER/SMTP_PASS), or logs to console in dev."""
+    verify_url = f"{PUBLIC_SITE_URL or 'http://localhost:5050'}/api/auth/verify-email?token={token}"
+    subject = "Підтвердіть email — UA Homes"
+    body_text = f"Перейдіть за посиланням для підтвердження: {verify_url}"
+    body_html = f"""<p>Вітаємо у UA Homes!</p>
+<p><a href="{verify_url}">Підтвердити email</a></p>
+<p>Посилання дійсне 24 години.</p>"""
+
+    sg_key = os.environ.get("SENDGRID_API_KEY", "")
+    smtp_host = os.environ.get("SMTP_HOST", "")
+
+    if sg_key:
+        try:
+            import urllib.request as _req, json as _json
+            payload = _json.dumps({
+                "personalizations": [{"to": [{"email": to_email}]}],
+                "from": {"email": os.environ.get("FROM_EMAIL", "noreply@ua-homes.com")},
+                "subject": subject,
+                "content": [
+                    {"type": "text/plain", "value": body_text},
+                    {"type": "text/html", "value": body_html},
+                ]
+            }).encode()
+            req = _req.Request("https://api.sendgrid.com/v3/mail/send",
+                data=payload,
+                headers={"Authorization": f"Bearer {sg_key}", "Content-Type": "application/json"},
+                method="POST")
+            with _req.urlopen(req, timeout=10) as r:
+                return r.status in (200, 202)
+        except Exception as e:
+            app.logger.error("SendGrid error: %s", e)
+            return False
+    elif smtp_host:
+        try:
+            import smtplib
+            from email.mime.multipart import MIMEMultipart
+            from email.mime.text import MIMEText
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = os.environ.get("FROM_EMAIL", "noreply@ua-homes.com")
+            msg["To"] = to_email
+            msg.attach(MIMEText(body_text, "plain", "utf-8"))
+            msg.attach(MIMEText(body_html, "html", "utf-8"))
+            smtp_port = int(os.environ.get("SMTP_PORT", 587))
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as srv:
+                srv.starttls()
+                srv.login(os.environ.get("SMTP_USER", ""), os.environ.get("SMTP_PASS", ""))
+                srv.sendmail(msg["From"], [to_email], msg.as_string())
+            return True
+        except Exception as e:
+            app.logger.error("SMTP error: %s", e)
+            return False
+    else:
+        app.logger.info("EMAIL VERIFY (dev) → %s | URL: %s", to_email, verify_url)
+        return True
+
+
+def send_sms_verify(phone: str, code: str) -> bool:
+    """Send SMS verification code. Uses Twilio if TWILIO_* env vars set, else logs."""
+    account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
+    auth_token  = os.environ.get("TWILIO_AUTH_TOKEN", "")
+    from_phone  = os.environ.get("TWILIO_FROM_PHONE", "")
+    msg = f"Ваш код підтвердження UA Homes: {code}"
+    if account_sid and auth_token and from_phone:
+        try:
+            import urllib.request as _req, urllib.parse as _parse, base64 as _b64
+            payload = _parse.urlencode({"To": phone, "From": from_phone, "Body": msg}).encode()
+            url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+            creds = _b64.b64encode(f"{account_sid}:{auth_token}".encode()).decode()
+            req = _req.Request(url, data=payload,
+                headers={"Authorization": f"Basic {creds}",
+                         "Content-Type": "application/x-www-form-urlencoded"},
+                method="POST")
+            with _req.urlopen(req, timeout=10) as r:
+                return r.status in (200, 201)
+        except Exception as e:
+            app.logger.error("Twilio error: %s", e)
+            return False
+    else:
+        app.logger.info("SMS VERIFY (dev) → %s | Code: %s", phone, code)
+        return True
 
 
 # ─── Validation helpers ───────────────────────────────────────────────────────
@@ -593,9 +812,21 @@ def register():
         return jsonify(error="Цей email вже зареєстровано"), 409
 
     user_id = cur.lastrowid
+
+    # Generate email verification token and send verification email
+    verify_token = secrets.token_urlsafe(32)
+    verify_expires = (datetime.datetime.utcnow() + datetime.timedelta(hours=24)).isoformat()
+    db.execute(
+        "UPDATE users SET email_verify_token=?, email_verify_expires=? WHERE id=?",
+        (verify_token, verify_expires, user_id)
+    )
+    db.commit()
+    send_email_verify(email, verify_token)
+
     return jsonify(
         token=make_token(user_id, email),
-        user={"id": user_id, "name": name, "email": email},
+        user={"id": user_id, "name": name, "email": email, "email_verified": 0},
+        verify_email_sent=True,
     ), 201
 
 
@@ -626,10 +857,112 @@ def login():
 @require_auth
 def me():
     db  = get_db()
-    row = db.execute("SELECT id, name, email FROM users WHERE id = ?", (g.user_id,)).fetchone()
+    row = db.execute("SELECT id, name, email, email_verified, phone_verified, phone FROM users WHERE id = ?", (g.user_id,)).fetchone()
     if not row:
         return jsonify(error="Користувача не знайдено"), 404
     return jsonify(user=dict(row))
+
+
+@app.route("/api/auth/verify-email", methods=["GET"])
+def verify_email():
+    token = strip(request.args.get("token", ""), 200)
+    if not token:
+        return jsonify(error="Token required"), 400
+    db = get_db()
+    row = db.execute(
+        "SELECT id, email_verify_expires FROM users WHERE email_verify_token = ?", (token,)
+    ).fetchone()
+    if not row:
+        return jsonify(error="Невірний або прострочений токен"), 400
+    expires = row["email_verify_expires"] or ""
+    try:
+        if datetime.datetime.fromisoformat(expires) < datetime.datetime.utcnow():
+            return jsonify(error="Токен прострочено. Запросіть новий."), 400
+    except Exception:
+        return jsonify(error="Невірний токен"), 400
+    db.execute(
+        "UPDATE users SET email_verified=1, email_verify_token=NULL, email_verify_expires=NULL WHERE id=?",
+        (row["id"],)
+    )
+    db.commit()
+    site = PUBLIC_SITE_URL or "http://localhost:8080"
+    return Response(
+        f'<meta http-equiv="refresh" content="0;url={site}/real-estate-demo.html?email_verified=1">',
+        mimetype="text/html"
+    )
+
+
+@app.route("/api/auth/resend-verification", methods=["POST"])
+@limiter.limit("3 per hour")
+def resend_verification():
+    data = request.get_json(silent=True) or {}
+    email = strip(data.get("email", ""), 254).lower()
+    if not email:
+        return jsonify(error="Email required"), 400
+    db = get_db()
+    row = db.execute(
+        "SELECT id, email_verified FROM users WHERE email = ?", (email,)
+    ).fetchone()
+    if not row:
+        return jsonify(ok=True)
+    if row["email_verified"]:
+        return jsonify(ok=True, already_verified=True)
+    token = secrets.token_urlsafe(32)
+    expires = (datetime.datetime.utcnow() + datetime.timedelta(hours=24)).isoformat()
+    db.execute(
+        "UPDATE users SET email_verify_token=?, email_verify_expires=? WHERE id=?",
+        (token, expires, row["id"])
+    )
+    db.commit()
+    send_email_verify(email, token)
+    return jsonify(ok=True)
+
+
+@app.route("/api/auth/send-phone-code", methods=["POST"])
+@require_auth
+@limiter.limit("5 per hour")
+def send_phone_code():
+    data = request.get_json(silent=True) or {}
+    phone = strip(data.get("phone", ""), 20)
+    if not phone or not re.match(r"^\+?\d{7,15}$", phone):
+        return jsonify(error="Невірний формат номера телефону"), 422
+    code = str(secrets.randbelow(900000) + 100000)  # 6-digit code
+    expires = (datetime.datetime.utcnow() + datetime.timedelta(minutes=10)).isoformat()
+    db = get_db()
+    db.execute(
+        "UPDATE users SET phone=?, phone_verify_code=?, phone_verify_expires=? WHERE id=?",
+        (phone, code, expires, g.user_id)
+    )
+    db.commit()
+    send_sms_verify(phone, code)
+    return jsonify(ok=True, dev_code=code if not os.environ.get("TWILIO_ACCOUNT_SID") else None)
+
+
+@app.route("/api/auth/verify-phone", methods=["POST"])
+@require_auth
+@limiter.limit("10 per hour")
+def verify_phone():
+    data = request.get_json(silent=True) or {}
+    code = strip(data.get("code", ""), 10)
+    if not code:
+        return jsonify(error="Code required"), 400
+    db = get_db()
+    row = db.execute(
+        "SELECT phone_verify_code, phone_verify_expires FROM users WHERE id=?", (g.user_id,)
+    ).fetchone()
+    if not row or row["phone_verify_code"] != code:
+        return jsonify(error="Невірний код"), 400
+    try:
+        if datetime.datetime.fromisoformat(row["phone_verify_expires"] or "") < datetime.datetime.utcnow():
+            return jsonify(error="Код прострочено. Запросіть новий."), 400
+    except Exception:
+        return jsonify(error="Код прострочено"), 400
+    db.execute(
+        "UPDATE users SET phone_verified=1, phone_verify_code=NULL, phone_verify_expires=NULL WHERE id=?",
+        (g.user_id,)
+    )
+    db.commit()
+    return jsonify(ok=True, phone_verified=True)
 
 
 # ─── Routes: Listings ─────────────────────────────────────────────────────────
@@ -692,6 +1025,10 @@ def get_listings():
     order_by      = ALLOWED_SORT.get(sort_key, ALLOWED_SORT["newest"])
     listing_type  = strip(args.get("listing_type", ""), 10).lower()
     ids_param     = strip(args.get("ids", ""), 2000)
+    min_floor     = nonneg_int(args.get("minFloor"))
+    max_floor     = nonneg_int(args.get("maxFloor"))
+    min_year      = nonneg_int(args.get("minYear"))
+    max_year      = nonneg_int(args.get("maxYear"))
     listing_ids: list[int] = []
     if ids_param:
         for raw_part in ids_param.split(","):
@@ -754,9 +1091,36 @@ def get_listings():
     if e_oselya:
         query += " AND l.e_oselya = 1"
     if search:
-        query += " AND (l.title LIKE ? OR l.city LIKE ? OR l.district LIKE ? OR l.description LIKE ?)"
-        token = f"%{search}%"
-        params.extend([token, token, token, token])
+        # Use FTS5 for full-text search; fall back to LIKE on error
+        try:
+            fts_rows = db.execute(
+                "SELECT rowid FROM listings_fts WHERE listings_fts MATCH ? ORDER BY rank LIMIT 500",
+                (search,)
+            ).fetchall()
+            fts_ids = [r[0] for r in fts_rows]
+            if fts_ids:
+                placeholders = ",".join("?" for _ in fts_ids)
+                query += f" AND l.id IN ({placeholders})"
+                params.extend(fts_ids)
+            else:
+                query += " AND 1=0"  # no FTS results
+        except Exception:
+            # FTS not available, fall back to LIKE
+            token = f"%{search}%"
+            query += " AND (l.title LIKE ? OR l.city LIKE ? OR l.district LIKE ? OR l.description LIKE ?)"
+            params.extend([token, token, token, token])
+    if min_floor is not None:
+        query += " AND l.floor >= ?"
+        params.append(min_floor)
+    if max_floor is not None:
+        query += " AND l.floor <= ?"
+        params.append(max_floor)
+    if min_year is not None:
+        query += " AND l.year_built >= ?"
+        params.append(min_year)
+    if max_year is not None:
+        query += " AND l.year_built <= ?"
+        params.append(max_year)
 
     count_query = f"SELECT COUNT(*) FROM ({query})"
     total = db.execute(count_query, params).fetchone()[0]
@@ -869,7 +1233,7 @@ def get_reviews(lid: int):
 
 @app.route("/api/listings/<int:lid>/reviews", methods=["POST"])
 @require_auth
-@limiter.limit("20 per hour")
+@limiter.limit("30 per hour")
 def add_review(lid: int):
     db = get_db()
     if not db.execute("SELECT id FROM listings WHERE id = ?", (lid,)).fetchone():
@@ -1330,6 +1694,60 @@ def analytics_summary():
         by_city=[dict(r) for r in by_city],
         by_type=[dict(r) for r in by_type],
     )
+
+
+@app.route("/api/analytics/lead-funnel", methods=["POST"])
+def analytics_lead_funnel_event():
+    db = get_db()
+    data = request.get_json(silent=True) or {}
+
+    event = strip(data.get("event", ""), 64)
+    intent = strip(data.get("intent", ""), 80)
+    source = strip(data.get("source", ""), 80)
+    listing_type = strip(data.get("listing_type", ""), 16)
+    session_id = strip(data.get("session_id", ""), 80)
+    listing_id_raw = data.get("listing_id")
+    price_raw = data.get("price")
+
+    if not event or not intent or not source:
+        return jsonify(error="event, intent and source are required"), 400
+
+    listing_id = None
+    if listing_id_raw is not None:
+        try:
+            listing_id = int(listing_id_raw)
+        except (TypeError, ValueError):
+            return jsonify(error="listing_id must be integer"), 400
+        if listing_id <= 0:
+            return jsonify(error="listing_id must be positive"), 400
+
+    price = None
+    if price_raw is not None:
+        try:
+            price = int(price_raw)
+        except (TypeError, ValueError):
+            return jsonify(error="price must be integer"), 400
+        if price < 0:
+            return jsonify(error="price must be non-negative"), 400
+
+    db.execute(
+        """
+        INSERT INTO lead_funnel_events (
+            listing_id, event, intent, source, listing_type, price, session_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            listing_id,
+            event,
+            intent,
+            source,
+            listing_type or None,
+            price,
+            session_id or None,
+        ),
+    )
+    db.commit()
+    return jsonify(ok=True), 201
 
 
 @app.route("/seo/<city>", methods=["GET"])

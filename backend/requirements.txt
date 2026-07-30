@@ -4,3 +4,8 @@ PyJWT>=2.8.0
 bcrypt>=4.0.0
 flask-limiter>=3.5.0
 gunicorn>=21.0.0
+# PostgreSQL adapter — only needed when DATABASE_URL is set
+psycopg2-binary>=2.9.9
+# Redis for rate-limiter shared state across Gunicorn workers
+redis>=5.0.0
+limits>=3.6.0

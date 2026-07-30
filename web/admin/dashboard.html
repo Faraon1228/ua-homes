@@ -362,7 +362,7 @@
                 <!-- Reports Page -->
                 <div id="page-reports" class="p-6 hidden">
                     <h2 class="text-2xl font-bold mb-6">Звіти</h2>
-                    <div class="grid grid-cols-2 gap-6">
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-6">
                         <div class="bg-white p-6 rounded-lg shadow-sm">
                             <h3 class="font-bold mb-4">За містами (топ-5)</h3>
                             <div id="report-by-city" class="space-y-2">
@@ -370,9 +370,154 @@
                             </div>
                         </div>
                         <div class="bg-white p-6 rounded-lg shadow-sm">
-                            <h3 class="font-bold mb-4">Статистика</h3>
-                            <div id="report-stats" class="space-y-2">
-                                <p class="text-gray-500">Завантаження...</p>
+                            <div class="flex items-center justify-between mb-4 gap-2">
+                                <h3 id="lf-title" class="font-bold">Lead funnel (30 днів)</h3>
+                                <div class="flex items-center gap-2">
+                                    <button onclick="exportLeadFunnelCsv()" class="rounded-lg bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800 hover:bg-emerald-200">CSV</button>
+                                    <div class="inline-flex rounded-lg border border-slate-200 p-1 text-xs font-semibold">
+                                        <button id="lf-days-7" onclick="setLeadFunnelDays(7)" class="rounded-md px-2 py-1 text-slate-600 hover:bg-slate-100">7д</button>
+                                        <button id="lf-days-30" onclick="setLeadFunnelDays(30)" class="rounded-md bg-slate-900 px-2 py-1 text-white">30д</button>
+                                        <button id="lf-days-90" onclick="setLeadFunnelDays(90)" class="rounded-md px-2 py-1 text-slate-600 hover:bg-slate-100">90д</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-3 text-sm">
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">Detail views</div>
+                                    <div id="lf-total-views" class="text-xl font-black text-slate-800 mt-1">-</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">Lead intents</div>
+                                    <div id="lf-total-intents" class="text-xl font-black text-blue-700 mt-1">-</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">Lead submits</div>
+                                    <div id="lf-total-submits" class="text-xl font-black text-emerald-700 mt-1">-</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">CTR intent→submit</div>
+                                    <div id="lf-total-ctr" class="text-xl font-black text-violet-700 mt-1">-</div>
+                                </div>
+                            </div>
+                            <div class="mt-4">
+                                <div id="lf-ctr-delta" class="mb-2 text-xs font-semibold text-gray-500">Δ CTR vs попередній період: —</div>
+                                <div class="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">CTR по днях</div>
+                                <div id="lf-trend-chart" class="flex h-24 items-end gap-1 rounded-lg border border-slate-200 bg-slate-50 p-2">
+                                    <div class="text-xs text-gray-500">Завантаження...</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                        <div class="bg-white p-6 rounded-lg shadow-sm">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="font-bold">CTR за source</h3>
+                                <button onclick="loadReports()" class="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-200">Оновити</button>
+                            </div>
+                            <div class="overflow-auto">
+                                <table class="w-full text-sm">
+                                    <thead>
+                                        <tr class="text-left text-gray-500 border-b">
+                                            <th class="py-2">Source</th>
+                                            <th class="py-2">Intents</th>
+                                            <th class="py-2">Submits</th>
+                                            <th class="py-2">CTR</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="lf-by-source">
+                                        <tr><td colspan="4" class="py-3 text-gray-500">Завантаження...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="bg-white p-6 rounded-lg shadow-sm">
+                            <h3 class="font-bold mb-4">Breakdown за listing_type</h3>
+                            <div class="overflow-auto mb-4">
+                                <table class="w-full text-sm">
+                                    <thead>
+                                        <tr class="text-left text-gray-500 border-b">
+                                            <th class="py-2">Type</th>
+                                            <th class="py-2">Intents</th>
+                                            <th class="py-2">Submits</th>
+                                            <th class="py-2">CTR</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="lf-by-type">
+                                        <tr><td colspan="4" class="py-3 text-gray-500">Завантаження...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="bg-white p-6 rounded-lg shadow-sm">
+                            <h3 class="font-bold mb-4">Top listing IDs (conversion)</h3>
+                            <div class="overflow-auto">
+                                <table class="w-full text-sm">
+                                    <thead>
+                                        <tr class="text-left text-gray-500 border-b">
+                                            <th class="py-2">Listing</th>
+                                            <th class="py-2">Intents</th>
+                                            <th class="py-2">Submits</th>
+                                            <th class="py-2">CTR</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="lf-top-listings">
+                                        <tr><td colspan="4" class="py-3 text-gray-500">Завантаження...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="bg-white p-6 rounded-lg shadow-sm xl:col-span-2">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="font-bold">Benchmark mode (7/30/90)</h3>
+                                <span class="text-xs text-gray-500">CTR intent→submit + sparkline по source</span>
+                            </div>
+                            <div class="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                                <span class="font-semibold uppercase tracking-wide">CTR drop warning</span>
+                                <span>Попереджати якщо 7д CTR нижче 30д більш ніж на</span>
+                                <input
+                                    id="lf-drop-threshold"
+                                    type="number"
+                                    min="0"
+                                    step="0.5"
+                                    onchange="setCtrDropThreshold(this.value)"
+                                    class="w-20 rounded border border-amber-300 bg-white px-2 py-1 text-right font-semibold text-amber-900 focus:border-amber-500 focus:outline-none"
+                                >
+                                <span>п.п.</span>
+                                <span id="lf-drop-threshold-label" class="rounded bg-amber-100 px-2 py-1 font-semibold">—</span>
+                            </div>
+                            <div id="lf-benchmark-alert" class="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                                Перевірка падіння CTR...
+                            </div>
+                            <div id="lf-benchmark-summary" class="mb-4 grid grid-cols-3 gap-3 text-sm">
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">CTR 7д</div>
+                                    <div id="lf-benchmark-ctr-7" class="text-lg font-black text-blue-700">-</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">CTR 30д</div>
+                                    <div id="lf-benchmark-ctr-30" class="text-lg font-black text-violet-700">-</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">CTR 90д</div>
+                                    <div id="lf-benchmark-ctr-90" class="text-lg font-black text-emerald-700">-</div>
+                                </div>
+                            </div>
+                            <div class="overflow-auto">
+                                <table class="w-full text-sm">
+                                    <thead>
+                                        <tr class="text-left text-gray-500 border-b">
+                                            <th class="py-2">Source</th>
+                                            <th class="py-2">CTR 7д</th>
+                                            <th class="py-2">CTR 30д</th>
+                                            <th class="py-2">CTR 90д</th>
+                                            <th class="py-2">Sparkline</th>
+                                            <th class="py-2">Alert</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="lf-benchmark-body">
+                                        <tr><td colspan="6" class="py-3 text-gray-500">Завантаження...</td></tr>
+                                    </tbody>
+                                </table>
                             </div>
                         </div>
                     </div>
@@ -392,6 +537,9 @@
         let selectedListingIds = new Set();
         let csvPreviewRows = [];
         let csvPreviewHeaders = [];
+        let leadFunnelDays = 30;
+        let ctrDropThresholdPp = Number(localStorage.getItem('admin_lf_ctr_drop_threshold_pp') || 5);
+        let leadFunnelBenchmarkReports = { report7: null, report30: null, report90: null };
 
         // Check auth
         window.addEventListener('load', async () => {
@@ -1367,22 +1515,228 @@
             }
         }
 
+        function setLeadFunnelDays(days) {
+            leadFunnelDays = days;
+            [7, 30, 90].forEach(d => {
+                const el = document.getElementById(`lf-days-${d}`);
+                if (!el) return;
+                if (d === days) {
+                    el.classList.add('bg-slate-900', 'text-white');
+                    el.classList.remove('text-slate-600');
+                } else {
+                    el.classList.remove('bg-slate-900', 'text-white');
+                    el.classList.add('text-slate-600');
+                }
+            });
+            const title = document.getElementById('lf-title');
+            if (title) title.textContent = `Lead funnel (${days} днів)`;
+            loadReports();
+        }
+
+        async function exportLeadFunnelCsv() {
+            try {
+                const res = await fetch(`${API_BASE}/reports/lead-funnel/export.csv?days=${leadFunnelDays}`, {
+                    headers: getAuthHeaders()
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    alert(err.error || 'Не вдалося експортувати funnel CSV');
+                    return;
+                }
+                const blob = await res.blob();
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `ua-homes-lead-funnel-${leadFunnelDays}d.csv`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(link.href);
+            } catch (err) {
+                alert('Помилка експорту funnel CSV');
+            }
+        }
+
+        function renderLeadTrendChart(points) {
+            const chart = document.getElementById('lf-trend-chart');
+            if (!chart) return;
+            if (!points || !points.length) {
+                chart.innerHTML = '<div class="text-xs text-gray-500">Немає даних</div>';
+                return;
+            }
+            const maxCtr = Math.max(...points.map(p => Number(p.ctr_intent_to_submit || 0)), 1);
+            const bars = points.map(point => {
+                const ctr = Number(point.ctr_intent_to_submit || 0);
+                const height = Math.max(6, Math.round((ctr / maxCtr) * 72));
+                const dayLabel = String(point.day || '').slice(5);
+                return `
+                    <div class="flex flex-1 flex-col items-center justify-end gap-1" title="${point.day}: ${ctr.toFixed(2)}%">
+                        <div class="w-full max-w-[14px] rounded bg-blue-500/80" style="height:${height}px"></div>
+                        <span class="text-[10px] text-gray-500">${dayLabel}</span>
+                    </div>
+                `;
+            }).join('');
+            chart.innerHTML = bars;
+        }
+
+        function renderCtrDropThresholdLabel() {
+            const label = document.getElementById('lf-drop-threshold-label');
+            const input = document.getElementById('lf-drop-threshold');
+            if (input) input.value = Number(ctrDropThresholdPp).toFixed(1);
+            if (label) label.textContent = `Поріг: ${Number(ctrDropThresholdPp).toFixed(1)} п.п.`;
+        }
+
+        function setCtrDropThreshold(rawValue) {
+            const parsed = Number(rawValue);
+            if (!Number.isFinite(parsed)) {
+                renderCtrDropThresholdLabel();
+                return;
+            }
+            ctrDropThresholdPp = Math.max(0, Math.min(100, parsed));
+            localStorage.setItem('admin_lf_ctr_drop_threshold_pp', String(ctrDropThresholdPp));
+            renderCtrDropThresholdLabel();
+            if (leadFunnelBenchmarkReports.report7 && leadFunnelBenchmarkReports.report30 && leadFunnelBenchmarkReports.report90) {
+                renderSourceBenchmark(
+                    leadFunnelBenchmarkReports.report7,
+                    leadFunnelBenchmarkReports.report30,
+                    leadFunnelBenchmarkReports.report90
+                );
+            }
+        }
+
+        function renderSourceBenchmark(report7, report30, report90) {
+            leadFunnelBenchmarkReports = { report7, report30, report90 };
+            const sourceSet = new Set([
+                ...(report7.by_source || []).map(row => row.source),
+                ...(report30.by_source || []).map(row => row.source),
+                ...(report90.by_source || []).map(row => row.source),
+            ]);
+
+            const toMetricMap = (rows) => Object.fromEntries((rows || []).map(row => [row.source, {
+                ctr: Number(row.ctr_intent_to_submit || 0),
+                intents: Number(row.intents || 0),
+            }]));
+            const c7 = toMetricMap(report7.by_source);
+            const c30 = toMetricMap(report30.by_source);
+            const c90 = toMetricMap(report90.by_source);
+
+            const allSources = Array.from(sourceSet).sort((a, b) => ((c30[b] && c30[b].ctr) || 0) - ((c30[a] && c30[a].ctr) || 0));
+            const rows = allSources.map(source => {
+                const v7 = Number((c7[source] && c7[source].ctr) || 0);
+                const v30 = Number((c30[source] && c30[source].ctr) || 0);
+                const v90 = Number((c90[source] && c90[source].ctr) || 0);
+                const intents30 = Number((c30[source] && c30[source].intents) || 0);
+                const dropPp = v30 - v7;
+                const isDropWarning = intents30 > 0 && dropPp > ctrDropThresholdPp;
+                const maxVal = Math.max(v7, v30, v90, 1);
+                const bar = (val, color) => `<span class="inline-block w-2 rounded ${color}" style="height:${Math.max(4, Math.round((val / maxVal) * 24))}px" title="${val.toFixed(2)}%"></span>`;
+                const sparkline = `<div class="flex items-end gap-1 h-7">${bar(v7, 'bg-blue-500')}${bar(v30, 'bg-violet-500')}${bar(v90, 'bg-emerald-500')}</div>`;
+                const alertBadge = isDropWarning
+                    ? `<span class="inline-flex items-center rounded-full bg-rose-100 px-2 py-0.5 text-xs font-bold text-rose-700">⚠ -${dropPp.toFixed(2)} п.п.</span>`
+                    : '<span class="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">OK</span>';
+                return `
+                    <tr class="border-b ${isDropWarning ? 'bg-rose-50/60' : ''}">
+                        <td class="py-2 font-semibold">${source}</td>
+                        <td class="py-2">${v7.toFixed(2)}%</td>
+                        <td class="py-2">${v30.toFixed(2)}%</td>
+                        <td class="py-2">${v90.toFixed(2)}%</td>
+                        <td class="py-2">${sparkline}</td>
+                        <td class="py-2">${alertBadge}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            const totalCtr7 = Number(report7.totals?.ctr_intent_to_submit || 0);
+            const totalCtr30 = Number(report30.totals?.ctr_intent_to_submit || 0);
+            const totalDropPp = totalCtr30 - totalCtr7;
+            const totalIntents30 = Number(report30.totals?.intents || 0);
+            const isTotalDropWarning = totalIntents30 > 0 && totalDropPp > ctrDropThresholdPp;
+
+            document.getElementById('lf-benchmark-ctr-7').textContent = `${totalCtr7.toFixed(2)}%`;
+            document.getElementById('lf-benchmark-ctr-30').textContent = `${totalCtr30.toFixed(2)}%`;
+            document.getElementById('lf-benchmark-ctr-90').textContent = `${Number(report90.totals?.ctr_intent_to_submit || 0).toFixed(2)}%`;
+            document.getElementById('lf-benchmark-body').innerHTML = rows || '<tr><td colspan="6" class="py-3 text-gray-500">Немає даних</td></tr>';
+
+            const warningEl = document.getElementById('lf-benchmark-alert');
+            if (warningEl) {
+                if (isTotalDropWarning) {
+                    warningEl.className = 'mb-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800';
+                    warningEl.textContent = `⚠ CTR drop warning: 7д CTR нижче 30д на ${totalDropPp.toFixed(2)} п.п. (поріг ${ctrDropThresholdPp.toFixed(1)} п.п.)`;
+                } else {
+                    warningEl.className = 'mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800';
+                    warningEl.textContent = `✓ CTR стабільний: різниця 30д→7д = ${totalDropPp.toFixed(2)} п.п. (поріг ${ctrDropThresholdPp.toFixed(1)} п.п.)`;
+                }
+            }
+        }
+
         // Load reports
         async function loadReports() {
             try {
-                const res = await fetch(API_BASE + '/reports/listings-by-city', {
-                    headers: getAuthHeaders()
-                });
-                const data = await res.json();
+                const [cityRes, funnelRes, funnel7Res, funnel30Res, funnel90Res] = await Promise.all([
+                    fetch(API_BASE + '/reports/listings-by-city', { headers: getAuthHeaders() }),
+                    fetch(`${API_BASE}/reports/lead-funnel?days=${leadFunnelDays}`, { headers: getAuthHeaders() }),
+                    fetch(`${API_BASE}/reports/lead-funnel?days=7`, { headers: getAuthHeaders() }),
+                    fetch(`${API_BASE}/reports/lead-funnel?days=30`, { headers: getAuthHeaders() }),
+                    fetch(`${API_BASE}/reports/lead-funnel?days=90`, { headers: getAuthHeaders() }),
+                ]);
+                const cityData = await cityRes.json();
+                const funnelData = await funnelRes.json();
+                const funnel7 = await funnel7Res.json();
+                const funnel30 = await funnel30Res.json();
+                const funnel90 = await funnel90Res.json();
 
-                const html = data.data.map(c => `
+                const cityHtml = (cityData.data || []).map(c => `
                     <div class="flex justify-between py-2 border-b">
                         <span>${c.city}</span>
                         <span><strong>${c.count}</strong></span>
                     </div>
                 `).join('');
+                document.getElementById('report-by-city').innerHTML = cityHtml || '<p class="text-gray-500">Немає даних</p>';
 
-                document.getElementById('report-by-city').innerHTML = html;
+                document.getElementById('lf-total-views').textContent = Number(funnelData.totals?.views || 0).toLocaleString('uk-UA');
+                document.getElementById('lf-total-intents').textContent = Number(funnelData.totals?.intents || 0).toLocaleString('uk-UA');
+                document.getElementById('lf-total-submits').textContent = Number(funnelData.totals?.submits || 0).toLocaleString('uk-UA');
+                document.getElementById('lf-total-ctr').textContent = `${Number(funnelData.totals?.ctr_intent_to_submit || 0).toFixed(2)}%`;
+                const deltaCtr = Number(funnelData.comparison?.delta?.ctr_intent_to_submit || 0);
+                const deltaLabel = deltaCtr > 0 ? `+${deltaCtr.toFixed(2)} п.п.` : `${deltaCtr.toFixed(2)} п.п.`;
+                const deltaEl = document.getElementById('lf-ctr-delta');
+                deltaEl.textContent = `Δ CTR vs попередні ${funnelData.comparison?.previous_window_days || leadFunnelDays} днів: ${deltaLabel}`;
+                deltaEl.className = `mb-2 text-xs font-semibold ${deltaCtr > 0 ? 'text-emerald-700' : deltaCtr < 0 ? 'text-rose-700' : 'text-gray-500'}`;
+
+                const bySourceHtml = (funnelData.by_source || []).map(row => `
+                    <tr class="border-b">
+                        <td class="py-2 font-semibold">${row.source}</td>
+                        <td class="py-2">${Number(row.intents || 0).toLocaleString('uk-UA')}</td>
+                        <td class="py-2">${Number(row.submits || 0).toLocaleString('uk-UA')}</td>
+                        <td class="py-2 font-bold text-violet-700">${Number(row.ctr_intent_to_submit || 0).toFixed(2)}%</td>
+                    </tr>
+                `).join('');
+                document.getElementById('lf-by-source').innerHTML = bySourceHtml || '<tr><td colspan="4" class="py-3 text-gray-500">Немає подій</td></tr>';
+
+                const byTypeHtml = (funnelData.by_listing_type || []).map(row => `
+                    <tr class="border-b">
+                        <td class="py-2 font-semibold">${row.listing_type}</td>
+                        <td class="py-2">${Number(row.intents || 0).toLocaleString('uk-UA')}</td>
+                        <td class="py-2">${Number(row.submits || 0).toLocaleString('uk-UA')}</td>
+                        <td class="py-2 font-bold text-blue-700">${Number(row.ctr_intent_to_submit || 0).toFixed(2)}%</td>
+                    </tr>
+                `).join('');
+                document.getElementById('lf-by-type').innerHTML = byTypeHtml || '<tr><td colspan="4" class="py-3 text-gray-500">Немає даних</td></tr>';
+
+                const topListingsHtml = (funnelData.top_listings || []).map(row => `
+                    <tr class="border-b">
+                        <td class="py-2">
+                            <div class="font-semibold">${row.title || `Listing #${row.listing_id}`}</div>
+                            <div class="text-xs text-gray-500">ID: ${row.listing_id}</div>
+                        </td>
+                        <td class="py-2">${Number(row.intents || 0).toLocaleString('uk-UA')}</td>
+                        <td class="py-2">${Number(row.submits || 0).toLocaleString('uk-UA')}</td>
+                        <td class="py-2 font-bold text-emerald-700">${Number(row.ctr_intent_to_submit || 0).toFixed(2)}%</td>
+                    </tr>
+                `).join('');
+                document.getElementById('lf-top-listings').innerHTML = topListingsHtml || '<tr><td colspan="4" class="py-3 text-gray-500">Немає даних</td></tr>';
+                renderLeadTrendChart(funnelData.daily_trend || []);
+                renderCtrDropThresholdLabel();
+                renderSourceBenchmark(funnel7, funnel30, funnel90);
             } catch (err) {
                 console.error('Failed to load reports:', err);
             }

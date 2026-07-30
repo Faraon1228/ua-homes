@@ -1160,3 +1160,274 @@ def admin_report_user_growth():
     """).fetchall()
     
     return jsonify(data=[dict(row) for row in rows])
+
+
+def _to_ctr(submits: int, intents: int) -> float:
+    if intents <= 0:
+        return 0.0
+    return round((submits / intents) * 100, 2)
+
+
+def _build_lead_funnel_report(db, days_int: int):
+    window_start = f"-{days_int} days"
+    prev_window_start = f"-{days_int * 2} days"
+
+    source_rows = db.execute(
+        """
+        SELECT source,
+               SUM(CASE WHEN event = 'lead_intent' THEN 1 ELSE 0 END) AS intents,
+               SUM(CASE WHEN event = 'lead_submit' THEN 1 ELSE 0 END) AS submits,
+               SUM(CASE WHEN event = 'lead_redirect' THEN 1 ELSE 0 END) AS redirects,
+               SUM(CASE WHEN event = 'detail_view' THEN 1 ELSE 0 END) AS views
+        FROM lead_funnel_events
+        WHERE created_at >= datetime('now', ?)
+        GROUP BY source
+        ORDER BY intents DESC, submits DESC
+        """,
+        (window_start,),
+    ).fetchall()
+
+    listing_type_rows = db.execute(
+        """
+        SELECT COALESCE(NULLIF(listing_type, ''), 'unknown') AS listing_type,
+               SUM(CASE WHEN event = 'lead_intent' THEN 1 ELSE 0 END) AS intents,
+               SUM(CASE WHEN event = 'lead_submit' THEN 1 ELSE 0 END) AS submits,
+               SUM(CASE WHEN event = 'lead_redirect' THEN 1 ELSE 0 END) AS redirects,
+               SUM(CASE WHEN event = 'detail_view' THEN 1 ELSE 0 END) AS views
+        FROM lead_funnel_events
+        WHERE created_at >= datetime('now', ?)
+        GROUP BY COALESCE(NULLIF(listing_type, ''), 'unknown')
+        ORDER BY intents DESC, submits DESC
+        """,
+        (window_start,),
+    ).fetchall()
+
+    daily_rows = db.execute(
+        """
+        SELECT DATE(created_at) AS day,
+               SUM(CASE WHEN event = 'lead_intent' THEN 1 ELSE 0 END) AS intents,
+               SUM(CASE WHEN event = 'lead_submit' THEN 1 ELSE 0 END) AS submits
+        FROM lead_funnel_events
+        WHERE created_at >= datetime('now', ?)
+        GROUP BY DATE(created_at)
+        ORDER BY day ASC
+        """,
+        (window_start,),
+    ).fetchall()
+
+    top_listing_rows = db.execute(
+        """
+        SELECT
+            lfe.listing_id,
+            COALESCE(l.title, 'Listing #' || lfe.listing_id) AS title,
+            SUM(CASE WHEN lfe.event = 'detail_view' THEN 1 ELSE 0 END) AS views,
+            SUM(CASE WHEN lfe.event = 'lead_intent' THEN 1 ELSE 0 END) AS intents,
+            SUM(CASE WHEN lfe.event = 'lead_submit' THEN 1 ELSE 0 END) AS submits,
+            SUM(CASE WHEN lfe.event = 'lead_redirect' THEN 1 ELSE 0 END) AS redirects
+        FROM lead_funnel_events lfe
+        LEFT JOIN listings l ON l.id = lfe.listing_id
+        WHERE lfe.created_at >= datetime('now', ?)
+          AND lfe.listing_id IS NOT NULL
+        GROUP BY lfe.listing_id
+        HAVING intents > 0 OR submits > 0 OR redirects > 0
+        ORDER BY submits DESC, intents DESC, redirects DESC
+        LIMIT 8
+        """,
+        (window_start,),
+    ).fetchall()
+
+    current_row = db.execute(
+        """
+        SELECT
+            SUM(CASE WHEN event = 'detail_view' THEN 1 ELSE 0 END) AS views,
+            SUM(CASE WHEN event = 'lead_intent' THEN 1 ELSE 0 END) AS intents,
+            SUM(CASE WHEN event = 'lead_submit' THEN 1 ELSE 0 END) AS submits,
+            SUM(CASE WHEN event = 'lead_redirect' THEN 1 ELSE 0 END) AS redirects
+        FROM lead_funnel_events
+        WHERE created_at >= datetime('now', ?)
+        """,
+        (window_start,),
+    ).fetchone()
+
+    previous_row = db.execute(
+        """
+        SELECT
+            SUM(CASE WHEN event = 'detail_view' THEN 1 ELSE 0 END) AS views,
+            SUM(CASE WHEN event = 'lead_intent' THEN 1 ELSE 0 END) AS intents,
+            SUM(CASE WHEN event = 'lead_submit' THEN 1 ELSE 0 END) AS submits,
+            SUM(CASE WHEN event = 'lead_redirect' THEN 1 ELSE 0 END) AS redirects
+        FROM lead_funnel_events
+        WHERE created_at >= datetime('now', ?)
+          AND created_at < datetime('now', ?)
+        """,
+        (prev_window_start, window_start),
+    ).fetchone()
+
+    current_totals = {
+        "views": int(current_row["views"] or 0),
+        "intents": int(current_row["intents"] or 0),
+        "submits": int(current_row["submits"] or 0),
+        "redirects": int(current_row["redirects"] or 0),
+    }
+    current_totals["ctr_intent_to_submit"] = _to_ctr(current_totals["submits"], current_totals["intents"])
+
+    previous_totals = {
+        "views": int(previous_row["views"] or 0),
+        "intents": int(previous_row["intents"] or 0),
+        "submits": int(previous_row["submits"] or 0),
+        "redirects": int(previous_row["redirects"] or 0),
+    }
+    previous_totals["ctr_intent_to_submit"] = _to_ctr(previous_totals["submits"], previous_totals["intents"])
+
+    by_source = []
+    for row in source_rows:
+        intents = int(row["intents"] or 0)
+        submits = int(row["submits"] or 0)
+        redirects = int(row["redirects"] or 0)
+        views = int(row["views"] or 0)
+        by_source.append(
+            {
+                "source": row["source"] or "unknown",
+                "views": views,
+                "intents": intents,
+                "submits": submits,
+                "redirects": redirects,
+                "ctr_intent_to_submit": _to_ctr(submits, intents),
+            }
+        )
+
+    by_listing_type = []
+    for row in listing_type_rows:
+        intents = int(row["intents"] or 0)
+        submits = int(row["submits"] or 0)
+        redirects = int(row["redirects"] or 0)
+        views = int(row["views"] or 0)
+        by_listing_type.append(
+            {
+                "listing_type": row["listing_type"],
+                "views": views,
+                "intents": intents,
+                "submits": submits,
+                "redirects": redirects,
+                "ctr_intent_to_submit": _to_ctr(submits, intents),
+            }
+        )
+
+    daily_trend = []
+    for row in daily_rows:
+        intents = int(row["intents"] or 0)
+        submits = int(row["submits"] or 0)
+        daily_trend.append(
+            {
+                "day": row["day"],
+                "intents": intents,
+                "submits": submits,
+                "ctr_intent_to_submit": _to_ctr(submits, intents),
+            }
+        )
+
+    top_listings = []
+    for row in top_listing_rows:
+        intents = int(row["intents"] or 0)
+        submits = int(row["submits"] or 0)
+        redirects = int(row["redirects"] or 0)
+        views = int(row["views"] or 0)
+        top_listings.append(
+            {
+                "listing_id": int(row["listing_id"]),
+                "title": row["title"],
+                "views": views,
+                "intents": intents,
+                "submits": submits,
+                "redirects": redirects,
+                "ctr_intent_to_submit": _to_ctr(submits, intents),
+            }
+        )
+
+    return {
+        "window_days": days_int,
+        "totals": current_totals,
+        "comparison": {
+            "previous_window_days": days_int,
+            "previous_totals": previous_totals,
+            "delta": {
+                "views": current_totals["views"] - previous_totals["views"],
+                "intents": current_totals["intents"] - previous_totals["intents"],
+                "submits": current_totals["submits"] - previous_totals["submits"],
+                "redirects": current_totals["redirects"] - previous_totals["redirects"],
+                "ctr_intent_to_submit": round(
+                    current_totals["ctr_intent_to_submit"] - previous_totals["ctr_intent_to_submit"],
+                    2,
+                ),
+            },
+        },
+        "by_source": by_source,
+        "by_listing_type": by_listing_type,
+        "daily_trend": daily_trend,
+        "top_listings": top_listings,
+    }
+
+
+@admin_bp.route("/reports/lead-funnel", methods=["GET"])
+@require_auth_admin
+def admin_report_lead_funnel():
+    from app import get_db
+
+    db = get_db()
+    days = request.args.get("days", "30")
+    try:
+        days_int = int(days)
+    except ValueError:
+        return jsonify(error="days must be integer"), 400
+    days_int = max(1, min(days_int, 180))
+    return jsonify(_build_lead_funnel_report(db, days_int))
+
+
+@admin_bp.route("/reports/lead-funnel/export.csv", methods=["GET"])
+@require_auth_admin
+def admin_report_lead_funnel_csv():
+    from app import get_db
+
+    db = get_db()
+    days = request.args.get("days", "30")
+    try:
+        days_int = int(days)
+    except ValueError:
+        return jsonify(error="days must be integer"), 400
+    days_int = max(1, min(days_int, 180))
+
+    report = _build_lead_funnel_report(db, days_int)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+
+    writer.writerow(["section", "metric", "value", "previous", "delta"])
+    totals = report["totals"]
+    prev = report["comparison"]["previous_totals"]
+    delta = report["comparison"]["delta"]
+    writer.writerow(["totals", "views", totals["views"], prev["views"], delta["views"]])
+    writer.writerow(["totals", "intents", totals["intents"], prev["intents"], delta["intents"]])
+    writer.writerow(["totals", "submits", totals["submits"], prev["submits"], delta["submits"]])
+    writer.writerow(["totals", "redirects", totals["redirects"], prev["redirects"], delta["redirects"]])
+    writer.writerow(["totals", "ctr_intent_to_submit", totals["ctr_intent_to_submit"], prev["ctr_intent_to_submit"], delta["ctr_intent_to_submit"]])
+
+    writer.writerow([])
+    writer.writerow(["by_source", "source", "intents", "submits", "ctr_intent_to_submit"])
+    for row in report["by_source"]:
+        writer.writerow(["by_source", row["source"], row["intents"], row["submits"], row["ctr_intent_to_submit"]])
+
+    writer.writerow([])
+    writer.writerow(["by_listing_type", "listing_type", "intents", "submits", "ctr_intent_to_submit"])
+    for row in report["by_listing_type"]:
+        writer.writerow(["by_listing_type", row["listing_type"], row["intents"], row["submits"], row["ctr_intent_to_submit"]])
+
+    writer.writerow([])
+    writer.writerow(["top_listings", "listing_id", "title", "intents", "submits", "ctr_intent_to_submit"])
+    for row in report["top_listings"]:
+        writer.writerow(["top_listings", row["listing_id"], row["title"], row["intents"], row["submits"], row["ctr_intent_to_submit"]])
+
+    filename = f"ua-homes-lead-funnel-{days_int}d.csv"
+    return Response(
+        buffer.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
