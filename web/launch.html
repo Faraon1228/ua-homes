@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UA Homes — Нерухомість України без посередників</title>
+  <meta name="description" content="Купуй, орендуй та продавай нерухомість в Україні. єОселя, перевірені власники, пошук за поверхом та роком. Безкоштовно." />
+  <meta property="og:title" content="UA Homes — Нерухомість України" />
+  <meta property="og:description" content="Більше 40 об'єктів, єОселя 3%/7%, фільтри по поверху та року — безкоштовно і без посередників." />
+  <meta property="og:image" content="https://images.unsplash.com/photo-1560185007-c5ca9d2c014d?auto=format&fit=crop&w=1200&q=80" />
+  <meta property="og:type" content="website" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏠</text></svg>" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: { ua: { blue: '#005BBB', yellow: '#FFD700' } },
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] }
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
+  <style>
+    .gradient-ua { background: linear-gradient(135deg, #005BBB 0%, #003d82 50%, #001f42 100%); }
+    .card-hover { transition: transform .2s, box-shadow .2s; }
+    .card-hover:hover { transform: translateY(-4px); box-shadow: 0 20px 40px rgba(0,91,187,.15); }
+    .stat-count { font-variant-numeric: tabular-nums; }
+    @keyframes pulse-slow { 0%,100%{opacity:1} 50%{opacity:.7} }
+    .pulse-slow { animation: pulse-slow 2s infinite; }
+  </style>
+</head>
+<body class="font-sans bg-white text-gray-900 antialiased">
+
+  <!-- Navbar -->
+  <nav class="fixed top-0 w-full z-50 bg-white/90 backdrop-blur border-b border-gray-100">
+    <div class="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <span class="text-xl font-black text-blue-700 tracking-tight">UA_DOM</span>
+        <span class="bg-yellow-400 text-blue-900 text-xs font-bold px-2 py-0.5 rounded">β</span>
+      </div>
+      <div class="hidden md:flex items-center gap-8 text-sm font-medium text-gray-600">
+        <a href="#features" class="hover:text-blue-700 transition">Можливості</a>
+        <a href="#listings" class="hover:text-blue-700 transition">Об'єкти</a>
+        <a href="#eoselya" class="hover:text-blue-700 transition">єОселя</a>
+      </div>
+      <a href="real-estate-demo.html"
+         class="bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition shadow-md shadow-blue-200">
+        Переглянути об'єкти →
+      </a>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="gradient-ua text-white pt-32 pb-24 px-4">
+    <div class="max-w-5xl mx-auto text-center">
+      <div class="inline-flex items-center gap-2 bg-white/10 backdrop-blur px-4 py-2 rounded-full text-sm font-medium mb-8 pulse-slow">
+        <span class="w-2 h-2 bg-green-400 rounded-full"></span>
+        Бета-запуск • Безкоштовно • Без посередників
+      </div>
+      <h1 class="text-5xl md:text-7xl font-black leading-tight mb-6 tracking-tight">
+        Нерухомість України<br/>
+        <span class="text-yellow-400">без переплат</span>
+      </h1>
+      <p class="text-xl md:text-2xl text-blue-100 max-w-3xl mx-auto mb-10 leading-relaxed">
+        Шукайте квартири й будинки з підтримкою <strong class="text-white">єОселя (3%/7%)</strong>,
+        фільтрами по поверху та року, пошуком по тексту — і зв'язуйтесь напряму з власником.
+      </p>
+      <div class="flex flex-col sm:flex-row gap-4 justify-center">
+        <a href="real-estate-demo.html"
+           class="bg-yellow-400 hover:bg-yellow-300 text-blue-900 font-black text-lg px-10 py-4 rounded-2xl transition shadow-xl shadow-yellow-400/30">
+          🏠 Переглянути об'єкти
+        </a>
+        <a href="real-estate-demo.html#add"
+           class="bg-white/10 hover:bg-white/20 text-white font-semibold text-lg px-10 py-4 rounded-2xl border border-white/30 transition">
+          + Додати свій об'єкт
+        </a>
+      </div>
+      <!-- Stats -->
+      <div class="grid grid-cols-3 gap-8 mt-16 max-w-2xl mx-auto">
+        <div>
+          <div class="text-4xl font-black text-yellow-400 stat-count">40+</div>
+          <div class="text-blue-200 text-sm mt-1">об'єктів зараз</div>
+        </div>
+        <div>
+          <div class="text-4xl font-black text-yellow-400 stat-count">8</div>
+          <div class="text-blue-200 text-sm mt-1">міст України</div>
+        </div>
+        <div>
+          <div class="text-4xl font-black text-yellow-400 stat-count">3%</div>
+          <div class="text-blue-200 text-sm mt-1">кредит єОселя</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section id="features" class="py-24 px-4 bg-gray-50">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-16">
+        <h2 class="text-4xl font-black mb-4">Чому UA Homes?</h2>
+        <p class="text-gray-500 text-lg max-w-2xl mx-auto">Ми зробили пошук нерухомості простим і чесним</p>
+      </div>
+      <div class="grid md:grid-cols-3 gap-8">
+        <!-- Card 1 -->
+        <div class="bg-white rounded-2xl p-8 card-hover border border-gray-100">
+          <div class="w-14 h-14 bg-blue-100 rounded-2xl flex items-center justify-center text-2xl mb-6">🔍</div>
+          <h3 class="text-xl font-bold mb-3">Розумний пошук</h3>
+          <p class="text-gray-500 leading-relaxed">Пошук по тексту + фільтри по місту, ціні, поверху, року будівництва. Знайдіть квартиру вашої мрії за 30 секунд.</p>
+        </div>
+        <!-- Card 2 -->
+        <div class="bg-blue-700 text-white rounded-2xl p-8 card-hover">
+          <div class="w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center text-2xl mb-6">🏦</div>
+          <h3 class="text-xl font-bold mb-3">єОселя 3% / 7%</h3>
+          <p class="text-blue-100 leading-relaxed">Фільтр об'єктів, які підходять під програму доступного іпотечного кредитування від держави. Реальна економія сотень тисяч гривень.</p>
+        </div>
+        <!-- Card 3 -->
+        <div class="bg-white rounded-2xl p-8 card-hover border border-gray-100">
+          <div class="w-14 h-14 bg-green-100 rounded-2xl flex items-center justify-center text-2xl mb-6">✅</div>
+          <h3 class="text-xl font-bold mb-3">Перевірені власники</h3>
+          <p class="text-gray-500 leading-relaxed">Значки верифікації документів, телефону та особи. Спілкуйтесь напряму без ріелторів і додаткових комісій.</p>
+        </div>
+        <!-- Card 4 -->
+        <div class="bg-white rounded-2xl p-8 card-hover border border-gray-100">
+          <div class="w-14 h-14 bg-yellow-100 rounded-2xl flex items-center justify-center text-2xl mb-6">📱</div>
+          <h3 class="text-xl font-bold mb-3">PWA — як мобільний застосунок</h3>
+          <p class="text-gray-500 leading-relaxed">Додайте на домашній екран — і ви отримаєте повноцінний мобільний застосунок без App Store. Офлайн-режим включено.</p>
+        </div>
+        <!-- Card 5 -->
+        <div class="bg-white rounded-2xl p-8 card-hover border border-gray-100">
+          <div class="w-14 h-14 bg-purple-100 rounded-2xl flex items-center justify-center text-2xl mb-6">🗺️</div>
+          <h3 class="text-xl font-bold mb-3">Київ, Львів, Одеса і ще 5 міст</h3>
+          <p class="text-gray-500 leading-relaxed">Об'єкти з координатами на карті. Оренда і продаж — в одному місці.</p>
+        </div>
+        <!-- Card 6 -->
+        <div class="bg-white rounded-2xl p-8 card-hover border border-gray-100">
+          <div class="w-14 h-14 bg-red-100 rounded-2xl flex items-center justify-center text-2xl mb-6">🆓</div>
+          <h3 class="text-xl font-bold mb-3">Безкоштовно зараз</h3>
+          <p class="text-gray-500 leading-relaxed">Бета-версія. Реєструйтесь і розміщуйте оголошення безкоштовно. Ваш відгук допомагає нам рости.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Preview listings -->
+  <section id="listings" class="py-24 px-4">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-16">
+        <h2 class="text-4xl font-black mb-4">Свіжі об'єкти</h2>
+        <p class="text-gray-500 text-lg">Переглядайте актуальні пропозиції прямо зараз</p>
+      </div>
+      <!-- Sample listing cards (static preview) -->
+      <div class="grid md:grid-cols-3 gap-6 mb-12">
+        <div class="bg-white rounded-2xl overflow-hidden border border-gray-100 card-hover">
+          <div class="relative h-48 bg-gray-200 overflow-hidden">
+            <img src="https://images.unsplash.com/photo-1560185007-c5ca9d2c014d?auto=format&fit=crop&w=600&q=80"
+                 alt="Квартира Київ" class="w-full h-full object-cover" loading="lazy" />
+            <span class="absolute top-3 left-3 bg-blue-700 text-white text-xs font-bold px-3 py-1 rounded-lg">єОселя</span>
+          </div>
+          <div class="p-5">
+            <h3 class="font-bold text-lg mb-1 line-clamp-2">Сучасна 2-кімнатна, ЖК 'Грінвіль'</h3>
+            <p class="text-gray-500 text-sm mb-3">Київ, Печерський • 8 поверх • 2021</p>
+            <div class="flex items-center justify-between">
+              <span class="text-2xl font-black text-blue-700">$125,000</span>
+              <span class="text-gray-500 text-sm">68 м²</span>
+            </div>
+          </div>
+        </div>
+        <div class="bg-white rounded-2xl overflow-hidden border border-gray-100 card-hover">
+          <div class="relative h-48 bg-gray-200 overflow-hidden">
+            <img src="https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?auto=format&fit=crop&w=600&q=80"
+                 alt="Квартира Львів" class="w-full h-full object-cover" loading="lazy" />
+          </div>
+          <div class="p-5">
+            <h3 class="font-bold text-lg mb-1 line-clamp-2">Простора 3-кімнатна для родини</h3>
+            <p class="text-gray-500 text-sm mb-3">Львів, Франківський • 3 поверх • 2019</p>
+            <div class="flex items-center justify-between">
+              <span class="text-2xl font-black text-blue-700">$95,000</span>
+              <span class="text-gray-500 text-sm">85 м²</span>
+            </div>
+          </div>
+        </div>
+        <div class="bg-white rounded-2xl overflow-hidden border border-gray-100 card-hover">
+          <div class="relative h-48 bg-gray-200 overflow-hidden">
+            <img src="https://images.unsplash.com/photo-1493809842364-78817add7ffb?auto=format&fit=crop&w=600&q=80"
+                 alt="Квартира оренда" class="w-full h-full object-cover" loading="lazy" />
+            <span class="absolute top-3 left-3 bg-emerald-600 text-white text-xs font-bold px-3 py-1 rounded-lg">Оренда</span>
+          </div>
+          <div class="p-5">
+            <h3 class="font-bold text-lg mb-1 line-clamp-2">Видова 1-кімнатна біля метро</h3>
+            <p class="text-gray-500 text-sm mb-3">Київ, Голосіївський • 5 поверх • 2023</p>
+            <div class="flex items-center justify-between">
+              <span class="text-2xl font-black text-emerald-700">$500/міс</span>
+              <span class="text-gray-500 text-sm">32 м²</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="text-center">
+        <a href="real-estate-demo.html"
+           class="inline-flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white font-bold px-10 py-4 rounded-2xl transition shadow-xl shadow-blue-200 text-lg">
+          Переглянути всі 40+ об'єктів →
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- єОселя block -->
+  <section id="eoselya" class="py-24 px-4 bg-blue-50">
+    <div class="max-w-4xl mx-auto">
+      <div class="bg-white rounded-3xl p-10 md:p-14 border border-blue-100 text-center">
+        <div class="text-5xl mb-6">🏦</div>
+        <h2 class="text-4xl font-black mb-4">Програма єОселя</h2>
+        <p class="text-gray-600 text-lg max-w-2xl mx-auto mb-8 leading-relaxed">
+          Держава надає іпотеку під <strong>3% річних</strong> для молоді та людей з інвалідністю
+          і <strong>7% річних</strong> для всіх інших. Ми відмічаємо такі об'єкти спеціальним бейджем.
+        </p>
+        <div class="grid md:grid-cols-2 gap-6 text-left mb-10">
+          <div class="bg-blue-50 rounded-2xl p-6">
+            <div class="font-black text-2xl text-blue-700 mb-2">3% річних</div>
+            <ul class="text-gray-600 space-y-1 text-sm">
+              <li>• Молодь до 35 років</li>
+              <li>• Учасники бойових дій</li>
+              <li>• Люди з інвалідністю</li>
+              <li>• Переселенці з окупованих територій</li>
+            </ul>
+          </div>
+          <div class="bg-yellow-50 rounded-2xl p-6">
+            <div class="font-black text-2xl text-yellow-700 mb-2">7% річних</div>
+            <ul class="text-gray-600 space-y-1 text-sm">
+              <li>• Всі громадяни України</li>
+              <li>• Перше житло (не понад 2 об'єкти)</li>
+              <li>• Новобудова або вторинка</li>
+              <li>• До 4 млн грн суми кредиту</li>
+            </ul>
+          </div>
+        </div>
+        <a href="real-estate-demo.html?eOselya=true"
+           class="inline-flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white font-bold px-8 py-4 rounded-2xl transition">
+          Знайти єОселя-об'єкти →
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="gradient-ua py-24 px-4 text-white text-center">
+    <div class="max-w-3xl mx-auto">
+      <h2 class="text-4xl md:text-5xl font-black mb-6">Спробуйте UA Homes<br/>прямо зараз</h2>
+      <p class="text-blue-100 text-lg mb-10">Безкоштовно. Без реєстрації для перегляду. Без ріелторів.</p>
+      <div class="flex flex-col sm:flex-row gap-4 justify-center">
+        <a href="real-estate-demo.html"
+           class="bg-yellow-400 hover:bg-yellow-300 text-blue-900 font-black text-lg px-10 py-4 rounded-2xl transition shadow-xl">
+          🏠 Відкрити застосунок
+        </a>
+        <a href="real-estate-demo.html#add"
+           class="bg-white/10 hover:bg-white/20 text-white font-semibold text-lg px-10 py-4 rounded-2xl border border-white/30 transition">
+          Додати оголошення
+        </a>
+      </div>
+      <p class="text-blue-300 text-sm mt-8">
+        Маєш відгук або хочеш повідомити про баг?
+        <a href="mailto:feedback@ua-homes.com" class="text-white underline">Напиши нам</a>
+      </p>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="bg-gray-900 text-gray-400 py-10 px-4">
+    <div class="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+      <div class="flex items-center gap-2">
+        <span class="text-white font-black">UA_DOM</span>
+        <span class="text-gray-500 text-sm">© 2026 · Нерухомість України</span>
+      </div>
+      <div class="flex gap-6 text-sm">
+        <a href="real-estate-demo.html" class="hover:text-white transition">Застосунок</a>
+        <a href="#features" class="hover:text-white transition">Можливості</a>
+        <a href="mailto:feedback@ua-homes.com" class="hover:text-white transition">Зворотній зв'язок</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // Smooth scroll
+    document.querySelectorAll('a[href^="#"]').forEach(a => {
+      a.addEventListener('click', e => {
+        const target = document.querySelector(a.getAttribute('href'));
+        if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth' }); }
+      });
+    });
+  </script>
+</body>
+</html>

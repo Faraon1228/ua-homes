@@ -3,7 +3,7 @@
   command = "echo 'Static site — no build needed'"
 
 # Proxy API calls to the Railway backend.
-# Replace YOUR_RAILWAY_URL with your actual Railway app URL
+# After deploying to Railway, replace YOUR_RAILWAY_URL with actual URL
 # e.g. https://ua-homes-production.up.railway.app
 [[redirects]]
   from = "/api-backend/*"
@@ -11,6 +11,31 @@
   status = 200
   force = true
 
+# /app → main SPA
+[[redirects]]
+  from = "/app"
+  to = "/real-estate-demo.html"
+  status = 200
+
+# /app/* → main SPA (for any sub-paths)
+[[redirects]]
+  from = "/app/*"
+  to = "/real-estate-demo.html"
+  status = 200
+
+# /admin → admin panel
+[[redirects]]
+  from = "/admin"
+  to = "/admin/login.html"
+  status = 302
+
+# Root → launch landing page
+[[redirects]]
+  from = "/"
+  to = "/launch.html"
+  status = 200
+
+# Everything else → SPA fallback
 [[redirects]]
   from = "/*"
   to = "/real-estate-demo.html"
@@ -23,6 +48,11 @@
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
     Cache-Control = "public, max-age=3600"
+
+[[headers]]
+  for = "/launch.html"
+  [headers.values]
+    Cache-Control = "public, max-age=300"
 
 [[headers]]
   for = "/real-estate-demo.html"
