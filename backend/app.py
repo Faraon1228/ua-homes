@@ -474,7 +474,7 @@ def init_db():
         demo_pw = bcrypt.hashpw(b"demo1234", bcrypt.gensalt(rounds=12)).decode()
         cur = db.execute(
             "INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
-            ("UA Homes Demo", "demo@ua-homes.com", demo_pw),
+            ("UA Homes Demo", "demo@ua-dom.com", demo_pw),
         )
         demo_id = cur.lastrowid
         db.executemany(
@@ -519,7 +519,7 @@ def init_db():
             has_video_tour = CASE WHEN id % 4 = 0 THEN 1 ELSE 0 END
         WHERE user_id IN (SELECT id FROM users WHERE email = ?)
         """,
-        ("demo@ua-homes.com",),
+        ("demo@ua-dom.com",),
     )
     db.commit()
 
@@ -629,7 +629,7 @@ def send_email_verify(to_email: str, token: str) -> bool:
             import urllib.request as _req, json as _json
             payload = _json.dumps({
                 "personalizations": [{"to": [{"email": to_email}]}],
-                "from": {"email": os.environ.get("FROM_EMAIL", "noreply@ua-homes.com")},
+                "from": {"email": os.environ.get("FROM_EMAIL", "noreply@ua-dom.com")},
                 "subject": subject,
                 "content": [
                     {"type": "text/plain", "value": body_text},
@@ -652,7 +652,7 @@ def send_email_verify(to_email: str, token: str) -> bool:
             from email.mime.text import MIMEText
             msg = MIMEMultipart("alternative")
             msg["Subject"] = subject
-            msg["From"] = os.environ.get("FROM_EMAIL", "noreply@ua-homes.com")
+            msg["From"] = os.environ.get("FROM_EMAIL", "noreply@ua-dom.com")
             msg["To"] = to_email
             msg.attach(MIMEText(body_text, "plain", "utf-8"))
             msg.attach(MIMEText(body_html, "html", "utf-8"))

@@ -5,7 +5,7 @@
 | Variable | Description | Example |
 |---|---|---|
 | `UA_HOMES_SECRET` | JWT signing secret (min 32 chars) | `openssl rand -hex 32` |
-| `UA_HOMES_PUBLIC_URL` | Canonical public URL | `https://ua-homes.railway.app` |
+| `UA_HOMES_PUBLIC_URL` | Canonical public URL | `https://ua-dom.com` |
 
 ## Database
 
@@ -24,7 +24,7 @@
 | Variable | Description |
 |---|---|
 | `SENDGRID_API_KEY` | SendGrid API key |
-| `FROM_EMAIL` | Sender address (default: noreply@ua-homes.com) |
+| `FROM_EMAIL` | Sender address (default: noreply@ua-dom.com) |
 | `SMTP_HOST` | SMTP server host |
 | `SMTP_PORT` | SMTP port (default: 587) |
 | `SMTP_USER` | SMTP username |
