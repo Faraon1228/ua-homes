@@ -3,11 +3,9 @@
   command = "echo 'Static site — no build needed'"
 
 # Proxy API calls to the Railway backend.
-# Replace YOUR_RAILWAY_URL with your actual Railway app URL after deploy
-# e.g. https://ua-dom-backend.up.railway.app
 [[redirects]]
   from = "/api-backend/*"
-  to = "https://YOUR_RAILWAY_URL/:splat"
+  to = "https://backend-production-51964.up.railway.app/:splat"
   status = 200
   force = true
 
