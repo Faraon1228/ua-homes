@@ -18,7 +18,9 @@ worker_class = "gthread"
 threads = int(os.environ.get("GUNICORN_THREADS", 2))
 
 # ── Binding ──────────────────────────────────────────────────────────────────
-bind = os.environ.get("GUNICORN_BIND", "0.0.0.0:5050")
+# Railway (and most cloud platforms) inject $PORT. Fall back to 5050 for local dev.
+_port = os.environ.get("PORT", os.environ.get("GUNICORN_PORT", "5050"))
+bind = os.environ.get("GUNICORN_BIND", f"0.0.0.0:{_port}")
 
 # ── Timeouts ─────────────────────────────────────────────────────────────────
 timeout = int(os.environ.get("GUNICORN_TIMEOUT", 30))

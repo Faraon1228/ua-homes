@@ -2,6 +2,15 @@
   publish = "web"
   command = "echo 'Static site — no build needed'"
 
+# Proxy API calls to the Railway backend.
+# Replace YOUR_RAILWAY_URL with your actual Railway app URL
+# e.g. https://ua-homes-production.up.railway.app
+[[redirects]]
+  from = "/api-backend/*"
+  to = "https://YOUR_RAILWAY_URL/:splat"
+  status = 200
+  force = true
+
 [[redirects]]
   from = "/*"
   to = "/real-estate-demo.html"
