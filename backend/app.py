@@ -2,6 +2,7 @@ from __future__ import annotations
 """UA Homes backend — Flask + SQLite.
 Security: bcrypt passwords, JWT auth, rate limiting, CORS, parameterised queries.
 """
+import base64
 import json
 import os
 import re
@@ -142,6 +143,71 @@ SEED_LISTINGS = [
      50.4420, 30.5230),
 ]
 
+# Rent listings seed (listing_type = 'rent', price = monthly UAH equivalent in USD)
+SEED_RENT_LISTINGS = [
+    ("Оренда 2-кімнатної на Подолі", "Київ", "Подільський",
+     "квартира", "після ремонту", 800, 2, 65.0, 4, 9, 2015, 0,
+     imgs("1560185007-c5ca9d2c014d","1502672260266-1c1ef2d93688"),
+     "Затишна квартира після ремонту. Меблі, побутова техніка, інтернет. Без посередників.",
+     50.4590, 30.5226),
+
+    ("Оренда студії біля метро Лівобережна", "Київ", "Дніпровський",
+     "квартира", "після ремонту", 450, 1, 28.0, 3, 14, 2020, 0,
+     imgs("1493809842364-78817add7ffb","1484154218962-a197022b5858"),
+     "Сучасна студія з новими меблями та технікою. 7 хвилин пішки до метро. Є кондиціонер.",
+     50.4536, 30.6118),
+
+    ("Оренда 1-кімнатної у Львові центр", "Львів", "Галицький",
+     "квартира", "вторинка", 500, 1, 42.0, 2, 5, 2010, 0,
+     imgs("1484154218962-a197022b5858","1560185007-c5ca9d2c014d"),
+     "Квартира в центрі Львова. Меблі та техніка, інтернет. Поруч кав'ярні та транспорт.",
+     49.8397, 24.0335),
+
+    ("Оренда офісу в бізнес-центрі", "Харків", "Слобідський",
+     "комерція", "після ремонту", 1200, 0, 120.0, 5, 12, 2018, 0,
+     imgs("1497366216548-37526070297c","1449844908441-8829872d2607"),
+     "Сучасний офіс відкритого планування. Переговорна кімната, кухня, 24/7 доступ, паркінг.",
+     49.9935, 36.2304),
+
+    ("Оренда 3-кімнатної для родини в Одесі", "Одеса", "Приморський",
+     "квартира", "після ремонту", 900, 3, 88.0, 6, 9, 2012, 0,
+     imgs("1512917774080-9991f1c4c750","1502672260266-1c1ef2d93688"),
+     "Простора квартира біля моря. Є все необхідне, великий балкон з видом. Власник.",
+     46.4825, 30.7160),
+
+    ("Оренда будинку з ділянкою під Києвом", "Київ", "Дарницький",
+     "будинок", "вторинка", 1500, 4, 150.0, 2, 2, 2005, 0,
+     imgs("1523217582562-09d0def993a6","1570129477492-45c003edd2be"),
+     "Будинок з великим двором та гаражем. Тихий район, зручний виїзд на трасу. Є всі комунікації.",
+     50.4102, 30.6700),
+]
+
+VERIFICATION_STATES = {"unverified", "pending", "verified", "rejected"}
+MODERATION_STATES = {"pending_review", "in_review", "approved", "changes_requested", "rejected"}
+
+
+def verification_state_from_bool(value) -> str:
+    return "verified" if bool(value) else "unverified"
+
+
+def moderation_state_from_status(status: str | None) -> str:
+    status = (status or "").strip().lower()
+    if status == "published":
+        return "approved"
+    if status == "rejected":
+        return "rejected"
+    if status in {"draft", "pending"}:
+        return "pending_review"
+    return "approved"
+
+
+def log_listing_event(db: sqlite3.Connection, listing_id: int, action: str, reason: str | None = None, admin_id: int | None = None):
+    actor_id = admin_id if admin_id is not None else getattr(g, "user_id", None)
+    db.execute(
+        "INSERT INTO moderation_log (listing_id, admin_id, action, reason) VALUES (?, ?, ?, ?)",
+        (listing_id, actor_id, action, reason),
+    )
+
 
 def init_db():
     db = sqlite3.connect(DB_PATH)
@@ -177,10 +243,19 @@ def init_db():
             views          INTEGER NOT NULL DEFAULT 0,
             images         TEXT    NOT NULL DEFAULT '[]',
             status         TEXT    NOT NULL DEFAULT 'draft',
+            listing_type   TEXT    NOT NULL DEFAULT 'sale',
             source         TEXT    NOT NULL DEFAULT 'owner',
+            listing_status TEXT    NOT NULL DEFAULT 'active',
+            has_photo_tour INTEGER NOT NULL DEFAULT 0,
+            has_video_tour INTEGER NOT NULL DEFAULT 0,
             verified_owner INTEGER NOT NULL DEFAULT 0,
             verified_phone INTEGER NOT NULL DEFAULT 0,
             verified_docs  INTEGER NOT NULL DEFAULT 0,
+            owner_verification_status TEXT NOT NULL DEFAULT 'unverified',
+            phone_verification_status TEXT NOT NULL DEFAULT 'unverified',
+            moderation_status TEXT NOT NULL DEFAULT 'pending_review',
+            moderation_reason TEXT,
+            moderation_updated_at TEXT,
             published_at   TEXT,
             latitude       REAL,
             longitude      REAL,
@@ -250,10 +325,52 @@ def init_db():
         db.execute("ALTER TABLE listings ADD COLUMN verified_phone INTEGER NOT NULL DEFAULT 0")
     if "verified_docs" not in listing_columns:
         db.execute("ALTER TABLE listings ADD COLUMN verified_docs INTEGER NOT NULL DEFAULT 0")
+    if "owner_verification_status" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN owner_verification_status TEXT NOT NULL DEFAULT 'unverified'")
+    if "phone_verification_status" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN phone_verification_status TEXT NOT NULL DEFAULT 'unverified'")
+    if "moderation_status" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN moderation_status TEXT NOT NULL DEFAULT 'pending_review'")
+    if "moderation_reason" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN moderation_reason TEXT")
+    if "moderation_updated_at" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN moderation_updated_at TEXT")
     if "published_at" not in listing_columns:
         db.execute("ALTER TABLE listings ADD COLUMN published_at TEXT")
+    if "listing_type" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN listing_type TEXT NOT NULL DEFAULT 'sale'")
+    if "listing_status" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN listing_status TEXT NOT NULL DEFAULT 'active'")
+    if "has_photo_tour" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN has_photo_tour INTEGER NOT NULL DEFAULT 0")
+    if "has_video_tour" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN has_video_tour INTEGER NOT NULL DEFAULT 0")
 
     db.execute("UPDATE listings SET source = COALESCE(NULLIF(source, ''), 'owner')")
+    db.execute("UPDATE listings SET listing_status = COALESCE(NULLIF(listing_status, ''), 'active')")
+    db.execute(
+        """
+        UPDATE listings
+        SET owner_verification_status = CASE
+                WHEN verified_owner = 1 THEN 'verified'
+                WHEN COALESCE(NULLIF(owner_verification_status, ''), '') = '' THEN 'unverified'
+                ELSE owner_verification_status
+            END,
+            phone_verification_status = CASE
+                WHEN verified_phone = 1 THEN 'verified'
+                WHEN COALESCE(NULLIF(phone_verification_status, ''), '') = '' THEN 'unverified'
+                ELSE phone_verification_status
+            END,
+            moderation_status = CASE
+                WHEN COALESCE(NULLIF(moderation_status, ''), '') != '' THEN moderation_status
+                WHEN status = 'published' THEN 'approved'
+                WHEN status = 'rejected' THEN 'rejected'
+                WHEN status IN ('draft', 'pending') THEN 'pending_review'
+                ELSE 'approved'
+            END,
+            moderation_updated_at = COALESCE(moderation_updated_at, published_at, created_at)
+        """
+    )
     db.commit()
 
     if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
@@ -267,9 +384,17 @@ def init_db():
             """INSERT INTO listings
                (user_id,title,city,district,property_type,condition_type,price,rooms,area,
                 floor,total_floors,year_built,e_oselya,images,description,latitude,longitude,
-                status,published_at,verified_owner,verified_phone,verified_docs,source)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',datetime('now'),1,1,1,'seed')""",
+                status,published_at,verified_owner,verified_phone,verified_docs,source,listing_type)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',datetime('now'),1,1,1,'seed','sale')""",
             [(demo_id, *row) for row in SEED_LISTINGS],
+        )
+        db.executemany(
+            """INSERT INTO listings
+               (user_id,title,city,district,property_type,condition_type,price,rooms,area,
+                floor,total_floors,year_built,e_oselya,images,description,latitude,longitude,
+                status,published_at,verified_owner,verified_phone,verified_docs,source,listing_type)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',datetime('now'),1,1,1,'seed','rent')""",
+            [(demo_id, *row) for row in SEED_RENT_LISTINGS],
         )
         db.commit()
 
@@ -282,7 +407,19 @@ def init_db():
             verified_owner = 1,
             verified_phone = 1,
             verified_docs = 1,
-            source = COALESCE(NULLIF(source, ''), 'seed')
+            owner_verification_status = 'verified',
+            phone_verification_status = 'verified',
+            moderation_status = 'approved',
+            moderation_reason = NULL,
+            moderation_updated_at = COALESCE(moderation_updated_at, published_at, created_at),
+            source = COALESCE(NULLIF(source, ''), 'seed'),
+            listing_status = CASE
+                WHEN id % 4 = 0 THEN 'sold'
+                WHEN id % 5 = 0 THEN 'removed'
+                ELSE 'active'
+            END,
+            has_photo_tour = CASE WHEN id % 3 = 0 THEN 1 ELSE 0 END,
+            has_video_tour = CASE WHEN id % 4 = 0 THEN 1 ELSE 0 END
         WHERE user_id IN (SELECT id FROM users WHERE email = ?)
         """,
         ("demo@ua-homes.com",),
@@ -327,6 +464,19 @@ def require_auth(f):
     return wrapper
 
 
+def get_optional_actor(db) -> tuple[int | None, bool]:
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None, False
+    try:
+        payload = decode_token(auth[7:])
+    except (jwt.ExpiredSignatureError, jwt.PyJWTError):
+        return None, False
+    user_id = int(payload["sub"])
+    row = db.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+    return user_id, bool(row and row["role"] == "admin")
+
+
 # ─── Validation helpers ───────────────────────────────────────────────────────
 
 EMAIL_RE = re.compile(r"^[a-zA-Z0-9_.+\-]+@[a-zA-Z0-9\-]+\.[a-zA-Z0-9\-.]+$")
@@ -362,6 +512,13 @@ def pos_float(val) -> float | None:
 def _row_to_listing(r) -> dict:
     d = dict(r)
     d["images"] = json.loads(d.get("images") or "[]")
+    d["listing_status"] = d.get("listing_status") or "active"
+    d["owner_verification_status"] = d.get("owner_verification_status") or verification_state_from_bool(d.get("verified_owner"))
+    d["phone_verification_status"] = d.get("phone_verification_status") or verification_state_from_bool(d.get("verified_phone"))
+    d["moderation_status"] = d.get("moderation_status") or moderation_state_from_status(d.get("status"))
+    d["moderation_reason"] = d.get("moderation_reason") or ""
+    d["has_photo_tour"] = bool(d.get("has_photo_tour"))
+    d["has_video_tour"] = bool(d.get("has_video_tour"))
     d["verified_owner"] = bool(d.get("verified_owner"))
     d["verified_phone"] = bool(d.get("verified_phone"))
     d["verified_docs"] = bool(d.get("verified_docs"))
@@ -406,8 +563,9 @@ def _seo_landing_stats(db: sqlite3.Connection, limit: int = 8):
     return city_rows, district_rows
 
 
-# ─── Routes: Auth ─────────────────────────────────────────────────────────────
+init_db()
 
+# ─── Routes: Auth ─────────────────────────────────────────────────────────────
 @app.route("/api/auth/register", methods=["POST"])
 @limiter.limit("10 per minute")
 def register():
@@ -485,12 +643,26 @@ ALLOWED_SORT = {
     "views-desc": "l.views DESC",
 }
 
+# Maps sort key → (listing column name, direction) for cursor WHERE clauses.
+CURSOR_FIELD: dict[str, tuple[str, str]] = {
+    "price-asc":  ("price",      "asc"),
+    "price-desc": ("price",      "desc"),
+    "area-asc":   ("area",       "asc"),
+    "area-desc":  ("area",       "desc"),
+    "newest":     ("created_at", "desc"),
+    "views-desc": ("views",      "desc"),
+}
+
 LISTING_SELECT = """
-    SELECT l.id, l.title, l.city, l.district, l.property_type, l.condition_type,
+    SELECT l.id, l.user_id, l.title, l.city, l.district, l.property_type, l.condition_type,
            l.price, l.rooms, l.area, l.floor, l.total_floors, l.year_built,
            l.e_oselya, l.views, l.images, l.latitude, l.longitude, l.description,
-           l.status, l.source, l.verified_owner, l.verified_phone, l.verified_docs,
-           l.published_at, l.created_at, u.name AS owner_name, u.email AS owner_email
+           l.status, l.listing_type, l.source, l.listing_status, l.has_photo_tour, l.has_video_tour,
+           l.verified_owner, l.verified_phone, l.verified_docs,
+           l.owner_verification_status, l.phone_verification_status,
+           l.moderation_status, l.moderation_reason, l.moderation_updated_at,
+           l.published_at, l.created_at,
+           u.name AS owner_name, u.email AS owner_email
     FROM   listings l
     JOIN   users u ON u.id = l.user_id
 """
@@ -518,6 +690,21 @@ def get_listings():
     limit         = min(max(limit, 1), 200)
     sort_key      = args.get("sort", "newest")
     order_by      = ALLOWED_SORT.get(sort_key, ALLOWED_SORT["newest"])
+    listing_type  = strip(args.get("listing_type", ""), 10).lower()
+    ids_param     = strip(args.get("ids", ""), 2000)
+    listing_ids: list[int] = []
+    if ids_param:
+        for raw_part in ids_param.split(","):
+            raw_part = raw_part.strip()
+            if not raw_part:
+                continue
+            try:
+                value = int(raw_part)
+            except ValueError:
+                continue
+            if value > 0:
+                listing_ids.append(value)
+        listing_ids = list(dict.fromkeys(listing_ids))[:200]
 
     query  = LISTING_SELECT + " WHERE 1=1"
     params: list = []
@@ -526,15 +713,26 @@ def get_listings():
         query += " AND l.status = ?"
         params.append(status)
 
+    if listing_type in ("sale", "rent"):
+        query += " AND l.listing_type = ?"
+        params.append(listing_type)
+
     if city:
         query += " AND l.city = ?"
         params.append(city)
     if district:
-        query += " AND l.district = ?"
-        params.append(district)
+        query += " AND l.district LIKE ?"
+        params.append(f"%{district}%")
     if prop_type:
         query += " AND l.property_type = ?"
         params.append(prop_type)
+    if ids_param:
+        if listing_ids:
+            placeholders = ",".join("?" for _ in listing_ids)
+            query += f" AND l.id IN ({placeholders})"
+            params.extend(listing_ids)
+        else:
+            query += " AND 1 = 0"
     if min_price is not None:
         query += " AND l.price >= ?"
         params.append(min_price)
@@ -562,17 +760,73 @@ def get_listings():
 
     count_query = f"SELECT COUNT(*) FROM ({query})"
     total = db.execute(count_query, params).fetchone()[0]
-    query += f" ORDER BY {order_by} LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
+
+    # Cursor pagination: decode opaque cursor and add keyset WHERE clause.
+    cursor_param = strip(args.get("cursor", ""), 1000)
+    cursor_data: dict | None = None
+    if cursor_param:
+        try:
+            decoded = base64.urlsafe_b64decode(cursor_param + "==").decode()
+            cd = json.loads(decoded)
+            if (
+                isinstance(cd, dict)
+                and cd.get("sort_by") == sort_key
+                and cd.get("last_id") is not None
+                and cd.get("last_value") is not None
+            ):
+                cursor_data = cd
+        except Exception:
+            pass
+
+    cursor_active = False
+    if cursor_data:
+        last_val = cursor_data["last_value"]
+        last_id  = int(cursor_data["last_id"])
+        cf_name, cf_dir = CURSOR_FIELD.get(sort_key, ("id", "desc"))
+        if cf_dir == "desc":
+            query += f" AND (l.{cf_name} < ? OR (l.{cf_name} = ? AND l.id < ?))"
+        else:
+            query += f" AND (l.{cf_name} > ? OR (l.{cf_name} = ? AND l.id > ?))"
+        params.extend([last_val, last_val, last_id])
+        query += f" ORDER BY {order_by} LIMIT ?"
+        params.append(limit)
+        cursor_active = True
+        offset = 0
+    else:
+        query += f" ORDER BY {order_by} LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
 
     rows = db.execute(query, params).fetchall()
     listings = [_row_to_listing(r) for r in rows]
+
+    if cursor_active:
+        has_more = len(listings) == limit
+    else:
+        has_more = (offset + len(listings)) < total
+
+    # Build opaque next_cursor so frontend can fetch the next page without offset drift.
+    next_cursor: str | None = None
+    if has_more and listings:
+        last = listings[-1]
+        cf_name, _ = CURSOR_FIELD.get(sort_key, ("id", "desc"))
+        cursor_obj = {
+            "sort_by":    sort_key,
+            "last_value": last.get(cf_name),
+            "last_id":    last["id"],
+        }
+        next_cursor = (
+            base64.urlsafe_b64encode(json.dumps(cursor_obj).encode())
+            .decode()
+            .rstrip("=")
+        )
+
     return jsonify(
         listings=listings,
         total=total,
         limit=limit,
         offset=offset,
-        has_more=(offset + len(listings)) < total,
+        has_more=has_more,
+        next_cursor=next_cursor,
     )
 
 
@@ -582,6 +836,9 @@ def get_listing(lid: int):
     row = db.execute(LISTING_SELECT + " WHERE l.id = ?", (lid,)).fetchone()
     if not row:
         return jsonify(error="Оголошення не знайдено"), 404
+    actor_id, is_admin = get_optional_actor(db)
+    if row["status"] != "published" and row["user_id"] != actor_id and not is_admin:
+        return jsonify(error="Оголошення ще не опубліковано"), 404
     listing = _row_to_listing(row)
     reviews = db.execute(
         "SELECT id, user_name, rating, comment, created_at FROM reviews WHERE listing_id = ? ORDER BY created_at DESC",
@@ -644,6 +901,9 @@ def add_review(lid: int):
 @limiter.limit("30 per hour")
 def create_listing():
     data = request.get_json(silent=True) or {}
+    db = get_db()
+    actor = db.execute("SELECT role FROM users WHERE id = ?", (g.user_id,)).fetchone()
+    is_admin = bool(actor and actor["role"] == "admin")
 
     title         = strip(data.get("title"),         200)
     city          = strip(data.get("city"),           100)
@@ -658,6 +918,14 @@ def create_listing():
     total_floors  = pos_int(data.get("totalFloors"))   or 1
     year_built    = nonneg_int(data.get("yearBuilt"))
     e_oselya      = bool(data.get("eOselya", False))
+    listing_type  = strip(data.get("listingType", "sale"), 10).lower()
+    listing_status= strip(data.get("listingStatus", "active"), 20).lower()
+    source        = strip(data.get("source", "owner"), 20).lower()
+    has_photo_tour = bool(data.get("hasPhotoTour", False))
+    has_video_tour = bool(data.get("hasVideoTour", False))
+    owner_verification_requested = bool(data.get("verifiedOwner", False) or data.get("requestOwnerVerification", False))
+    phone_verification_requested = bool(data.get("verifiedPhone", False) or data.get("requestPhoneVerification", False))
+    verified_docs  = bool(data.get("verifiedDocs", False))
     images_raw    = data.get("images", [])
     images        = json.dumps([str(u).strip() for u in (images_raw if isinstance(images_raw, list) else [])][:10])
     lat           = data.get("latitude")
@@ -665,8 +933,14 @@ def create_listing():
 
     VALID_TYPES  = {"квартира","будинок","комерція","земля"}
     VALID_CONDS  = {"нова будова","вторинка","після ремонту","без ремонту"}
+    VALID_LISTING_TYPES = {"sale", "rent"}
+    VALID_LISTING_STATUS = {"active", "sold", "removed"}
+    VALID_SOURCES = {"owner", "agency", "agent", "seed"}
     if prop_type not in VALID_TYPES: prop_type = "квартира"
     if condition not in VALID_CONDS: condition = "вторинка"
+    if listing_type not in VALID_LISTING_TYPES: listing_type = "sale"
+    if listing_status not in VALID_LISTING_STATUS: listing_status = "active"
+    if source not in VALID_SOURCES: source = "owner"
 
     errors = {}
     if not title:    errors["title"]    = "Назва обов'язкова"
@@ -684,16 +958,36 @@ def create_listing():
     except (TypeError, ValueError):
         lat = lng = None
 
-    db  = get_db()
+    status = "published" if is_admin else "pending"
+    published_at_value = datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ") if is_admin else None
+    moderation_status = "approved" if is_admin else "pending_review"
+    moderation_reason = None if is_admin else "Нове оголошення очікує модерації перед публікацією."
+    moderation_updated_at = datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ")
+    owner_verification_status = "verified" if is_admin and owner_verification_requested else ("pending" if owner_verification_requested else "unverified")
+    phone_verification_status = "verified" if is_admin and phone_verification_requested else ("pending" if phone_verification_requested else "unverified")
+    verified_owner = is_admin and owner_verification_requested
+    verified_phone = is_admin and phone_verification_requested
     cur = db.execute(
         """INSERT INTO listings
-           (user_id,title,city,district,property_type,condition_type,price,rooms,area,
+            (user_id,title,city,district,property_type,condition_type,price,rooms,area,
             floor,total_floors,year_built,e_oselya,images,latitude,longitude,description,
-            status,published_at,source)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',datetime('now'),'owner')""",
+            status,published_at,listing_type,source,listing_status,has_photo_tour,has_video_tour,
+            verified_owner,verified_phone,verified_docs,
+            owner_verification_status,phone_verification_status,
+            moderation_status,moderation_reason,moderation_updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (g.user_id, title, city, district, prop_type, condition, price, rooms, area,
-         floor, total_floors, year_built, int(e_oselya), images, lat, lng, description),
+         floor, total_floors, year_built, int(e_oselya), images, lat, lng, description, status,
+         published_at_value, listing_type, source, listing_status, int(has_photo_tour), int(has_video_tour),
+         int(verified_owner), int(verified_phone), int(verified_docs),
+         owner_verification_status, phone_verification_status, moderation_status, moderation_reason, moderation_updated_at),
     )
+    if owner_verification_requested:
+        log_listing_event(db, cur.lastrowid, "request_owner_verification", "Автоматично створено під час подачі оголошення.")
+    if phone_verification_requested:
+        log_listing_event(db, cur.lastrowid, "request_phone_verification", "Автоматично створено під час подачі оголошення.")
+    if not is_admin:
+        log_listing_event(db, cur.lastrowid, "submit_for_moderation", moderation_reason)
     db.commit()
 
     row = db.execute(LISTING_SELECT + " WHERE l.id = ?", (cur.lastrowid,)).fetchone()
@@ -719,7 +1013,15 @@ def delete_listing(listing_id: int):
 @require_auth
 def update_listing_verification(listing_id: int):
     db = get_db()
-    listing = db.execute("SELECT user_id FROM listings WHERE id = ?", (listing_id,)).fetchone()
+    listing = db.execute(
+        """
+        SELECT id, user_id, status, verified_owner, verified_phone, verified_docs,
+               owner_verification_status, phone_verification_status, moderation_status, moderation_reason
+        FROM listings
+        WHERE id = ?
+        """,
+        (listing_id,),
+    ).fetchone()
     if not listing:
         return jsonify(error="Оголошення не знайдено"), 404
 
@@ -729,18 +1031,106 @@ def update_listing_verification(listing_id: int):
         return jsonify(error="Недостатньо прав"), 403
 
     data = request.get_json(silent=True) or {}
-    verified_owner = 1 if bool(data.get("verified_owner")) else 0
-    verified_phone = 1 if bool(data.get("verified_phone")) else 0
-    verified_docs = 1 if bool(data.get("verified_docs")) else 0
+    reason = strip(data.get("reason"), 400)
+
+    requested_owner_status = strip(data.get("owner_verification_status"), 32).lower()
+    requested_phone_status = strip(data.get("phone_verification_status"), 32).lower()
+    requested_moderation_status = strip(data.get("moderation_status"), 32).lower()
+    owner_status = requested_owner_status or listing["owner_verification_status"] or verification_state_from_bool(listing["verified_owner"])
+    phone_status = requested_phone_status or listing["phone_verification_status"] or verification_state_from_bool(listing["verified_phone"])
+    moderation_status = requested_moderation_status or listing["moderation_status"] or moderation_state_from_status(listing["status"])
+    verified_owner = bool(listing["verified_owner"])
+    verified_phone = bool(listing["verified_phone"])
+    verified_docs = bool(listing["verified_docs"])
+
+    if is_admin:
+        if "verified_owner" in data:
+            verified_owner = bool(data.get("verified_owner"))
+            owner_status = "verified" if verified_owner else "unverified"
+        if "verified_phone" in data:
+            verified_phone = bool(data.get("verified_phone"))
+            phone_status = "verified" if verified_phone else "unverified"
+        if "verified_docs" in data:
+            verified_docs = bool(data.get("verified_docs"))
+    else:
+        allowed_owner_statuses = {"pending", "unverified"}
+        allowed_phone_statuses = {"pending", "unverified"}
+        if requested_owner_status and requested_owner_status not in allowed_owner_statuses:
+            return jsonify(error="Користувач може лише подати або скасувати запит на верифікацію власника"), 403
+        if requested_phone_status and requested_phone_status not in allowed_phone_statuses:
+            return jsonify(error="Користувач може лише подати або скасувати запит на верифікацію телефону"), 403
+        if requested_moderation_status:
+            return jsonify(error="Користувач може лише подати або скасувати запит на верифікацію"), 403
+        moderation_status = listing["moderation_status"] or moderation_state_from_status(listing["status"])
+
+    if owner_status not in VERIFICATION_STATES:
+        return jsonify(error="Невалідний статус верифікації власника"), 422
+    if phone_status not in VERIFICATION_STATES:
+        return jsonify(error="Невалідний статус верифікації телефону"), 422
+    if moderation_status not in MODERATION_STATES:
+        return jsonify(error="Невалідний статус модерації"), 422
+
+    if owner_status != "verified":
+        verified_owner = False
+    if phone_status != "verified":
+        verified_phone = False
+    if is_admin and owner_status == "verified":
+        verified_owner = True
+    if is_admin and phone_status == "verified":
+        verified_phone = True
+
+    next_status = listing["status"]
+    published_at_sql = "published_at"
+    if is_admin:
+        if moderation_status == "approved":
+            next_status = "published"
+            published_at_sql = "COALESCE(published_at, datetime('now'))"
+        elif moderation_status == "rejected":
+            next_status = "rejected"
+        else:
+            next_status = "pending"
+    elif listing["status"] == "rejected" and (owner_status == "pending" or phone_status == "pending"):
+        next_status = "pending"
 
     db.execute(
-        """
+        f"""
         UPDATE listings
-        SET verified_owner = ?, verified_phone = ?, verified_docs = ?
+        SET verified_owner = ?,
+            verified_phone = ?,
+            verified_docs = ?,
+            owner_verification_status = ?,
+            phone_verification_status = ?,
+            moderation_status = ?,
+            moderation_reason = ?,
+            moderation_updated_at = datetime('now'),
+            status = ?,
+            published_at = {published_at_sql}
         WHERE id = ?
         """,
-        (verified_owner, verified_phone, verified_docs, listing_id),
+        (
+            int(verified_owner),
+            int(verified_phone),
+            int(verified_docs),
+            owner_status,
+            phone_status,
+            moderation_status,
+            reason or ("Статус оновлено" if listing["moderation_status"] != moderation_status else listing["moderation_reason"]),
+            next_status,
+            listing_id,
+        ),
     )
+    if is_admin:
+        if data.get("moderation_status"):
+            log_listing_event(db, listing_id, f"moderation_{moderation_status}", reason, admin_id=g.user_id)
+        if data.get("owner_verification_status") or "verified_owner" in data:
+            log_listing_event(db, listing_id, f"owner_verification_{owner_status}", reason, admin_id=g.user_id)
+        if data.get("phone_verification_status") or "verified_phone" in data:
+            log_listing_event(db, listing_id, f"phone_verification_{phone_status}", reason, admin_id=g.user_id)
+    else:
+        if data.get("owner_verification_status"):
+            log_listing_event(db, listing_id, f"owner_verification_{owner_status}", reason)
+        if data.get("phone_verification_status"):
+            log_listing_event(db, listing_id, f"phone_verification_{phone_status}", reason)
     db.commit()
 
     row = db.execute(LISTING_SELECT + " WHERE l.id = ?", (listing_id,)).fetchone()
@@ -1275,6 +1665,463 @@ def _render_seo_page(city: str, district: str | None):
     return Response(html, mimetype="text/html; charset=utf-8")
 
 
+# ─── Routes: Individual listing page ─────────────────────────────────────────
+
+@app.route("/listing/<int:lid>", methods=["GET"])
+def listing_page(lid: int):
+    db = get_db()
+    row = db.execute(LISTING_SELECT + " WHERE l.id = ? AND l.status = 'published'", (lid,)).fetchone()
+    if not row:
+        return Response("<h1>Оголошення не знайдено</h1>", status=404, mimetype="text/html; charset=utf-8")
+
+    listing = _row_to_listing(row)
+    reviews = db.execute(
+        "SELECT user_name, rating, comment, created_at FROM reviews WHERE listing_id = ? ORDER BY created_at DESC",
+        (lid,)
+    ).fetchall()
+    # Increment view counter
+    db.execute("UPDATE listings SET views = views + 1 WHERE id = ?", (lid,))
+    db.commit()
+
+    base = public_base_url()
+    canonical = f"{base}/listing/{lid}"
+    og_image = listing["images"][0] if listing["images"] else f"{base}/favicon.png"
+    app_link = f"{base}/real-estate-demo.html?listing_id={lid}"
+    city_link = f"{base}/seo/{quote(listing['city'])}"
+    district_link = f"{base}/seo/{quote(listing['city'])}/{quote(listing['district'])}"
+    listing_type_label = "Оренда" if listing.get("listing_type") == "rent" else "Продаж"
+    price_label = f"${int(listing['price']):,}/міс." if listing.get("listing_type") == "rent" else f"${int(listing['price']):,}"
+    per_sqm = int(listing["price"] / listing["area"]) if listing["area"] else 0
+    published_label = (listing.get("published_at") or listing.get("created_at") or "")[:10]
+    listing_status_key = listing.get("listing_status") or "active"
+    availability_url = {
+        "active": "https://schema.org/InStock",
+        "sold": "https://schema.org/SoldOut",
+        "removed": "https://schema.org/Discontinued",
+    }.get(listing_status_key, "https://schema.org/InStock")
+    trust_items = []
+    if listing.get("verified_owner"):
+        trust_items.append("Власник верифікований")
+    if listing.get("verified_phone"):
+        trust_items.append("Телефон підтверджено")
+    if listing.get("verified_docs"):
+        trust_items.append("Документи перевірено")
+    if listing.get("has_photo_tour"):
+        trust_items.append("Є фото-тур")
+    if listing.get("has_video_tour"):
+        trust_items.append("Є відео-тур")
+    trust_count = len(trust_items)
+    media_count = int(bool(listing.get("has_photo_tour"))) + int(bool(listing.get("has_video_tour")))
+    owner_verification_key = listing.get("owner_verification_status") or "unverified"
+    phone_verification_key = listing.get("phone_verification_status") or "unverified"
+    moderation_key = listing.get("moderation_status") or "approved"
+    trust_score_label = (
+        "Йде перевірка"
+        if moderation_key != "approved"
+        else ("Висока довіра" if (listing.get("trust_score") or 0) >= 70 else "Базова перевірка")
+    )
+    seller_label = {
+        "agency": "Агентство",
+        "agent": "Агент",
+        "seed": "Платформа",
+    }.get(listing.get("source"), "Власник")
+    listing_status_label = {
+        "active": "Актуально",
+        "sold": "Продано",
+        "removed": "Знято",
+    }.get(listing_status_key, "Актуально")
+    moderation_label = {
+        "pending_review": "На модерації",
+        "in_review": "Йде перевірка",
+        "approved": "Перевірено модератором",
+        "changes_requested": "Потрібні правки",
+        "rejected": "Відхилено",
+    }.get(moderation_key, "На перевірці")
+    owner_verification_label = {
+        "unverified": "Власника ще не подано на перевірку",
+        "pending": "Верифікація власника в обробці",
+        "verified": "Власник верифікований",
+        "rejected": "Запит власника відхилено",
+    }.get(owner_verification_key, "Статус власника уточнюється")
+    phone_verification_label = {
+        "unverified": "Телефон ще не подано на перевірку",
+        "pending": "Телефон перевіряється",
+        "verified": "Телефон підтверджено",
+        "rejected": "Потрібно повторно підтвердити телефон",
+    }.get(phone_verification_key, "Статус телефону уточнюється")
+    moderation_reason = listing.get("moderation_reason") or ""
+    trust_flow_items = [
+        ("Модерація", moderation_label),
+        ("Власник", owner_verification_label),
+        ("Телефон", phone_verification_label),
+        ("Документи", "Документи перевірено" if listing.get("verified_docs") else "Документи ще не підтверджено"),
+    ]
+    moderation_tone = {
+        "pending_review": ("#fef3c7", "#92400e"),
+        "in_review": ("#dbeafe", "#1d4ed8"),
+        "approved": ("#dcfce7", "#166534"),
+        "changes_requested": ("#ffedd5", "#c2410c"),
+        "rejected": ("#ffe4e6", "#be123c"),
+    }.get(moderation_key, ("#e2e8f0", "#334155"))
+
+    title_seo = f"{listing['title']} | {listing_type_label} | UA Homes"
+    desc_seo = (
+        f"{listing['rooms']} кімн., {listing['area']} м², {listing['city']}, {listing['district']}. "
+        f"Ціна: {price_label}. {moderation_label}. {owner_verification_label}. {listing.get('description','')[:120]}"
+    )
+
+    breadcrumb_ld = {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            {"@type": "ListItem", "position": 1, "name": "UA Homes", "item": f"{base}/real-estate-demo.html"},
+            {"@type": "ListItem", "position": 2, "name": listing["city"], "item": city_link},
+            {"@type": "ListItem", "position": 3, "name": listing["district"], "item": district_link},
+            {"@type": "ListItem", "position": 4, "name": listing["title"], "item": canonical},
+        ],
+    }
+
+    avg_rating = round(sum(r["rating"] for r in reviews) / len(reviews), 1) if reviews else None
+    listing_ld: dict = {
+        "@context": "https://schema.org",
+        "@type": "RealEstateListing",
+        "name": listing["title"],
+        "description": listing.get("description") or desc_seo,
+        "url": canonical,
+        "image": listing["images"][:5] if listing["images"] else [],
+        "datePosted": published_label,
+        "price": str(listing["price"]),
+        "priceCurrency": "USD",
+        "address": {
+            "@type": "PostalAddress",
+            "addressLocality": listing["city"],
+            "addressRegion": listing["district"],
+            "addressCountry": "UA",
+        },
+        "floorLevel": str(listing.get("floor") or ""),
+        "numberOfRooms": listing.get("rooms") or 0,
+        "floorSize": {"@type": "QuantitativeValue", "value": listing["area"], "unitCode": "MTK"},
+        "yearBuilt": str(listing.get("year_built") or ""),
+        "offers": {
+            "@type": "Offer",
+            "price": str(listing["price"]),
+            "priceCurrency": "USD",
+            "availability": availability_url,
+            "url": canonical,
+            "itemCondition": "https://schema.org/UsedCondition",
+            "seller": {
+                "@type": "RealEstateAgent" if listing.get("source") in {"agency", "agent"} else "Person",
+                "name": listing.get("owner_name") or seller_label,
+            },
+        },
+        "additionalProperty": [
+            {"@type": "PropertyValue", "name": "moderationStatus", "value": moderation_label},
+            {"@type": "PropertyValue", "name": "ownerVerificationStatus", "value": owner_verification_label},
+            {"@type": "PropertyValue", "name": "phoneVerificationStatus", "value": phone_verification_label},
+            {"@type": "PropertyValue", "name": "trustScore", "value": str(listing.get("trust_score", 0))},
+        ],
+    }
+    if listing.get("latitude") and listing.get("longitude"):
+        listing_ld["geo"] = {
+            "@type": "GeoCoordinates",
+            "latitude": listing["latitude"],
+            "longitude": listing["longitude"],
+        }
+    if avg_rating:
+        listing_ld["aggregateRating"] = {
+            "@type": "AggregateRating",
+            "ratingValue": avg_rating,
+            "reviewCount": len(reviews),
+            "bestRating": 5,
+        }
+        listing_ld["review"] = [
+            {
+                "@type": "Review",
+                "reviewRating": {"@type": "Rating", "ratingValue": r["rating"], "bestRating": 5},
+                "author": {"@type": "Person", "name": r["user_name"] or "Анонім"},
+                "reviewBody": r["comment"] or "",
+                "datePublished": (r["created_at"] or "")[:10],
+            }
+            for r in list(reviews)[:5]
+        ]
+
+    # Photo carousel HTML
+    photos_html = ""
+    if listing["images"]:
+        imgs_html = "".join(
+            f'<img src="{escape(img)}" alt="{escape(listing["title"])}" width="900" height="506" loading="{("eager" if i==0 else "lazy")}" style="width:100%;height:100%;object-fit:cover;flex-shrink:0;scroll-snap-align:start"/>'
+            for i, img in enumerate(listing["images"])
+        )
+        photos_html = f'<div id="gallery" style="display:flex;overflow-x:auto;scroll-snap-type:x mandatory;border-radius:16px;aspect-ratio:16/9;background:#e2e8f0">{imgs_html}</div>'
+        if len(listing["images"]) > 1:
+            photos_html += f'<p style="font-size:13px;color:#94a3b8;margin-top:6px">{len(listing["images"])} фото · прокрутіть</p>'
+    else:
+        photos_html = '<div style="width:100%;aspect-ratio:16/9;background:#e2e8f0;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:48px">🏠</div>'
+
+    # Map embed (Leaflet inline for standalone page)
+    map_html = ""
+    if listing.get("latitude") and listing.get("longitude"):
+        lat, lng = listing["latitude"], listing["longitude"]
+        map_html = f"""
+<div id="map" style="height:300px;border-radius:16px;margin:20px 0"></div>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  var m=L.map('map',{{zoomControl:true}}).setView([{lat},{lng}],15);
+  L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'© OpenStreetMap'}}).addTo(m);
+  L.marker([{lat},{lng}]).addTo(m).bindPopup('{escape(listing["title"])}').openPopup();
+</script>"""
+
+    # Reviews HTML
+    reviews_html = ""
+    if reviews:
+        stars = lambda r: "★" * int(r) + "☆" * (5 - int(r))
+        reviews_html = "".join(
+            f'<div style="border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin:8px 0">'
+            f'<div style="display:flex;justify-content:space-between;margin-bottom:4px">'
+            f'<strong>{escape(r["user_name"] or "Анонім")}</strong>'
+            f'<span style="color:#f59e0b">{stars(r["rating"])}</span></div>'
+            f'<p style="margin:0;color:#475569">{escape(r["comment"] or "")}</p>'
+            f'<div style="font-size:12px;color:#94a3b8;margin-top:4px">{(r["created_at"] or "")[:10]}</div>'
+            f'</div>'
+            for r in reviews
+        )
+    else:
+        reviews_html = '<p style="color:#94a3b8">Відгуків ще немає.</p>'
+
+    organization_ld = {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": "UA Homes",
+        "url": f"{base}/real-estate-demo.html",
+        "logo": f"{base}/favicon.png",
+        "description": "Платформа для пошуку нерухомості в Україні: квартири, будинки, комерція, оренда та єОселя.",
+    }
+    webpage_ld = {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": title_seo,
+        "url": canonical,
+        "description": desc_seo,
+        "inLanguage": "uk-UA",
+        "isPartOf": {"@type": "WebSite", "name": "UA Homes", "url": f"{base}/real-estate-demo.html"},
+        "speakable": {
+            "@type": "SpeakableSpecification",
+            "cssSelector": ["#listing-title", "#listing-desc", "#trust-summary"],
+        },
+    }
+    faq_entries = [
+        {
+            "q": "Чи перевірене це оголошення?",
+            "a": f"Оголошення має {trust_count} сигналів довіри: {', '.join(trust_items) if trust_items else 'додаткових верифікацій поки немає'}. Статус модерації: {moderation_label.lower()}."
+        },
+        {
+            "q": "Який статус об'єкта зараз?",
+            "a": f"Поточний статус оголошення: {listing_status_label.lower()}."
+        },
+        {
+            "q": "Що з перевіркою власника і телефону?",
+            "a": f"{owner_verification_label}. {phone_verification_label}."
+        },
+        {
+            "q": "Де подивитися схожі оголошення?",
+            "a": "Відкрийте сторінку в застосунку UA Homes, щоб побачити рекомендації, карту, створити алерт і зберегти об'єкт в обране."
+        },
+    ]
+    faq_ld = {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+            {
+                "@type": "Question",
+                "name": item["q"],
+                "acceptedAnswer": {"@type": "Answer", "text": item["a"]},
+            }
+            for item in faq_entries
+        ],
+    }
+
+    trust_badges = []
+    if listing.get("verified_owner"): trust_badges.append("✅ Власник верифікований")
+    if listing.get("verified_phone"): trust_badges.append("📱 Телефон підтверджено")
+    if listing.get("verified_docs"):  trust_badges.append("📄 Документи перевірено")
+    if listing.get("has_photo_tour"): trust_badges.append("📸 Фото-тур")
+    if listing.get("has_video_tour"): trust_badges.append("🎥 Відео-тур")
+    trust_html = " &nbsp;·&nbsp; ".join(trust_badges) if trust_badges else ""
+    listing_status_html = f'<span style="background:#fef3c7;color:#92400e;padding:3px 10px;border-radius:20px;font-size:13px;font-weight:700">{listing_status_label}</span>'
+    seller_html = f'<span style="background:#e0f2fe;color:#075985;padding:3px 10px;border-radius:20px;font-size:13px;font-weight:700">{seller_label}</span>'
+    moderation_html = f'<span style="background:{moderation_tone[0]};color:{moderation_tone[1]};padding:3px 10px;border-radius:20px;font-size:13px;font-weight:700">{moderation_label}</span>'
+    e_oselya_html = '<span style="background:#2563eb;color:#fff;padding:3px 10px;border-radius:20px;font-size:13px;font-weight:700">єОселя</span>' if listing.get("e_oselya") else ""
+    trust_cards_html = "".join(
+        [
+            f'<div class="meta-card"><b>{listing.get("trust_score", 0)}%</b><span>довіра</span></div>',
+            f'<div class="meta-card"><b>{trust_count}</b><span>перевірок</span></div>',
+            f'<div class="meta-card"><b>{media_count}</b><span>турів</span></div>',
+            f'<div class="meta-card"><b>{escape(published_label or "—")}</b><span>оновлено</span></div>',
+        ]
+    )
+    trust_flow_html = "".join(
+        f'<div class="flow-card"><b>{escape(title)}</b><span>{escape(value)}</span></div>'
+        for title, value in trust_flow_items
+    )
+    faq_html = "".join(
+        f'<details style="border-top:1px solid #e2e8f0;padding:12px 0"><summary style="cursor:pointer;font-weight:700">{escape(item["q"])}</summary><p style="margin:10px 0 0;color:#475569">{escape(item["a"])}</p></details>'
+        for item in faq_entries
+    )
+
+    html = f"""<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta name="robots" content="index, follow"/>
+  <title>{escape(title_seo)}</title>
+  <meta name="description" content="{escape(desc_seo)}"/>
+  <link rel="canonical" href="{canonical}"/>
+  <link rel="alternate" hreflang="uk-UA" href="{canonical}"/>
+  <link rel="alternate" hreflang="x-default" href="{base}/real-estate-demo.html"/>
+  <link rel="preconnect" href="https://unpkg.com" crossorigin/>
+  <link rel="preconnect" href="https://images.unsplash.com" crossorigin/>
+  <meta property="og:locale" content="uk_UA"/>
+  <meta property="og:type" content="website"/>
+  <meta property="og:site_name" content="UA Homes"/>
+  <meta property="og:title" content="{escape(title_seo)}"/>
+  <meta property="og:description" content="{escape(desc_seo)}"/>
+  <meta property="og:url" content="{canonical}"/>
+  <meta property="og:image" content="{escape(og_image)}"/>
+  <meta property="og:image:alt" content="{escape(listing['title'])}"/>
+  <meta property="og:image:width" content="900"/>
+  <meta property="og:image:height" content="506"/>
+  <meta name="twitter:card" content="summary_large_image"/>
+  <meta name="twitter:title" content="{escape(title_seo)}"/>
+  <meta name="twitter:description" content="{escape(desc_seo)}"/>
+  <meta name="twitter:image" content="{escape(og_image)}"/>
+  <meta name="twitter:image:alt" content="{escape(listing['title'])}"/>
+  <meta name="twitter:site" content="@ua_homes"/>
+  <script type="application/ld+json">{json.dumps(organization_ld, ensure_ascii=False)}</script>
+  <script type="application/ld+json">{json.dumps(webpage_ld, ensure_ascii=False)}</script>
+  <script type="application/ld+json">{json.dumps(breadcrumb_ld, ensure_ascii=False)}</script>
+  <script type="application/ld+json">{json.dumps(listing_ld, ensure_ascii=False)}</script>
+  <script type="application/ld+json">{json.dumps(faq_ld, ensure_ascii=False)}</script>
+  <style>
+    *{{box-sizing:border-box}}
+    body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;max-width:860px;margin:0 auto;padding:16px 20px 48px;color:#0f172a;background:linear-gradient(180deg,#f8fafc,#eef2ff);line-height:1.55}}
+    a{{color:#2563eb;text-decoration:none}} a:hover{{text-decoration:underline}}
+    h1{{font-size:clamp(1.3rem,5vw,1.9rem);font-weight:900;margin:12px 0 6px;line-height:1.2}}
+    .breadcrumbs{{display:flex;flex-wrap:wrap;gap:6px;font-size:13px;color:#64748b;margin-bottom:12px}}
+    .hero{{background:linear-gradient(135deg,#0f172a,#1e3a8a);border-radius:24px;padding:18px;color:#fff;box-shadow:0 20px 45px rgba(15,23,42,.16);margin-bottom:16px}}
+    .hero-actions{{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}}
+    .hero-note{{display:inline-flex;align-items:center;gap:8px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.08);padding:6px 10px;border-radius:999px;font-size:12px;font-weight:700}}
+    .price{{font-size:2rem;font-weight:900;color:#1d4ed8;margin:10px 0 4px}}
+    .per-sqm{{font-size:14px;color:#64748b;margin-bottom:12px}}
+    .meta-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:16px 0}}
+    .meta-card{{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;text-align:center}}
+    .meta-card b{{display:block;font-size:1.1rem;color:#1e293b}}
+    .meta-card span{{font-size:12px;color:#64748b}}
+    .flow-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:14px}}
+    .flow-card{{background:#fff;border:1px solid #dbeafe;border-radius:14px;padding:12px}}
+    .flow-card b{{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#64748b;margin-bottom:6px}}
+    .flow-card span{{font-size:14px;font-weight:700;color:#0f172a}}
+    .section{{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:16px 20px;margin:14px 0}}
+    .trust{{font-size:13px;color:#15803d;background:#f0fdf4;padding:8px 12px;border-radius:10px;margin:8px 0}}
+    .trust-note{{margin-top:10px;padding:12px 14px;border-radius:12px;background:#fff7ed;color:#9a3412;font-size:13px;border:1px solid #fed7aa}}
+    .back-btn{{display:inline-block;background:#1d4ed8;color:#fff;padding:12px 24px;border-radius:12px;font-weight:700;font-size:15px}}
+    .share-btn{{display:inline-block;background:#f1f5f9;color:#1e293b;padding:10px 18px;border-radius:12px;font-weight:600;margin-left:8px;font-size:14px;cursor:pointer;border:1px solid #e2e8f0}}
+    @media(max-width:600px){{.meta-grid{{grid-template-columns:repeat(2,1fr)}} .hero-actions{{flex-direction:column}} .share-btn{{margin-left:0}}}}
+  </style>
+</head>
+<body>
+  <nav class="breadcrumbs">
+    <a href="{base}/real-estate-demo.html">UA Homes</a><span>›</span>
+    <a href="{city_link}">{escape(listing["city"])}</a><span>›</span>
+    <a href="{district_link}">{escape(listing["district"])}</a><span>›</span>
+    <span>{escape(listing["title"][:40])}…</span>
+  </nav>
+
+  <section class="hero">
+    <div class="hero-note">UA Homes · {moderation_label}</div>
+    <h1 id="listing-title" style="color:#fff;margin-top:14px">{escape(listing["title"])}</h1>
+    <p id="listing-desc" style="margin:0;color:#cbd5e1">{escape(listing["city"])}, {escape(listing["district"])} · {listing_type_label} · {listing_status_label} · {trust_score_label} · {owner_verification_label}</p>
+    <div class="hero-actions">
+      <a href="{app_link}" class="back-btn">← Відкрити в застосунку</a>
+      <a href="{app_link}" class="share-btn" style="margin-left:0">🔔 Отримати схожі та зберегти</a>
+      <button class="share-btn" onclick="navigator.clipboard&&navigator.clipboard.writeText(location.href).then(()=>this.textContent='✅ Скопійовано!')">🔗 Скопіювати посилання</button>
+    </div>
+  </section>
+
+  {photos_html}
+
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+    <span style="background:#f1f5f9;padding:3px 10px;border-radius:20px;font-size:13px;font-weight:600">{escape(listing.get('property_type',''))}</span>
+    <span style="background:#f1f5f9;padding:3px 10px;border-radius:20px;font-size:13px;font-weight:600">{escape(listing.get('condition_type',''))}</span>
+    <span style="background:{'#dcfce7' if listing_type_label=='Продаж' else '#fef9c3'};padding:3px 10px;border-radius:20px;font-size:13px;font-weight:700;color:#166534">{listing_type_label}</span>
+    {listing_status_html}
+    {moderation_html}
+    {seller_html}
+    {e_oselya_html}
+    {f'<span style="color:#f59e0b;font-weight:700">★ {avg_rating}</span>' if avg_rating else ''}
+  </div>
+
+  {f'<div class="trust">{trust_html}</div>' if trust_html else ''}
+  <div class="trust-note">Trust-flow: {escape(moderation_label)} · {escape(owner_verification_label)} · {escape(phone_verification_label)}{f' · {escape(moderation_reason)}' if moderation_reason else ''}</div>
+
+  <div class="price" id="listing-price">{price_label}</div>
+  <div class="per-sqm">{escape(listing["city"])}, {escape(listing["district"])} · ${per_sqm:,}/м² · опубліковано {escape(published_label or "—")}</div>
+
+  <div class="meta-grid">
+    {f'<div class="meta-card"><b>{listing["rooms"]}</b><span>кімнат</span></div>' if listing["rooms"] else ''}
+    <div class="meta-card"><b>{listing["area"]} м²</b><span>площа</span></div>
+    {f'<div class="meta-card"><b>{listing["floor"]}/{listing["total_floors"]}</b><span>поверх</span></div>' if listing.get("floor") else ''}
+    {f'<div class="meta-card"><b>{listing["year_built"]}</b><span>рік будови</span></div>' if listing.get("year_built") else ''}
+    <div class="meta-card"><b>👁 {listing["views"]}</b><span>переглядів</span></div>
+  </div>
+
+  <div class="meta-grid" id="trust-summary">
+    {trust_cards_html}
+  </div>
+
+  <div class="section" style="background:#f8fafc;border-color:#dbeafe">
+    <h2 style="margin-top:0">Статуси перевірки та модерації</h2>
+    <p style="margin:0;color:#334155">Ми показуємо не лише бейджі, а й реальний workflow перевірки оголошення.</p>
+    <div class="flow-grid">
+      {trust_flow_html}
+    </div>
+    {f'<p class="trust-note" style="margin-bottom:0">{escape(moderation_reason)}</p>' if moderation_reason else ''}
+  </div>
+
+  {f'<div class="section"><h2 style="margin-top:0">Опис</h2><p style="margin:0;color:#334155">{escape(listing.get("description",""))}</p></div>' if listing.get("description") else ''}
+
+  <div class="section" style="background:#eff6ff;border-color:#bfdbfe">
+    <h2 style="margin-top:0;color:#1d4ed8">Чому це оголошення виглядає надійно</h2>
+    <p style="margin:0;color:#334155">Статус об'єкта: <strong>{listing_status_label}</strong>. Модерація: <strong>{moderation_label}</strong>. Джерело: <strong>{seller_label}</strong>. Довіра: <strong>{listing.get("trust_score",0)}/100</strong>.</p>
+    <p style="margin:10px 0 0;color:#475569">{escape(", ".join(trust_items) if trust_items else "Оголошення ще не має додаткових trust-сигналів, але сторінка вже підготовлена під production SEO та конверсію.")}</p>
+    <p style="margin:10px 0 0;color:#475569">Верифікація власника: <strong>{escape(owner_verification_label)}</strong>. Верифікація телефону: <strong>{escape(phone_verification_label)}</strong>.</p>
+  </div>
+
+  {map_html}
+
+  <div class="section">
+    <h2 style="margin-top:0">Відгуки {f"({len(reviews)})" if reviews else ""}</h2>
+    {reviews_html}
+    <p style="margin-top:12px"><a href="{app_link}">Залишити відгук у застосунку →</a></p>
+  </div>
+
+  <div class="section" style="background:#eff6ff;border-color:#bfdbfe">
+    <h2 style="margin-top:0;color:#1d4ed8">Подивитись інші об'єкти</h2>
+    <p style="margin:0 0 10px"><a href="{city_link}">Всі об'єкти: {escape(listing["city"])}</a></p>
+    <p style="margin:0"><a href="{district_link}">{escape(listing["district"])} — повний список</a></p>
+    <p style="margin-top:10px"><a href="{app_link}" class="back-btn" style="font-size:14px;padding:10px 18px">Відкрити з фільтрами →</a></p>
+  </div>
+
+  <div class="section">
+    <h2 style="margin-top:0">FAQ по оголошенню</h2>
+    {faq_html}
+  </div>
+</body>
+</html>"""
+    return Response(html, mimetype="text/html; charset=utf-8")
+
+
 @app.route("/sitemap.xml", methods=["GET"])
 def sitemap_xml():
     db = get_db()
@@ -1305,6 +2152,14 @@ def sitemap_xml():
         items.append(
             f"<url><loc>{base}/seo/{quote(city)}/{quote(district)}</loc><lastmod>{updated}</lastmod></url>"
         )
+
+    # Individual listing pages
+    listing_rows = db.execute(
+        "SELECT id, created_at FROM listings WHERE status = 'published' ORDER BY id DESC LIMIT 500"
+    ).fetchall()
+    for lr in listing_rows:
+        updated = (lr["created_at"] or "")[:10]
+        items.append(f"<url><loc>{base}/listing/{lr['id']}</loc><lastmod>{updated}</lastmod><changefreq>weekly</changefreq></url>")
 
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'

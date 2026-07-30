@@ -125,6 +125,24 @@ def parse_csv_row(row, row_number):
     return listing, None
 
 
+def moderation_state_for_action(action):
+    return {
+        "approve": "approved",
+        "reject": "rejected",
+        "hold": "pending_review",
+        "review": "in_review",
+        "changes_requested": "changes_requested",
+    }.get(action)
+
+
+def listing_status_for_moderation(moderation_status):
+    if moderation_status == "approved":
+        return "published"
+    if moderation_status == "rejected":
+        return "rejected"
+    return "pending"
+
+
 def build_listing_filters(args, allow_ids=False):
     clauses = []
     params = []
@@ -588,8 +606,15 @@ def admin_publish_listing(listing_id):
     status = 'published' if published else 'draft'
     
     db.execute(
-        "UPDATE listings SET status = ? WHERE id = ?",
-        (status, listing_id)
+        """
+        UPDATE listings
+        SET status = ?,
+            moderation_status = ?,
+            moderation_updated_at = datetime('now'),
+            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, datetime('now')) ELSE published_at END
+        WHERE id = ?
+        """,
+        (status, "approved" if published else "pending_review", status, listing_id)
     )
     log_moderation_action(db, listing_id, "publish" if published else "unpublish")
     db.commit()
@@ -627,8 +652,9 @@ def admin_import_csv():
             INSERT INTO listings (
                 user_id, title, city, district, property_type, condition_type,
                 price, rooms, area, floor, total_floors, year_built, e_oselya,
-                views, images, status, latitude, longitude, description
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                views, images, status, latitude, longitude, description,
+                moderation_status, moderation_updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 admin_id,
@@ -650,6 +676,7 @@ def admin_import_csv():
                 listing["latitude"],
                 listing["longitude"],
                 listing["description"],
+                "approved" if listing["status"] == "published" else "pending_review",
             ),
         )
         imported.append(cur.lastrowid)
@@ -670,10 +697,23 @@ def admin_moderation_queue():
     db = get_db()
     rows = db.execute(
         """
-        SELECT id, title, city, district, price, rooms, area, status, created_at
+        SELECT id, title, city, district, price, rooms, area, status, created_at,
+               moderation_status, moderation_reason,
+               owner_verification_status, phone_verification_status
         FROM listings
         WHERE status IN ('draft', 'pending', 'rejected')
-        ORDER BY created_at ASC
+           OR moderation_status IN ('in_review', 'changes_requested')
+           OR owner_verification_status = 'pending'
+           OR phone_verification_status = 'pending'
+        ORDER BY
+            CASE
+                WHEN owner_verification_status = 'pending' OR phone_verification_status = 'pending' THEN 0
+                WHEN moderation_status IN ('changes_requested', 'in_review') THEN 1
+                WHEN status IN ('pending', 'draft') THEN 2
+                WHEN status = 'rejected' THEN 3
+                ELSE 4
+            END,
+            created_at ASC
         """
     ).fetchall()
     return jsonify(queue=[dict(row) for row in rows])
@@ -709,31 +749,69 @@ def admin_moderate_listing(listing_id):
     data = request.get_json() or {}
     action = (data.get("action") or "").strip().lower()
     reason = (data.get("reason") or "").strip() or None
+    owner_verification_status = (data.get("owner_verification_status") or "").strip().lower() or None
+    phone_verification_status = (data.get("phone_verification_status") or "").strip().lower() or None
 
     listing = db.execute(
-        "SELECT id, status FROM listings WHERE id = ?",
+        """
+        SELECT id, status, moderation_status, owner_verification_status, phone_verification_status
+        FROM listings
+        WHERE id = ?
+        """,
         (listing_id,)
     ).fetchone()
     if not listing:
         return jsonify(error="Listing not found"), 404
 
-    if action == "approve":
-        new_status = "published"
-    elif action == "reject":
-        new_status = "rejected"
-    elif action == "hold":
-        new_status = "pending"
-    else:
+    moderation_status = moderation_state_for_action(action)
+    if not moderation_status:
         return jsonify(error="Invalid moderation action"), 400
 
+    if owner_verification_status and owner_verification_status not in {"unverified", "pending", "verified", "rejected"}:
+        return jsonify(error="Invalid owner verification status"), 400
+    if phone_verification_status and phone_verification_status not in {"unverified", "pending", "verified", "rejected"}:
+        return jsonify(error="Invalid phone verification status"), 400
+
+    new_status = listing_status_for_moderation(moderation_status)
+    next_owner_verification_status = owner_verification_status or listing["owner_verification_status"] or "unverified"
+    next_phone_verification_status = phone_verification_status or listing["phone_verification_status"] or "unverified"
+
     db.execute(
-        "UPDATE listings SET status = ? WHERE id = ?",
-        (new_status, listing_id)
+        """
+        UPDATE listings
+        SET status = ?,
+            moderation_status = ?,
+            moderation_reason = ?,
+            moderation_updated_at = datetime('now'),
+            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, datetime('now')) ELSE published_at END,
+            owner_verification_status = ?,
+            phone_verification_status = ?,
+            verified_owner = CASE WHEN ? = 'verified' THEN 1 ELSE 0 END,
+            verified_phone = CASE WHEN ? = 'verified' THEN 1 ELSE 0 END
+        WHERE id = ?
+        """,
+        (
+            new_status,
+            moderation_status,
+            reason,
+            new_status,
+            next_owner_verification_status,
+            next_phone_verification_status,
+            next_owner_verification_status,
+            next_phone_verification_status,
+            listing_id,
+        ),
     )
     log_moderation_action(db, listing_id, action, reason)
     db.commit()
 
-    return jsonify(ok=True, status=new_status)
+    return jsonify(
+        ok=True,
+        status=new_status,
+        moderation_status=moderation_status,
+        owner_verification_status=next_owner_verification_status,
+        phone_verification_status=next_phone_verification_status,
+    )
 
 
 @admin_bp.route("/listings/bulk-moderate", methods=["POST"])
@@ -755,14 +833,10 @@ def admin_bulk_moderate():
     except (TypeError, ValueError):
         return jsonify(error="listing_ids must contain integers"), 400
 
-    if action == "approve":
-        new_status = "published"
-    elif action == "reject":
-        new_status = "rejected"
-    elif action == "hold":
-        new_status = "pending"
-    else:
+    moderation_status = moderation_state_for_action(action)
+    if not moderation_status:
         return jsonify(error="Invalid moderation action"), 400
+    new_status = listing_status_for_moderation(moderation_status)
 
     existing = db.execute(
         f"SELECT id FROM listings WHERE id IN ({','.join('?' for _ in ids)})",
@@ -775,13 +849,21 @@ def admin_bulk_moderate():
 
     for listing_id in ids:
         db.execute(
-            "UPDATE listings SET status = ? WHERE id = ?",
-            (new_status, listing_id)
+            """
+            UPDATE listings
+            SET status = ?,
+                moderation_status = ?,
+                moderation_reason = ?,
+                moderation_updated_at = datetime('now'),
+                published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, datetime('now')) ELSE published_at END
+            WHERE id = ?
+            """,
+            (new_status, moderation_status, reason, new_status, listing_id)
         )
         log_moderation_action(db, listing_id, action, reason)
 
     db.commit()
-    return jsonify(ok=True, status=new_status, updated=len(ids))
+    return jsonify(ok=True, status=new_status, moderation_status=moderation_status, updated=len(ids))
 
 
 @admin_bp.route("/listings/bulk-delete", methods=["POST"])

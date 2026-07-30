@@ -7,6 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
   <meta name="apple-mobile-web-app-title" content="UA Homes"/>
   <meta name="theme-color" content="#1e293b"/>
+  <meta name="application-name" content="UA Homes"/>
   <meta name="description" content="Пошук нерухомості в Україні. єОселя, іпотека, карта, порівняння."/>
   <meta name="robots" content="index, follow"/>
   <link rel="canonical" id="canonical-link" href="__UA_HOMES_PUBLIC_URL__/real-estate-demo.html"/>
@@ -19,18 +20,27 @@
   <meta property="og:description" content="Пошук нерухомості в Україні: фільтри, єОселя, карта, порівняння."/>
   <meta property="og:url" id="og-url-meta" content="__UA_HOMES_PUBLIC_URL__/real-estate-demo.html"/>
   <meta property="og:image" id="og-image-meta" content="__UA_HOMES_PUBLIC_URL__/favicon.png"/>
+  <meta property="og:image:alt" content="UA Homes — нерухомість в Україні"/>
   <meta name="twitter:card" content="summary_large_image"/>
   <meta name="twitter:title" content="UA Homes — нерухомість в Україні"/>
   <meta name="twitter:description" content="Пошук нерухомості в Україні: фільтри, єОселя, карта, порівняння."/>
   <meta name="twitter:image" id="twitter-image-meta" content="__UA_HOMES_PUBLIC_URL__/favicon.png"/>
+  <meta name="twitter:image:alt" content="UA Homes — нерухомість в Україні"/>
+  <meta name="twitter:site" content="@ua_homes"/>
   <link rel="manifest" href="ua-homes-manifest.json"/>
   <link rel="apple-touch-icon" href="icons/Icon-192.png"/>
   <title>UA Homes — нерухомість в Україні</title>
   <link rel="preconnect" href="https://unpkg.com" crossorigin/>
+  <link rel="preconnect" href="https://images.unsplash.com" crossorigin/>
+  <link rel="dns-prefetch" href="https://unpkg.com"/>
+  <link rel="dns-prefetch" href="https://images.unsplash.com"/>
+  <link rel="preload" as="style" href="ua-homes.css"/>
+  <link rel="preload" as="script" href="real-estate-app.js"/>
+  <link rel="preload" as="script" href="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin/>
+  <link rel="preload" as="script" href="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin/>
   <link rel="stylesheet" href="ua-homes.css"/>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script defer crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script defer crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <style>
     :root{color-scheme:light}
     html{-webkit-text-size-adjust:100%}
@@ -48,22 +58,37 @@
     .compare-bar{animation:slideUp .2s ease}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
     .animate-pulse{animation:pulse 1.5s cubic-bezier(.4,0,.6,1) infinite}
+    .app-shell-skeleton{max-width:80rem;margin:0 auto;padding:1.5rem 1rem 2rem}
+    .app-shell-shimmer{background:linear-gradient(90deg,#e2e8f0 25%,#f8fafc 37%,#e2e8f0 63%);background-size:400% 100%;animation:appShellShimmer 1.4s ease infinite}
+    @keyframes appShellShimmer{0%{background-position:100% 50%}100%{background-position:0 50%}}
     ::-webkit-scrollbar{width:6px;height:6px}
     ::-webkit-scrollbar-track{background:#f1f5f9}
     ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:9999px}
   </style>
 </head>
 <body class="min-h-screen bg-slate-100 text-slate-900">
-<div id="root"></div>
+<div id="root">
+  <div class="app-shell-skeleton" aria-hidden="true">
+    <div class="app-shell-shimmer" style="height:72px;border-radius:28px"></div>
+    <div class="app-shell-shimmer" style="height:220px;border-radius:32px;margin-top:24px"></div>
+    <div style="display:grid;gap:24px;margin-top:24px">
+      <div class="app-shell-shimmer" style="height:320px;border-radius:28px"></div>
+      <div class="app-shell-shimmer" style="height:320px;border-radius:28px"></div>
+      <div class="app-shell-shimmer" style="height:320px;border-radius:28px"></div>
+    </div>
+  </div>
+</div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="real-estate-app.js"></script>
+<script defer src="real-estate-app.js"></script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('/sw.js')
-        .then(r => console.log('SW registered:', r.scope))
-        .catch(e => console.log('SW failed:', e));
+      const register = () => navigator.serviceWorker.register('/sw.js').catch(() => {});
+      if ('requestIdleCallback' in window) {
+        requestIdleCallback(register, { timeout: 2000 });
+      } else {
+        setTimeout(register, 1200);
+      }
     });
   }
 </script>

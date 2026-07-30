@@ -131,11 +131,13 @@
     </div>
 
     <script>
-        const API_BASE = '/api/admin';
+        const API_HOST = window.location.protocol === 'file:' ? 'http://localhost:5050' : '';
+        const API_BASE = `${API_HOST}/api/admin`;
+        const DASHBOARD_URL = window.location.protocol === 'file:' ? './dashboard.html' : '/admin/dashboard.html';
 
         // Check if already logged in
         if (localStorage.getItem('admin_token')) {
-            window.location.href = '/admin/dashboard.html';
+            window.location.href = DASHBOARD_URL;
         }
 
         // Login handler
@@ -165,7 +167,7 @@
                     messageEl.classList.add('bg-green-100', 'text-green-800');
                     messageEl.textContent = '✓ Успішний вхід! Перенаправлення...';
                     setTimeout(() => {
-                        window.location.href = '/admin/dashboard.html';
+                        window.location.href = DASHBOARD_URL;
                     }, 1000);
                 } else {
                     messageEl.classList.remove('hidden', 'bg-green-100', 'text-green-800');
