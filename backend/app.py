@@ -119,18 +119,6 @@ def root():
         mimetype="text/html",
     )
 
-# ─── Database ────────────────────────────────────────────────────────────────
-
-def get_db() -> sqlite3.Connection:
-    if "db" not in g:
-        conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        g.db = conn
-    return g.db
-
-
 @app.teardown_appcontext
 def close_db(_exc=None):
     db = g.pop("db", None)
