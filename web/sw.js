@@ -1,5 +1,5 @@
-// UA Homes Service Worker — PWA offline support
-const CACHE = 'ua-homes-v1';
+// UA-Dim Service Worker — PWA offline support
+const CACHE = 'ua-dim-v1';
 const OFFLINE_ASSETS = [
   '/real-estate-demo.html',
   '/ua-homes-manifest.json',

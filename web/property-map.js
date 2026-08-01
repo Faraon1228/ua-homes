@@ -1,5 +1,5 @@
 /**
- * Google Maps Integration for UA Homes
+ * Google Maps Integration for UA-Dim
  * Features:
  * - Display properties on map
  * - Marker clustering
