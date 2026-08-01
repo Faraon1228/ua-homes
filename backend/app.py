@@ -49,26 +49,32 @@ _DEFAULT_CORS_ORIGINS: list[str | re.Pattern[str]] = [
     "http://localhost:5050",
     "http://127.0.0.1:5050",
     "https://ua-homes.netlify.app",
+    "https://ua-dim.netlify.app",
     "https://ua-dom.com",
     "https://www.ua-dom.com",
     "https://ua-dim.com",
     "https://www.ua-dim.com",
-    re.compile(r"^https://[a-z0-9-]+\.netlify\.app$"),
 ]
 
 
 def _cors_origins() -> list[str | re.Pattern[str]]:
     configured = os.environ.get("UA_HOMES_CORS_ORIGINS", "").strip()
     if not configured:
-        return _DEFAULT_CORS_ORIGINS
+        origins: list[str | re.Pattern[str]] = list(_DEFAULT_CORS_ORIGINS)
+        if os.environ.get("UA_HOMES_ALLOW_NETLIFY_PREVIEW_CORS", "").strip().lower() in {"1", "true", "yes"}:
+            origins.append(re.compile(r"^https://[a-z0-9-]+\.netlify\.app$"))
+        return origins
     return [origin.strip() for origin in configured.split(",") if origin.strip()]
 
 
 SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "X-Content-Type-Options": "nosniff",
+    "X-Permitted-Cross-Domain-Policies": "none",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Permissions-Policy": "camera=(), geolocation=(), microphone=(), payment=(), usb=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
 }
 
 HTML_CSP = (
@@ -78,9 +84,9 @@ HTML_CSP = (
     "frame-ancestors 'none'; "
     "form-action 'self'; "
     "img-src 'self' data: blob: https://images.unsplash.com https://*.tile.openstreetmap.org; "
-    "script-src 'self' 'unsafe-inline' https://unpkg.com; "
-    "style-src 'self' 'unsafe-inline' https://unpkg.com; "
-    "connect-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.tailwindcss.com; "
+    "style-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; "
+    "connect-src 'self' https://backend-production-51964.up.railway.app; "
     "font-src 'self' data:; "
     "worker-src 'self' blob:; "
     "manifest-src 'self';"
@@ -125,7 +131,7 @@ def db_placeholder() -> str:
 # ─── App setup ───────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": _cors_origins()}}, supports_credentials=False, vary_header=True)
+CORS(app, resources={r"/api/*": {"origins": _cors_origins()}}, supports_credentials=True, vary_header=True)
 
 # Rate-limiter storage: Redis when available (multi-worker safe), else in-memory.
 _limiter_storage = f"redis://{REDIS_URL.replace('redis://','')}" if REDIS_URL else "memory://"
@@ -148,6 +154,9 @@ PUBLIC_SITE_URL = os.environ.get("UA_HOMES_PUBLIC_URL", "").strip().rstrip("/")
 def apply_security_headers(response):
     for header, value in SECURITY_HEADERS.items():
         response.headers.setdefault(header, value)
+
+    if request.is_secure or request.headers.get("X-Forwarded-Proto", "").lower() == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 
     if response.mimetype == "text/html":
         response.headers.setdefault("Content-Security-Policy", HTML_CSP)
@@ -535,7 +544,7 @@ def init_db():
         demo_pw = bcrypt.hashpw(b"demo1234", bcrypt.gensalt(rounds=12)).decode()
         cur = db.execute(
             "INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
-            ("UA Homes Demo", "demo@ua-dom.com", demo_pw),
+            ("UA Homes Demo", "demo@ua-dim.com", demo_pw),
         )
         demo_id = cur.lastrowid
         db.executemany(
@@ -580,7 +589,7 @@ def init_db():
             has_video_tour = CASE WHEN id % 4 = 0 THEN 1 ELSE 0 END
         WHERE user_id IN (SELECT id FROM users WHERE email = ?)
         """,
-        ("demo@ua-dom.com",),
+        ("demo@ua-dim.com",),
     )
     db.commit()
 
@@ -690,7 +699,7 @@ def send_email_verify(to_email: str, token: str) -> bool:
             import urllib.request as _req, json as _json
             payload = _json.dumps({
                 "personalizations": [{"to": [{"email": to_email}]}],
-                "from": {"email": os.environ.get("FROM_EMAIL", "noreply@ua-dom.com")},
+                "from": {"email": os.environ.get("FROM_EMAIL", "noreply@ua-dim.com")},
                 "subject": subject,
                 "content": [
                     {"type": "text/plain", "value": body_text},
@@ -713,7 +722,7 @@ def send_email_verify(to_email: str, token: str) -> bool:
             from email.mime.text import MIMEText
             msg = MIMEMultipart("alternative")
             msg["Subject"] = subject
-            msg["From"] = os.environ.get("FROM_EMAIL", "noreply@ua-dom.com")
+            msg["From"] = os.environ.get("FROM_EMAIL", "noreply@ua-dim.com")
             msg["To"] = to_email
             msg.attach(MIMEText(body_text, "plain", "utf-8"))
             msg.attach(MIMEText(body_html, "html", "utf-8"))
@@ -727,6 +736,9 @@ def send_email_verify(to_email: str, token: str) -> bool:
             app.logger.error("SMTP error: %s", e)
             return False
     else:
+        if PUBLIC_SITE_URL:
+            app.logger.warning("Email verification is not configured for production (%s)", to_email)
+            return False
         app.logger.info("EMAIL VERIFY (dev) → %s | URL: %s", to_email, verify_url)
         return True
 
@@ -882,12 +894,12 @@ def register():
         (verify_token, verify_expires, user_id)
     )
     db.commit()
-    send_email_verify(email, verify_token)
+    verify_email_sent = send_email_verify(email, verify_token)
 
     return jsonify(
         token=make_token(user_id, email),
         user={"id": user_id, "name": name, "email": email, "email_verified": 0},
-        verify_email_sent=True,
+        verify_email_sent=verify_email_sent,
     ), 201
 
 
@@ -914,10 +926,18 @@ def login():
     )
 
 
-@app.route("/api/auth/me", methods=["GET"])
+@app.route("/api/auth/me", methods=["GET", "PATCH"])
 @require_auth
 def me():
     db  = get_db()
+    if request.method == "PATCH":
+        data = request.get_json(silent=True) or {}
+        name = strip(data.get("name"), 100)
+        if not name:
+            return jsonify(error="Вкажіть ім'я"), 422
+        db.execute("UPDATE users SET name = ? WHERE id = ?", (name, g.user_id))
+        db.commit()
+
     row = db.execute("SELECT id, name, email, email_verified, phone_verified, phone FROM users WHERE id = ?", (g.user_id,)).fetchone()
     if not row:
         return jsonify(error="Користувача не знайдено"), 404
@@ -975,7 +995,8 @@ def resend_verification():
         (token, expires, row["id"])
     )
     db.commit()
-    send_email_verify(email, token)
+    if not send_email_verify(email, token):
+        return jsonify(error="Email delivery is not configured"), 503
     return jsonify(ok=True)
 
 
@@ -1035,6 +1056,7 @@ ALLOWED_SORT = {
     "area-asc":   "l.area ASC",
     "newest":     "l.created_at DESC",
     "views-desc": "l.views DESC",
+    "relevance":  "l.created_at DESC",
 }
 
 # Maps sort key → (listing column name, direction) for cursor WHERE clauses.
@@ -1091,6 +1113,7 @@ def get_listings():
     min_year      = nonneg_int(args.get("minYear"))
     max_year      = nonneg_int(args.get("maxYear"))
     listing_ids: list[int] = []
+    ranked_fts_ids: list[int] = []
     if ids_param:
         for raw_part in ids_param.split(","):
             raw_part = raw_part.strip()
@@ -1158,8 +1181,9 @@ def get_listings():
                 "SELECT rowid FROM listings_fts WHERE listings_fts MATCH ? ORDER BY rank LIMIT 500",
                 (search,)
             ).fetchall()
-            fts_ids = [r[0] for r in fts_rows]
+            fts_ids = [int(r[0]) for r in fts_rows if int(r[0]) > 0]
             if fts_ids:
+                ranked_fts_ids = fts_ids[:200]
                 placeholders = ",".join("?" for _ in fts_ids)
                 query += f" AND l.id IN ({placeholders})"
                 params.extend(fts_ids)
@@ -1187,7 +1211,16 @@ def get_listings():
     total = db.execute(count_query, params).fetchone()[0]
 
     # Cursor pagination: decode opaque cursor and add keyset WHERE clause.
-    cursor_param = strip(args.get("cursor", ""), 1000)
+    relevance_order_by: str | None = None
+    if search and sort_key == "relevance" and ranked_fts_ids:
+        relevance_order_by = (
+            "CASE l.id "
+            + " ".join(f"WHEN {listing_id} THEN {rank}" for rank, listing_id in enumerate(ranked_fts_ids))
+            + f" ELSE {len(ranked_fts_ids)} END, l.created_at DESC"
+        )
+
+    force_offset_pagination = relevance_order_by is not None
+    cursor_param = "" if force_offset_pagination else strip(args.get("cursor", ""), 1000)
     cursor_data: dict | None = None
     if cursor_param:
         try:
@@ -1218,20 +1251,22 @@ def get_listings():
         cursor_active = True
         offset = 0
     else:
-        query += f" ORDER BY {order_by} LIMIT ? OFFSET ?"
+        query += f" ORDER BY {relevance_order_by or order_by} LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
     rows = db.execute(query, params).fetchall()
     listings = [_row_to_listing(r) for r in rows]
 
-    if cursor_active:
+    if force_offset_pagination:
+        has_more = False
+    elif cursor_active:
         has_more = len(listings) == limit
     else:
         has_more = (offset + len(listings)) < total
 
     # Build opaque next_cursor so frontend can fetch the next page without offset drift.
     next_cursor: str | None = None
-    if has_more and listings:
+    if has_more and listings and not force_offset_pagination:
         last = listings[-1]
         cf_name, _ = CURSOR_FIELD.get(sort_key, ("id", "desc"))
         cursor_obj = {
@@ -1760,7 +1795,16 @@ def analytics_summary():
 @app.route("/api/analytics/lead-funnel", methods=["POST"])
 def analytics_lead_funnel_event():
     db = get_db()
+    raw_body = (request.get_data(as_text=True) or "").strip()
     data = request.get_json(silent=True) or {}
+    if not data:
+        if raw_body:
+            try:
+                parsed = json.loads(raw_body)
+                if isinstance(parsed, dict):
+                    data = parsed
+            except json.JSONDecodeError:
+                data = {}
 
     event = strip(data.get("event", ""), 64)
     intent = strip(data.get("intent", ""), 80)

@@ -60,6 +60,7 @@ export function filterAndSortProperties(properties, filters) {
   });
 
   return filtered.sort((a, b) => {
+    if (sortBy === "relevance") return 0;
     if (sortBy === "price-asc") return a.price - b.price;
     if (sortBy === "price-desc") return b.price - a.price;
     if (sortBy === "area-desc") return b.area - a.area;

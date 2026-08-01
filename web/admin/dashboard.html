@@ -449,6 +449,49 @@
                             </div>
                         </div>
                         <div class="bg-white p-6 rounded-lg shadow-sm">
+                            <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+                                <h3 class="font-bold">Популярні маршрути (route → submit)</h3>
+                                <select
+                                    id="lf-route-source-filter"
+                                    onchange="setRouteSourceFilter(this.value)"
+                                    class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700"
+                                >
+                                    <option value="__all__">Всі маршрути</option>
+                                </select>
+                            </div>
+                            <div class="mb-4 grid grid-cols-3 gap-3 text-sm">
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">CTR 7д</div>
+                                    <div id="lf-route-ctr-7" class="text-lg font-black text-blue-700">-</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">CTR 30д</div>
+                                    <div id="lf-route-ctr-30" class="text-lg font-black text-violet-700">-</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">CTR 90д</div>
+                                    <div id="lf-route-ctr-90" class="text-lg font-black text-emerald-700">-</div>
+                                </div>
+                            </div>
+                            <div id="lf-route-filter-hint" class="mb-3 text-xs text-gray-500">Показано всі route source.</div>
+                            <div class="overflow-auto">
+                                <table class="w-full text-sm">
+                                    <thead>
+                                        <tr class="text-left text-gray-500 border-b">
+                                            <th class="py-2">Route source</th>
+                                            <th class="py-2">Route applies</th>
+                                            <th class="py-2">Sessions</th>
+                                            <th class="py-2">Submit sessions</th>
+                                            <th class="py-2">CTR route→submit</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="lf-by-popular-route">
+                                        <tr><td colspan="5" class="py-3 text-gray-500">Завантаження...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="bg-white p-6 rounded-lg shadow-sm">
                             <h3 class="font-bold mb-4">Top listing IDs (conversion)</h3>
                             <div class="overflow-auto">
                                 <table class="w-full text-sm">
@@ -540,6 +583,7 @@
         let leadFunnelDays = 30;
         let ctrDropThresholdPp = Number(localStorage.getItem('admin_lf_ctr_drop_threshold_pp') || 5);
         let leadFunnelBenchmarkReports = { report7: null, report30: null, report90: null };
+        let routeSourceFilter = localStorage.getItem('admin_lf_route_source') || '__all__';
 
         // Check auth
         window.addEventListener('load', async () => {
@@ -1603,6 +1647,81 @@
             }
         }
 
+        function setRouteSourceFilter(value) {
+            routeSourceFilter = value || '__all__';
+            localStorage.setItem('admin_lf_route_source', routeSourceFilter);
+            loadReports();
+        }
+
+        function getRouteMetrics(report, source) {
+            if (!report || !Array.isArray(report.by_popular_route)) {
+                return { route_applies: 0, sessions: 0, submit_sessions: 0, ctr_route_to_submit: 0 };
+            }
+            if (!source || source === '__all__') {
+                return report.by_popular_route.reduce((acc, row) => {
+                    const routeApplies = Number(row.route_applies || 0);
+                    const sessions = Number(row.sessions || 0);
+                    const submitSessions = Number(row.submit_sessions || 0);
+                    acc.route_applies += routeApplies;
+                    acc.sessions += sessions;
+                    acc.submit_sessions += submitSessions;
+                    return acc;
+                }, { route_applies: 0, sessions: 0, submit_sessions: 0, ctr_route_to_submit: 0 });
+            }
+            const row = report.by_popular_route.find(item => item.source === source);
+            if (!row) {
+                return { route_applies: 0, sessions: 0, submit_sessions: 0, ctr_route_to_submit: 0 };
+            }
+            return {
+                route_applies: Number(row.route_applies || 0),
+                sessions: Number(row.sessions || 0),
+                submit_sessions: Number(row.submit_sessions || 0),
+                ctr_route_to_submit: Number(row.ctr_route_to_submit || 0),
+            };
+        }
+
+        function renderRouteSourceFilter(reportCurrent, report7, report30, report90) {
+            const filterEl = document.getElementById('lf-route-source-filter');
+            if (!filterEl) return;
+            const knownSources = new Set();
+            [reportCurrent, report7, report30, report90].forEach(report => {
+                (report?.by_popular_route || []).forEach(row => {
+                    if (row?.source) knownSources.add(row.source);
+                });
+            });
+            const options = ['__all__', ...Array.from(knownSources).sort()];
+            if (!options.includes(routeSourceFilter)) {
+                routeSourceFilter = '__all__';
+                localStorage.setItem('admin_lf_route_source', routeSourceFilter);
+            }
+            filterEl.innerHTML = options.map(source =>
+                source === '__all__'
+                    ? '<option value="__all__">Всі маршрути</option>'
+                    : `<option value="${source}">${source}</option>`
+            ).join('');
+            filterEl.value = routeSourceFilter;
+
+            const metrics7 = getRouteMetrics(report7, routeSourceFilter);
+            const metrics30 = getRouteMetrics(report30, routeSourceFilter);
+            const metrics90 = getRouteMetrics(report90, routeSourceFilter);
+            const ctr = (metrics) => metrics.sessions > 0
+                ? ((metrics.submit_sessions / metrics.sessions) * 100).toFixed(2)
+                : Number(metrics.ctr_route_to_submit || 0).toFixed(2);
+
+            document.getElementById('lf-route-ctr-7').textContent = `${ctr(metrics7)}%`;
+            document.getElementById('lf-route-ctr-30').textContent = `${ctr(metrics30)}%`;
+            document.getElementById('lf-route-ctr-90').textContent = `${ctr(metrics90)}%`;
+
+            const hint = document.getElementById('lf-route-filter-hint');
+            if (hint) {
+                if (routeSourceFilter === '__all__') {
+                    hint.textContent = `Показано всі route source. 30д: applies ${metrics30.route_applies}, sessions ${metrics30.sessions}, submit sessions ${metrics30.submit_sessions}.`;
+                } else {
+                    hint.textContent = `Маршрут: ${routeSourceFilter}. 30д: applies ${metrics30.route_applies}, sessions ${metrics30.sessions}, submit sessions ${metrics30.submit_sessions}.`;
+                }
+            }
+        }
+
         function renderSourceBenchmark(report7, report30, report90) {
             leadFunnelBenchmarkReports = { report7, report30, report90 };
             const sourceSet = new Set([
@@ -1721,6 +1840,19 @@
                     </tr>
                 `).join('');
                 document.getElementById('lf-by-type').innerHTML = byTypeHtml || '<tr><td colspan="4" class="py-3 text-gray-500">Немає даних</td></tr>';
+
+                renderRouteSourceFilter(funnelData, funnel7, funnel30, funnel90);
+                const routeRows = (funnelData.by_popular_route || []).filter(row => routeSourceFilter === '__all__' || row.source === routeSourceFilter);
+                const byRouteHtml = routeRows.map(row => `
+                    <tr class="border-b">
+                        <td class="py-2 font-semibold">${row.source}</td>
+                        <td class="py-2">${Number(row.route_applies || 0).toLocaleString('uk-UA')}</td>
+                        <td class="py-2">${Number(row.sessions || 0).toLocaleString('uk-UA')}</td>
+                        <td class="py-2">${Number(row.submit_sessions || 0).toLocaleString('uk-UA')}</td>
+                        <td class="py-2 font-bold text-emerald-700">${Number(row.ctr_route_to_submit || 0).toFixed(2)}%</td>
+                    </tr>
+                `).join('');
+                document.getElementById('lf-by-popular-route').innerHTML = byRouteHtml || '<tr><td colspan="5" class="py-3 text-gray-500">Немає даних</td></tr>';
 
                 const topListingsHtml = (funnelData.top_listings || []).map(row => `
                     <tr class="border-b">

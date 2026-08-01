@@ -1202,6 +1202,48 @@ def _build_lead_funnel_report(db, days_int: int):
         (window_start,),
     ).fetchall()
 
+    popular_route_rows = db.execute(
+        """
+        WITH route_sessions AS (
+            SELECT
+                source,
+                session_id,
+                MIN(created_at) AS first_route_at,
+                COUNT(*) AS route_applies
+            FROM lead_funnel_events
+            WHERE created_at >= datetime('now', ?)
+              AND event = 'route_apply'
+              AND source LIKE 'popular_route:%'
+              AND session_id IS NOT NULL
+            GROUP BY source, session_id
+        ),
+        route_with_submit AS (
+            SELECT
+                rs.source,
+                rs.session_id,
+                rs.route_applies,
+                EXISTS(
+                    SELECT 1
+                    FROM lead_funnel_events lfe
+                    WHERE lfe.session_id = rs.session_id
+                      AND lfe.event = 'lead_submit'
+                      AND lfe.created_at >= rs.first_route_at
+                      AND lfe.created_at >= datetime('now', ?)
+                ) AS has_submit_after_route
+            FROM route_sessions rs
+        )
+        SELECT
+            source,
+            SUM(route_applies) AS route_applies,
+            COUNT(*) AS sessions,
+            SUM(CASE WHEN has_submit_after_route THEN 1 ELSE 0 END) AS submit_sessions
+        FROM route_with_submit
+        GROUP BY source
+        ORDER BY route_applies DESC, submit_sessions DESC, source ASC
+        """,
+        (window_start, window_start),
+    ).fetchall()
+
     daily_rows = db.execute(
         """
         SELECT DATE(created_at) AS day,
@@ -1313,6 +1355,21 @@ def _build_lead_funnel_report(db, days_int: int):
             }
         )
 
+    by_popular_route = []
+    for row in popular_route_rows:
+        route_applies = int(row["route_applies"] or 0)
+        sessions = int(row["sessions"] or 0)
+        submit_sessions = int(row["submit_sessions"] or 0)
+        by_popular_route.append(
+            {
+                "source": row["source"] or "popular_route:unknown",
+                "route_applies": route_applies,
+                "sessions": sessions,
+                "submit_sessions": submit_sessions,
+                "ctr_route_to_submit": _to_ctr(submit_sessions, sessions),
+            }
+        )
+
     daily_trend = []
     for row in daily_rows:
         intents = int(row["intents"] or 0)
@@ -1363,6 +1420,7 @@ def _build_lead_funnel_report(db, days_int: int):
         },
         "by_source": by_source,
         "by_listing_type": by_listing_type,
+        "by_popular_route": by_popular_route,
         "daily_trend": daily_trend,
         "top_listings": top_listings,
     }
@@ -1419,6 +1477,18 @@ def admin_report_lead_funnel_csv():
     writer.writerow(["by_listing_type", "listing_type", "intents", "submits", "ctr_intent_to_submit"])
     for row in report["by_listing_type"]:
         writer.writerow(["by_listing_type", row["listing_type"], row["intents"], row["submits"], row["ctr_intent_to_submit"]])
+
+    writer.writerow([])
+    writer.writerow(["by_popular_route", "source", "route_applies", "sessions", "submit_sessions", "ctr_route_to_submit"])
+    for row in report.get("by_popular_route", []):
+        writer.writerow([
+            "by_popular_route",
+            row["source"],
+            row["route_applies"],
+            row["sessions"],
+            row["submit_sessions"],
+            row["ctr_route_to_submit"],
+        ])
 
     writer.writerow([])
     writer.writerow(["top_listings", "listing_id", "title", "intents", "submits", "ctr_intent_to_submit"])

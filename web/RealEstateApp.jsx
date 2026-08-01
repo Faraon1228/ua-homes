@@ -266,6 +266,7 @@ export default function RealEstateApp() {
                 onChange={(e) => setSortBy(e.target.value)}
                 className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl"
               >
+                <option value="relevance">Найбільш релевантні</option>
                 <option value="price-asc">Дешевші спочатку</option>
                 <option value="price-desc">Дорожчі спочатку</option>
                 <option value="area-desc">Більша площа спочатку</option>
