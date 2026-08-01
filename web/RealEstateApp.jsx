@@ -51,6 +51,14 @@ const MOCK_PROPERTIES = [
   },
 ];
 
+const FALLBACK_IMAGE =
+  "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1200' height='675' viewBox='0 0 1200 675'%3E%3Crect width='1200' height='675' fill='%23e2e8f0'/%3E%3Cpath d='M0 500h1200v175H0z' fill='%23cbd5e1'/%3E%3Ccircle cx='360' cy='260' r='70' fill='%23cbd5e1'/%3E%3Cpath d='M250 445l125-115 90 78 72-60 155 132H250z' fill='%2394a3b8'/%3E%3Ctext x='600' y='565' text-anchor='middle' font-family='Arial,sans-serif' font-size='28' fill='%23475569'%3EUA Homes%3C/text%3E%3C/svg%3E";
+
+function normalizeImageSrc(src) {
+  if (!src) return "";
+  return src.includes("images.unsplash.com") ? FALLBACK_IMAGE : src;
+}
+
 function getStored(key, fallback) {
   if (typeof window === "undefined") return fallback;
   const value = window.localStorage.getItem(key);
@@ -59,7 +67,7 @@ function getStored(key, fallback) {
 
 function PhotoGallery({ images, title }) {
   const [index, setIndex] = useState(0);
-  const items = Array.isArray(images) ? images : [];
+  const items = Array.isArray(images) ? images.map(normalizeImageSrc).filter(Boolean) : [];
 
   if (!items.length) {
     return (
