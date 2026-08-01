@@ -6,6 +6,7 @@
 |---|---|---|
 | `UA_HOMES_SECRET` | JWT signing secret (min 32 chars) | `openssl rand -hex 32` |
 | `UA_HOMES_PUBLIC_URL` | Canonical public URL | `https://ua-dom.com` |
+| `UA_HOMES_CORS_ORIGINS` | Comma-separated allowed browser origins | `https://ua-dom.com,https://ua-dim.com,https://ua-homes.netlify.app` |
 
 ## Database
 

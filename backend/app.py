@@ -43,6 +43,49 @@ DATABASE_URL: str | None = os.environ.get("DATABASE_URL", "").strip() or None
 # Redis DSN — if set, rate-limiter stores counters in Redis (safe for multi-worker).
 REDIS_URL: str | None = os.environ.get("REDIS_URL", "").strip() or None
 
+_DEFAULT_CORS_ORIGINS: list[str | re.Pattern[str]] = [
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+    "http://localhost:5050",
+    "http://127.0.0.1:5050",
+    "https://ua-homes.netlify.app",
+    "https://ua-dom.com",
+    "https://www.ua-dom.com",
+    "https://ua-dim.com",
+    "https://www.ua-dim.com",
+    re.compile(r"^https://[a-z0-9-]+\.netlify\.app$"),
+]
+
+
+def _cors_origins() -> list[str | re.Pattern[str]]:
+    configured = os.environ.get("UA_HOMES_CORS_ORIGINS", "").strip()
+    if not configured:
+        return _DEFAULT_CORS_ORIGINS
+    return [origin.strip() for origin in configured.split(",") if origin.strip()]
+
+
+SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), geolocation=(), microphone=(), payment=(), usb=()",
+}
+
+HTML_CSP = (
+    "default-src 'self'; "
+    "base-uri 'self'; "
+    "object-src 'none'; "
+    "frame-ancestors 'none'; "
+    "form-action 'self'; "
+    "img-src 'self' data: blob: https://images.unsplash.com https://*.tile.openstreetmap.org; "
+    "script-src 'self' 'unsafe-inline' https://unpkg.com; "
+    "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+    "connect-src 'self'; "
+    "font-src 'self' data:; "
+    "worker-src 'self' blob:; "
+    "manifest-src 'self';"
+)
+
 # ─── Database adapter ────────────────────────────────────────────────────────
 # Thin compatibility shim so the rest of the app never needs to know which DB
 # engine is being used.  Both sqlite3.Row and psycopg2's DictRow support dict().
@@ -82,7 +125,7 @@ def db_placeholder() -> str:
 # ─── App setup ───────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+CORS(app, resources={r"/api/*": {"origins": _cors_origins()}}, supports_credentials=False, vary_header=True)
 
 # Rate-limiter storage: Redis when available (multi-worker safe), else in-memory.
 _limiter_storage = f"redis://{REDIS_URL.replace('redis://','')}" if REDIS_URL else "memory://"
@@ -99,6 +142,17 @@ limiter = Limiter(
 )
 
 PUBLIC_SITE_URL = os.environ.get("UA_HOMES_PUBLIC_URL", "").strip().rstrip("/")
+
+
+@app.after_request
+def apply_security_headers(response):
+    for header, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+
+    if response.mimetype == "text/html":
+        response.headers.setdefault("Content-Security-Policy", HTML_CSP)
+
+    return response
 
 
 @app.get("/")
