@@ -100,6 +100,25 @@ limiter = Limiter(
 
 PUBLIC_SITE_URL = os.environ.get("UA_HOMES_PUBLIC_URL", "").strip().rstrip("/")
 
+
+@app.get("/")
+def root():
+    site_url = PUBLIC_SITE_URL or "http://localhost:8080/real-estate-demo.html"
+    return Response(
+        f"""<!doctype html>
+<html lang="uk">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>UA Homes API</title>
+<body style="font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;padding:32px;line-height:1.5">
+  <h1>UA Homes API</h1>
+  <p>Основний сайт: <a href="{site_url}">{site_url}</a></p>
+  <p>Health: <a href="/api/health">/api/health</a></p>
+</body>
+</html>""",
+        mimetype="text/html",
+    )
+
 # ─── Database ────────────────────────────────────────────────────────────────
 
 def get_db() -> sqlite3.Connection:
