@@ -19,7 +19,7 @@ import secrets
 import datetime
 from html import escape
 from functools import wraps
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 import bcrypt
 import jwt
@@ -148,6 +148,9 @@ limiter = Limiter(
 )
 
 PUBLIC_SITE_URL = os.environ.get("UA_HOMES_PUBLIC_URL", "").strip().rstrip("/")
+ALERTS_DISPATCH_KEY = os.environ.get("UA_HOMES_ALERTS_DISPATCH_KEY", "").strip()
+ALERTS_PUSH_WEBHOOK_URL = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_URL", "").strip()
+ALERTS_PUSH_WEBHOOK_BEARER = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_BEARER", "").strip()
 
 
 @app.after_request
@@ -166,7 +169,7 @@ def apply_security_headers(response):
 
 @app.get("/")
 def root():
-    site_url = PUBLIC_SITE_URL or "http://localhost:8080/real-estate-demo.html"
+    site_url = public_app_url()
     return Response(
         f"""<!doctype html>
 <html lang="uk">
@@ -196,8 +199,37 @@ def close_db(_exc=None):
 
 # ─── Seed data ────────────────────────────────────────────────────────────────
 
-IMG = "https://images.unsplash.com/photo-{id}?auto=format&fit=crop&w=900&q=80"
-def imgs(*ids): return json.dumps([IMG.format(id=i) for i in ids])
+PLACEHOLDER_LISTING_IMAGE = (
+    "data:image/svg+xml;charset=utf-8,"
+    "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 800'%3E"
+    "%3Crect width='1200' height='800' fill='%23e2e8f0'/%3E"
+    "%3Crect width='1200' height='120' fill='%232563eb'/%3E"
+    "%3Ctext x='60' y='80' fill='white' font-family='Arial,sans-serif' font-size='54' font-weight='700'%3EUA Homes%3C/text%3E"
+    "%3Ctext x='60' y='220' fill='%231f2937' font-family='Arial,sans-serif' font-size='40' font-weight='700'%3EListing preview%3C/text%3E"
+    "%3Ctext x='60' y='280' fill='%234b5563' font-family='Arial,sans-serif' font-size='28'%3EImage unavailable%3C/text%3E"
+    "%3C/svg%3E"
+)
+
+IMG = PLACEHOLDER_LISTING_IMAGE
+
+
+def imgs(*ids):
+    return json.dumps([IMG for _ in ids])
+
+
+def normalize_listing_images(raw_images) -> list[str]:
+    fallback = PLACEHOLDER_LISTING_IMAGE
+    normalized: list[str] = []
+    for image in (raw_images if isinstance(raw_images, list) else []):
+        url = strip(str(image), 2048)
+        if not url:
+            continue
+        try:
+            host = (urlsplit(url).hostname or "").lower()
+        except ValueError:
+            host = ""
+        normalized.append(fallback if "images.unsplash.com" in host else url)
+    return normalized or [fallback]
 
 SEED_LISTINGS = [
     # (title, city, district, property_type, condition_type, price, rooms, area,
@@ -377,6 +409,7 @@ def init_db():
             status         TEXT    NOT NULL DEFAULT 'draft',
             listing_type   TEXT    NOT NULL DEFAULT 'sale',
             source         TEXT    NOT NULL DEFAULT 'owner',
+            agency_slug    TEXT,
             listing_status TEXT    NOT NULL DEFAULT 'active',
             has_photo_tour INTEGER NOT NULL DEFAULT 0,
             has_video_tour INTEGER NOT NULL DEFAULT 0,
@@ -443,6 +476,25 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_listing_alerts_user ON listing_alerts(user_id);
         CREATE INDEX IF NOT EXISTS idx_listing_alerts_email ON listing_alerts(email);
+        CREATE INDEX IF NOT EXISTS idx_listing_alerts_last_sent ON listing_alerts(last_sent_at);
+
+        CREATE TABLE IF NOT EXISTS alert_dispatch_runs (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            trigger_type TEXT    NOT NULL,
+            dry_run      INTEGER NOT NULL DEFAULT 0,
+            listing_id   INTEGER REFERENCES listings(id) ON DELETE SET NULL,
+            checked      INTEGER NOT NULL DEFAULT 0,
+            matched      INTEGER NOT NULL DEFAULT 0,
+            email_sent   INTEGER NOT NULL DEFAULT 0,
+            push_sent    INTEGER NOT NULL DEFAULT 0,
+            success      INTEGER NOT NULL DEFAULT 0,
+            error_text   TEXT,
+            started_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+            finished_at  TEXT,
+            duration_ms  INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_alert_dispatch_runs_started_at ON alert_dispatch_runs(started_at);
+        CREATE INDEX IF NOT EXISTS idx_alert_dispatch_runs_success ON alert_dispatch_runs(success);
 
         CREATE TABLE IF NOT EXISTS lead_funnel_events (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -459,6 +511,23 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_lead_funnel_source ON lead_funnel_events(source);
         CREATE INDEX IF NOT EXISTS idx_lead_funnel_event ON lead_funnel_events(event);
         CREATE INDEX IF NOT EXISTS idx_lead_funnel_listing ON lead_funnel_events(listing_id);
+
+        CREATE TABLE IF NOT EXISTS agency_profiles (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug                  TEXT    NOT NULL UNIQUE,
+            name                  TEXT    NOT NULL,
+            kind                  TEXT    NOT NULL DEFAULT 'agency',
+            city                  TEXT    NOT NULL,
+            specialization        TEXT    NOT NULL DEFAULT '',
+            is_verified           INTEGER NOT NULL DEFAULT 0,
+            avg_response_minutes  INTEGER,
+            team_size             INTEGER,
+            completed_deals       INTEGER NOT NULL DEFAULT 0,
+            last_verified_at      TEXT,
+            created_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_agency_profiles_verified ON agency_profiles(is_verified);
+        CREATE INDEX IF NOT EXISTS idx_agency_profiles_city ON agency_profiles(city);
     """)
 
     # Backward-compatible migration for existing databases.
@@ -467,6 +536,8 @@ def init_db():
     }
     if "source" not in listing_columns:
         db.execute("ALTER TABLE listings ADD COLUMN source TEXT NOT NULL DEFAULT 'owner'")
+    if "agency_slug" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN agency_slug TEXT")
     if "verified_owner" not in listing_columns:
         db.execute("ALTER TABLE listings ADD COLUMN verified_owner INTEGER NOT NULL DEFAULT 0")
     if "verified_phone" not in listing_columns:
@@ -493,6 +564,7 @@ def init_db():
         db.execute("ALTER TABLE listings ADD COLUMN has_photo_tour INTEGER NOT NULL DEFAULT 0")
     if "has_video_tour" not in listing_columns:
         db.execute("ALTER TABLE listings ADD COLUMN has_video_tour INTEGER NOT NULL DEFAULT 0")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_listings_agency_slug ON listings(agency_slug)")
 
     # Users table migrations for email/phone verification
     user_columns = {
@@ -513,8 +585,18 @@ def init_db():
     if "phone_verified" not in user_columns:
         db.execute("ALTER TABLE users ADD COLUMN phone_verified INTEGER NOT NULL DEFAULT 0")
 
+    agency_columns = {
+        row[1] for row in db.execute("PRAGMA table_info(agency_profiles)").fetchall()
+    }
+    if "team_size" not in agency_columns:
+        db.execute("ALTER TABLE agency_profiles ADD COLUMN team_size INTEGER")
+    if "completed_deals" not in agency_columns:
+        db.execute("ALTER TABLE agency_profiles ADD COLUMN completed_deals INTEGER NOT NULL DEFAULT 0")
+    db.execute("UPDATE agency_profiles SET completed_deals = COALESCE(completed_deals, 0)")
+
     db.execute("UPDATE listings SET source = COALESCE(NULLIF(source, ''), 'owner')")
     db.execute("UPDATE listings SET listing_status = COALESCE(NULLIF(listing_status, ''), 'active')")
+    db.execute("UPDATE listings SET agency_slug = NULLIF(TRIM(COALESCE(agency_slug, '')), '')")
     db.execute(
         """
         UPDATE listings
@@ -565,6 +647,22 @@ def init_db():
         )
         db.commit()
 
+    if db.execute("SELECT COUNT(*) FROM agency_profiles").fetchone()[0] == 0:
+        db.executemany(
+            """
+            INSERT INTO agency_profiles
+            (slug, name, kind, city, specialization, is_verified, avg_response_minutes, team_size, completed_deals, last_verified_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            [
+                ("capital-alliance", "Capital Alliance", "agency", "Київ", "Преміум квартири та будинки", 1, 32, 24, 460),
+                ("lviv-home-experts", "Lviv Home Experts", "agency", "Львів", "Сімейні квартири + єОселя", 1, 41, 16, 280),
+                ("dnipro-urban-group", "Dnipro Urban Group", "developer", "Дніпро", "Новобудови комфорт+ класу", 1, 55, 32, 520),
+                ("odesa-coast-build", "Odesa Coast Build", "developer", "Одеса", "Будинки та апартаменти біля моря", 1, 49, 18, 340),
+            ],
+        )
+        db.commit()
+
     # Ensure seed/demo rows are publicly visible after migrations.
     db.execute(
         """
@@ -580,6 +678,13 @@ def init_db():
             moderation_reason = NULL,
             moderation_updated_at = COALESCE(moderation_updated_at, published_at, created_at),
             source = COALESCE(NULLIF(source, ''), 'seed'),
+            agency_slug = CASE
+                WHEN city = 'Київ' THEN 'capital-alliance'
+                WHEN city = 'Львів' THEN 'lviv-home-experts'
+                WHEN city = 'Дніпро' THEN 'dnipro-urban-group'
+                WHEN city = 'Одеса' THEN 'odesa-coast-build'
+                ELSE agency_slug
+            END,
             listing_status = CASE
                 WHEN id % 4 = 0 THEN 'sold'
                 WHEN id % 5 = 0 THEN 'removed'
@@ -590,6 +695,13 @@ def init_db():
         WHERE user_id IN (SELECT id FROM users WHERE email = ?)
         """,
         ("demo@ua-dim.com",),
+    )
+    db.execute(
+        """
+        UPDATE agency_profiles
+        SET team_size = COALESCE(team_size, 4),
+            completed_deals = COALESCE(completed_deals, 0)
+        """
     )
     db.commit()
 
@@ -769,6 +881,325 @@ def send_sms_verify(phone: str, code: str) -> bool:
         return True
 
 
+def send_alert_listing_email(to_email: str, alert_name: str, listing: dict) -> bool:
+    listing_url = f"{PUBLIC_SITE_URL or 'http://localhost:8080'}/listing/{listing['id']}"
+    subject = f"Новий об'єкт за алертом «{alert_name}» — UA Homes"
+    body_text = (
+        f"Знайдено новий релевантний об'єкт:\n"
+        f"{listing.get('title', 'Оголошення')} — ${int(listing.get('price') or 0):,}\n"
+        f"{listing.get('city', '')}, {listing.get('district', '')}\n"
+        f"Переглянути: {listing_url}"
+    )
+    body_html = f"""<p>Знайдено новий релевантний об'єкт за вашим алертом <b>{escape(alert_name)}</b>.</p>
+<p><a href="{listing_url}">{escape(listing.get("title", "Оголошення"))}</a></p>
+<p><b>${int(listing.get("price") or 0):,}</b> · {escape(listing.get("city", ""))}, {escape(listing.get("district", ""))}</p>
+<p>Швидкі сигнали: оновлено {listing.get("freshness_hours_ago") if listing.get("freshness_hours_ago") is not None else "—"} год тому, ризик дубля — {escape(listing.get("duplicate_risk", "low"))}.</p>"""
+
+    sg_key = os.environ.get("SENDGRID_API_KEY", "")
+    smtp_host = os.environ.get("SMTP_HOST", "")
+
+    if sg_key:
+        try:
+            import urllib.request as _req, json as _json
+            payload = _json.dumps({
+                "personalizations": [{"to": [{"email": to_email}]}],
+                "from": {"email": os.environ.get("FROM_EMAIL", "noreply@ua-dim.com")},
+                "subject": subject,
+                "content": [
+                    {"type": "text/plain", "value": body_text},
+                    {"type": "text/html", "value": body_html},
+                ]
+            }).encode()
+            req = _req.Request(
+                "https://api.sendgrid.com/v3/mail/send",
+                data=payload,
+                headers={"Authorization": f"Bearer {sg_key}", "Content-Type": "application/json"},
+                method="POST",
+            )
+            with _req.urlopen(req, timeout=10) as r:
+                return r.status in (200, 202)
+        except Exception as e:
+            app.logger.error("SendGrid alert email error: %s", e)
+            return False
+    if smtp_host:
+        try:
+            import smtplib
+            from email.mime.multipart import MIMEMultipart
+            from email.mime.text import MIMEText
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = os.environ.get("FROM_EMAIL", "noreply@ua-dim.com")
+            msg["To"] = to_email
+            msg.attach(MIMEText(body_text, "plain", "utf-8"))
+            msg.attach(MIMEText(body_html, "html", "utf-8"))
+            smtp_port = int(os.environ.get("SMTP_PORT", 587))
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as srv:
+                srv.starttls()
+                srv.login(os.environ.get("SMTP_USER", ""), os.environ.get("SMTP_PASS", ""))
+                srv.sendmail(msg["From"], [to_email], msg.as_string())
+            return True
+        except Exception as e:
+            app.logger.error("SMTP alert email error: %s", e)
+            return False
+    if PUBLIC_SITE_URL:
+        app.logger.warning("Alert email is not configured for production (%s)", to_email)
+        return False
+    app.logger.info("ALERT EMAIL (dev) → %s | %s", to_email, body_text)
+    return True
+
+
+def send_alert_push_payload(payload: dict) -> bool:
+    if not ALERTS_PUSH_WEBHOOK_URL:
+        return False
+    try:
+        import urllib.request as _req
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if ALERTS_PUSH_WEBHOOK_BEARER:
+            headers["Authorization"] = f"Bearer {ALERTS_PUSH_WEBHOOK_BEARER}"
+        req = _req.Request(ALERTS_PUSH_WEBHOOK_URL, data=body, headers=headers, method="POST")
+        with _req.urlopen(req, timeout=10) as r:
+            return r.status in (200, 201, 202, 204)
+    except Exception as e:
+        app.logger.error("Alerts push webhook error: %s", e)
+        return False
+
+
+def _listing_matches_alert_filters(listing: dict, filters: dict) -> bool:
+    city = strip(filters.get("city"), 100)
+    district = strip(filters.get("district"), 100)
+    prop_type = strip(filters.get("type"), 50)
+    listing_type = strip(filters.get("listingType"), 10).lower()
+    min_price = pos_int(filters.get("minPrice"))
+    max_price = pos_int(filters.get("maxPrice"))
+    min_rooms = nonneg_int(filters.get("minRooms"))
+    max_rooms = nonneg_int(filters.get("maxRooms"))
+    e_oselya = bool(filters.get("eOselya"))
+
+    if city and listing.get("city") != city:
+        return False
+    if district and district.lower() not in str(listing.get("district") or "").lower():
+        return False
+    if prop_type and listing.get("property_type") != prop_type:
+        return False
+    if listing_type in {"sale", "rent"} and listing.get("listing_type") != listing_type:
+        return False
+    price = int(listing.get("price") or 0)
+    rooms = int(listing.get("rooms") or 0)
+    if min_price is not None and price < min_price:
+        return False
+    if max_price is not None and price > max_price:
+        return False
+    if min_rooms is not None and rooms < min_rooms:
+        return False
+    if max_rooms is not None and rooms > max_rooms:
+        return False
+    if e_oselya and not bool(listing.get("e_oselya")):
+        return False
+    return True
+
+
+def dispatch_saved_alerts(db, listing_id: int | None = None, dry_run: bool = False) -> dict:
+    alerts = db.execute(
+        """
+        SELECT id, email, name, filters, last_sent_at
+        FROM listing_alerts
+        WHERE is_active = 1
+        ORDER BY id DESC
+        LIMIT 500
+        """
+    ).fetchall()
+    if not alerts:
+        return {"checked": 0, "matched": 0, "email_sent": 0, "push_sent": 0}
+
+    target_listing = None
+    if listing_id is not None:
+        row = db.execute(
+            LISTING_SELECT + " WHERE l.id = ? AND l.status = 'published'",
+            (listing_id,),
+        ).fetchone()
+        if row:
+            target_listing = _row_to_listing(row)
+
+    checked = 0
+    matched = 0
+    email_sent = 0
+    push_sent = 0
+
+    for alert in alerts:
+        checked += 1
+        try:
+            filters = json.loads(alert["filters"] or "{}")
+            if not isinstance(filters, dict):
+                filters = {}
+        except json.JSONDecodeError:
+            filters = {}
+        channels_raw = filters.get("channels")
+        if isinstance(channels_raw, list):
+            channels = [strip(item, 20).lower() for item in channels_raw if strip(item, 20)]
+        elif isinstance(channels_raw, str):
+            channels = [strip(channels_raw, 20).lower()]
+        else:
+            channels = ["email"]
+        channels = [c for c in channels if c in {"email", "push"}] or ["email"]
+
+        candidate_listing = None
+        if target_listing:
+            candidate_listing = target_listing if _listing_matches_alert_filters(target_listing, filters) else None
+        else:
+            rows = db.execute(
+                LISTING_SELECT
+                + """
+                    WHERE l.status = 'published'
+                      AND datetime(l.created_at) > datetime(COALESCE(?, '1970-01-01 00:00:00'))
+                    ORDER BY l.created_at DESC
+                    LIMIT 80
+                """,
+                (alert["last_sent_at"],),
+            ).fetchall()
+            for row in rows:
+                listing = _row_to_listing(row)
+                if _listing_matches_alert_filters(listing, filters):
+                    candidate_listing = listing
+                    break
+
+        if not candidate_listing:
+            continue
+
+        matched += 1
+        sent_any = False
+        if "email" in channels:
+            email_ok = True if dry_run else send_alert_listing_email(
+                alert["email"],
+                alert["name"] or "Listing alert",
+                candidate_listing,
+            )
+            if email_ok:
+                email_sent += 1
+                sent_any = True
+
+        if "push" in channels:
+            push_ok = True if dry_run else send_alert_push_payload(
+                {
+                    "event": "saved_alert_match",
+                    "alert_id": alert["id"],
+                    "email": alert["email"],
+                    "name": alert["name"] or "Listing alert",
+                    "listing": {
+                        "id": candidate_listing["id"],
+                        "title": candidate_listing.get("title"),
+                        "price": candidate_listing.get("price"),
+                        "city": candidate_listing.get("city"),
+                        "district": candidate_listing.get("district"),
+                        "url": f"{PUBLIC_SITE_URL or 'http://localhost:8080'}/listing/{candidate_listing['id']}",
+                    },
+                }
+            )
+            if push_ok:
+                push_sent += 1
+                sent_any = True
+
+        if sent_any and not dry_run:
+            db.execute(
+                "UPDATE listing_alerts SET last_sent_at = datetime('now') WHERE id = ?",
+                (alert["id"],),
+            )
+
+    if not dry_run:
+        db.commit()
+    return {
+        "checked": checked,
+        "matched": matched,
+        "email_sent": email_sent,
+        "push_sent": push_sent,
+    }
+
+
+def alerts_dispatch_authorized(db) -> tuple[bool, str]:
+    request_key = strip(request.headers.get("X-Alerts-Dispatch-Key"), 500)
+    if ALERTS_DISPATCH_KEY and request_key and secrets.compare_digest(request_key, ALERTS_DISPATCH_KEY):
+        return True, "dispatch_key"
+    user_id, is_admin = get_optional_actor(db)
+    if user_id and is_admin:
+        return True, "admin_token"
+    return False, "unauthorized"
+
+
+def log_alert_dispatch_run(
+    db,
+    *,
+    trigger_type: str,
+    dry_run: bool,
+    listing_id: int | None,
+    success: bool,
+    started_at: datetime.datetime,
+    finished_at: datetime.datetime,
+    stats: dict | None = None,
+    error_text: str | None = None,
+):
+    duration_ms = max(0, int((finished_at - started_at).total_seconds() * 1000))
+    stats = stats or {}
+    db.execute(
+        """
+        INSERT INTO alert_dispatch_runs
+        (trigger_type, dry_run, listing_id, checked, matched, email_sent, push_sent, success, error_text, started_at, finished_at, duration_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            strip(trigger_type, 40) or "manual",
+            int(bool(dry_run)),
+            listing_id,
+            int(stats.get("checked") or 0),
+            int(stats.get("matched") or 0),
+            int(stats.get("email_sent") or 0),
+            int(stats.get("push_sent") or 0),
+            int(bool(success)),
+            strip(error_text, 1000) if error_text else None,
+            started_at.replace(microsecond=0).isoformat(sep=" "),
+            finished_at.replace(microsecond=0).isoformat(sep=" "),
+            duration_ms,
+        ),
+    )
+    db.commit()
+
+
+def run_dispatch_with_logging(
+    db,
+    *,
+    trigger_type: str,
+    listing_id: int | None = None,
+    dry_run: bool = False,
+    raise_errors: bool = False,
+) -> dict:
+    started_at = datetime.datetime.utcnow()
+    stats: dict = {"checked": 0, "matched": 0, "email_sent": 0, "push_sent": 0}
+    success = False
+    error_text = None
+    try:
+        stats = dispatch_saved_alerts(db, listing_id=listing_id, dry_run=dry_run)
+        success = True
+        return stats
+    except Exception as e:
+        error_text = str(e)
+        app.logger.error("Alerts dispatch failed (%s): %s", trigger_type, e)
+        if raise_errors:
+            raise
+        return stats
+    finally:
+        finished_at = datetime.datetime.utcnow()
+        log_alert_dispatch_run(
+            db,
+            trigger_type=trigger_type,
+            dry_run=dry_run,
+            listing_id=listing_id,
+            success=success,
+            started_at=started_at,
+            finished_at=finished_at,
+            stats=stats,
+            error_text=error_text,
+        )
+
+
 # ─── Validation helpers ───────────────────────────────────────────────────────
 
 EMAIL_RE = re.compile(r"^[a-zA-Z0-9_.+\-]+@[a-zA-Z0-9\-]+\.[a-zA-Z0-9\-.]+$")
@@ -801,9 +1232,50 @@ def pos_float(val) -> float | None:
         return None
 
 
+def truthy_flag(raw: str | None) -> bool:
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_dt(value: str | None) -> datetime.datetime | None:
+    text = strip(value or "", 64)
+    if not text:
+        return None
+    try:
+        # SQLite timestamps are usually "YYYY-MM-DD HH:MM:SS"
+        return datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _hours_since(value: str | None) -> int | None:
+    dt = _parse_dt(value)
+    if not dt:
+        return None
+    if dt.tzinfo is not None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        delta = now - dt.astimezone(datetime.timezone.utc)
+    else:
+        now = datetime.datetime.utcnow()
+        delta = now - dt
+    return max(0, int(delta.total_seconds() // 3600))
+
+
+def _days_since(value: str | None) -> int | None:
+    dt = _parse_dt(value)
+    if not dt:
+        return None
+    if dt.tzinfo is not None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        delta = now - dt.astimezone(datetime.timezone.utc)
+    else:
+        now = datetime.datetime.utcnow()
+        delta = now - dt
+    return max(0, int(delta.total_seconds() // 86400))
+
+
 def _row_to_listing(r) -> dict:
     d = dict(r)
-    d["images"] = json.loads(d.get("images") or "[]")
+    d["images"] = normalize_listing_images(json.loads(d.get("images") or "[]"))
     d["listing_status"] = d.get("listing_status") or "active"
     d["owner_verification_status"] = d.get("owner_verification_status") or verification_state_from_bool(d.get("verified_owner"))
     d["phone_verification_status"] = d.get("phone_verification_status") or verification_state_from_bool(d.get("verified_phone"))
@@ -820,6 +1292,94 @@ def _row_to_listing(r) -> dict:
         + (30 if d["verified_docs"] else 0)
     )
     d["trust_score"] = trust_score
+    d["agency_verified"] = bool(d.get("agency_verified"))
+    d["trust_verified_at"] = d.get("moderation_updated_at") or d.get("published_at") or d.get("created_at")
+    d["freshness_hours_ago"] = _hours_since(d.get("published_at") or d.get("created_at"))
+    d["verified_days_ago"] = _days_since(d.get("trust_verified_at"))
+    verification_proofs: list[dict] = []
+
+    def add_proof(code: str, label: str, details: str, weight: int, priority: int):
+        verification_proofs.append({
+            "code": code,
+            "label": label,
+            "details": details,
+            "weight": weight,
+            "priority": priority,
+            "verified_at": d.get("trust_verified_at"),
+        })
+
+    if d["has_video_tour"]:
+        add_proof(
+            "video",
+            "Перевірено по відео",
+            "Є відеоогляд об'єкта для візуальної звірки стану.",
+            25,
+            95,
+        )
+    if d["has_photo_tour"]:
+        add_proof(
+            "tour360",
+            "Є 360°/фото-тур",
+            "Доступний фото-тур або панорамні матеріали оголошення.",
+            20,
+            85,
+        )
+    if d["verified_docs"]:
+        add_proof(
+            "documents",
+            "Перевірено по документах",
+            "Документи по об'єкту перевірені модерацією.",
+            30,
+            100,
+        )
+    if d["verified_owner"]:
+        add_proof(
+            "owner",
+            "Верифіковано власника",
+            "Підтверджено, що подавач має відношення до об'єкта.",
+            10,
+            70,
+        )
+    if d["verified_phone"]:
+        add_proof(
+            "phone",
+            "Верифіковано телефон",
+            "Контактний номер підтверджено.",
+            10,
+            65,
+        )
+    if d.get("moderation_updated_at"):
+        add_proof(
+            "inspector",
+            "Перевірено інспектором",
+            "Оголошення пройшло ручну перевірку модератором.",
+            20,
+            90,
+        )
+
+    verification_proofs.sort(key=lambda item: item["priority"], reverse=True)
+    trust_evidence_score = min(100, sum(int(item["weight"]) for item in verification_proofs))
+    if trust_evidence_score >= 70:
+        trust_evidence_level = "strong"
+    elif trust_evidence_score >= 40:
+        trust_evidence_level = "medium"
+    elif trust_evidence_score > 0:
+        trust_evidence_level = "basic"
+    else:
+        trust_evidence_level = "none"
+    d["verification_proofs"] = verification_proofs
+    d["trust_evidence_score"] = trust_evidence_score
+    d["trust_evidence_level"] = trust_evidence_level
+    dup_count = int(d.get("dup_count") or 1)
+    if dup_count >= 3:
+        d["duplicate_risk"] = "high"
+        d["duplicate_risk_score"] = 90
+    elif dup_count == 2:
+        d["duplicate_risk"] = "medium"
+        d["duplicate_risk_score"] = 55
+    else:
+        d["duplicate_risk"] = "low"
+        d["duplicate_risk_score"] = 10
     return d
 
 
@@ -827,6 +1387,23 @@ def public_base_url() -> str:
     if PUBLIC_SITE_URL:
         return PUBLIC_SITE_URL
     return request.url_root.rstrip("/")
+
+
+def public_app_base_url() -> str:
+    if PUBLIC_SITE_URL:
+        parsed = urlsplit(PUBLIC_SITE_URL)
+        if parsed.hostname in {"localhost", "127.0.0.1"} and parsed.port in {None, 5050}:
+            return f"{parsed.scheme or 'http'}://{parsed.hostname}:8080"
+        return PUBLIC_SITE_URL
+
+    parsed = urlsplit(request.url_root.rstrip("/"))
+    if parsed.hostname in {"localhost", "127.0.0.1"}:
+        return f"{parsed.scheme or 'http'}://{parsed.hostname}:8080"
+    return request.url_root.rstrip("/")
+
+
+def public_app_url() -> str:
+    return f"{public_app_base_url()}/real-estate-demo.html"
 
 
 def _seo_landing_stats(db: sqlite3.Connection, limit: int = 8):
@@ -853,6 +1430,158 @@ def _seo_landing_stats(db: sqlite3.Connection, limit: int = 8):
         (limit,),
     ).fetchall()
     return city_rows, district_rows
+
+
+def _content_articles(db: sqlite3.Connection) -> list[dict]:
+    city_rows, district_rows = _seo_landing_stats(db, limit=6)
+    agency_rows = _agency_metrics(db, sort_by="reputation", limit=4)
+    total_count = int(db.execute("SELECT COUNT(*) FROM listings WHERE status='published'").fetchone()[0] or 0)
+    e_oselya_count = int(db.execute("SELECT COUNT(*) FROM listings WHERE status='published' AND e_oselya = 1").fetchone()[0] or 0)
+    active_count = int(db.execute("SELECT COUNT(*) FROM listings WHERE status='published' AND listing_status = 'active'").fetchone()[0] or 0)
+    freshness_count = int(db.execute(
+        "SELECT COUNT(*) FROM listings WHERE status='published' AND published_at >= datetime('now', '-14 days')"
+    ).fetchone()[0] or 0)
+
+    top_city = city_rows[0] if city_rows else None
+    top_district = district_rows[0] if district_rows else None
+    top_agency = agency_rows[0] if agency_rows else None
+    second_agency = agency_rows[1] if len(agency_rows) > 1 else top_agency
+
+    articles = [
+        {
+            "slug": "market-update-kyiv-leads",
+            "category": "Ринок",
+            "title": f"Київ тримає лідерство: {top_city['cnt'] if top_city else total_count} об'єктів і попит на єОселя",
+            "excerpt": (
+                f"Найбільше опублікованих оголошень зараз у Києві, а середня ціна тримається біля "
+                f"${int(top_city['avg_price'] or 0):,}."
+                if top_city
+                else "Огляд ринку по містах: де найбільше пропозицій і як змінюється середня ціна."
+            ),
+            "published_at": "2026-08-01",
+            "reading_time": 4,
+            "featured": True,
+            "stats": [
+                {"label": "Опубліковано", "value": total_count},
+                {"label": "єОселя", "value": e_oselya_count},
+                {"label": "Активні", "value": active_count},
+            ],
+            "body_html": (
+                f"<p>Ринок рухається навколо великих міст: найбільше оголошень у {escape(top_city['city']) if top_city else 'Україні'}, "
+                f"а {escape(top_district['district']) if top_district else 'популярні райони'} дають хороший сигнал по локальному попиту.</p>"
+                f"<p>Середня ціна в топ-місті: <strong>${int(top_city['avg_price'] or 0):,}</strong>. "
+                f"Це дає нам сильний discovery-поверх для пошуку і контенту, який оновлюється разом із базою.</p>"
+            ),
+            "related": [
+                {"label": "Відкрити карту", "href": f"{public_app_url()}?view=map"},
+                {"label": "SEO-сторінки міст", "href": f"/seo/{quote(top_city['city'])}" if top_city else public_app_url()},
+            ],
+        },
+        {
+            "slug": "eoselya-watch",
+            "category": "єОселя",
+            "title": "єОселя watch: де найбільше придатних об'єктів",
+            "excerpt": f"Зараз {e_oselya_count} опублікованих об'єктів під єОселя — це окрема воронка для конверсії.",
+            "published_at": "2026-08-01",
+            "reading_time": 3,
+            "featured": True,
+            "stats": [
+                {"label": "єОселя", "value": e_oselya_count},
+                {"label": "Свіжі за 14 днів", "value": freshness_count},
+            ],
+            "body_html": (
+                f"<p>Ми виділяємо об'єкти під єОселя як окремий шлях discovery: це швидко приводить користувача до релевантних карток, "
+                f"а також допомагає порівнювати міста, де таких об'єктів більше.</p>"
+                f"<p>Найкраще працює зв'язка: <strong>єОселя → карта → алерт</strong>.</p>"
+            ),
+            "related": [
+                {"label": "Шукати єОселя", "href": f"{public_app_url()}?eOselya=true"},
+                {"label": "Додати алерт", "href": f"{public_app_url()}#alerts"},
+            ],
+        },
+        {
+            "slug": "verified-agencies-leadership",
+            "category": "Trust",
+            "title": f"{top_agency['name'] if top_agency else 'Verified partners'}: хто веде довіру на ринку",
+            "excerpt": (
+                f"Лідер за reputation score — {top_agency['name']} ({top_agency['reputation_score']}/100), "
+                f"команда {top_agency['team_size']} осіб."
+                if top_agency
+                else "Профілі агентств і забудовників з рейтингом довіри, командою та кількістю угод."
+            ),
+            "published_at": "2026-08-01",
+            "reading_time": 4,
+            "featured": False,
+            "stats": [
+                {"label": "Лідер score", "value": top_agency["reputation_score"] if top_agency else 0},
+                {"label": "Команда", "value": top_agency["team_size"] if top_agency else 0},
+                {"label": "Угоди", "value": top_agency["completed_deals"] if top_agency else 0},
+            ],
+            "body_html": (
+                f"<p>Каталог агентств став окремим продуктом: ми показуємо не лише контакт, а й репутацію, команду, угоди та verified-rate.</p>"
+                f"<p>Сильні trust-сигнали мають не тільки конвертувати, а й допомагати користувачу швидко обирати, кому довіряти.</p>"
+            ),
+            "related": [
+                {"label": "Каталог агентств", "href": "/agencies"},
+                {"label": "Профіль лідера", "href": f"/agencies/{top_agency['slug']}" if top_agency else "/agencies"},
+            ],
+        },
+        {
+            "slug": "fresh-listings-quality",
+            "category": "Supply",
+            "title": f"Свіжість і якість: {freshness_count} об'єктів оновлено за 14 днів",
+            "excerpt": "Свіжість оголошення, trust-докази та антидублі формують зрілу supply side модель.",
+            "published_at": "2026-08-01",
+            "reading_time": 3,
+            "featured": False,
+            "stats": [
+                {"label": "Оновлено 14д", "value": freshness_count},
+                {"label": "Верифіковано", "value": int(db.execute("SELECT COUNT(*) FROM listings WHERE status='published' AND (verified_owner=1 OR verified_phone=1 OR verified_docs=1)").fetchone()[0] or 0)},
+            ],
+            "body_html": (
+                "<p>Окрема якість supply side — це коли користувач бачить свіжість, доказовість і низький ризик дубля ще до відкриття картки.</p>"
+                "<p>Саме це ми підсвічуємо в SERP і використовуємо для ранжування довіри.</p>"
+            ),
+            "related": [
+                {"label": "Переглянути видачу", "href": public_app_url()},
+                {"label": "Ризик дубля", "href": f"{public_app_url()}?duplicateRisk=high"},
+            ],
+        },
+        {
+            "slug": "map-first-hotspots",
+            "category": "Discovery",
+            "title": f"Map-first discovery: {top_district['city'] if top_district else 'міські'} hotspot-и зараз",
+            "excerpt": (
+                f"Найактивніший район — {top_district['district']} у {top_district['city']} з {top_district['cnt']} оголошеннями."
+                if top_district
+                else "Карта як центральний сценарій пошуку: фокус на hotspots і локальній аналітиці."
+            ),
+            "published_at": "2026-08-01",
+            "reading_time": 4,
+            "featured": False,
+            "stats": [
+                {"label": "Hotspot район", "value": top_district["cnt"] if top_district else 0},
+                {"label": "Міст", "value": len(city_rows)},
+            ],
+            "body_html": (
+                f"<p>Коли карта стає ядром, discovery перестає бути списком і перетворюється на локальну аналітику попиту.</p>"
+                f"<p>Ми використовуємо місто/район/агенцію/свіжість як концентрат сигналів для навігації.</p>"
+            ),
+            "related": [
+                {"label": "У карту", "href": f"{public_app_url()}?view=map"},
+                {"label": "Топ-місто", "href": f"/seo/{quote(top_district['city'])}" if top_district else public_app_url()},
+            ],
+        },
+    ]
+
+    return articles
+
+
+def _content_article_by_slug(db: sqlite3.Connection, slug: str) -> dict | None:
+    for article in _content_articles(db):
+        if article["slug"] == slug:
+            return article
+    return None
 
 
 init_db()
@@ -966,9 +1695,8 @@ def verify_email():
         (row["id"],)
     )
     db.commit()
-    site = PUBLIC_SITE_URL or "http://localhost:8080"
     return Response(
-        f'<meta http-equiv="refresh" content="0;url={site}/real-estate-demo.html?email_verified=1">',
+        f'<meta http-equiv="refresh" content="0;url={public_app_url()}?email_verified=1">',
         mimetype="text/html"
     )
 
@@ -1073,15 +1801,410 @@ LISTING_SELECT = """
     SELECT l.id, l.user_id, l.title, l.city, l.district, l.property_type, l.condition_type,
            l.price, l.rooms, l.area, l.floor, l.total_floors, l.year_built,
            l.e_oselya, l.views, l.images, l.latitude, l.longitude, l.description,
-           l.status, l.listing_type, l.source, l.listing_status, l.has_photo_tour, l.has_video_tour,
+           l.status, l.listing_type, l.source, l.agency_slug, l.listing_status, l.has_photo_tour, l.has_video_tour,
            l.verified_owner, l.verified_phone, l.verified_docs,
            l.owner_verification_status, l.phone_verification_status,
            l.moderation_status, l.moderation_reason, l.moderation_updated_at,
            l.published_at, l.created_at,
-           u.name AS owner_name, u.email AS owner_email
+           COALESCE(dup.dup_count, 1) AS dup_count,
+           u.name AS owner_name, u.email AS owner_email,
+           ap.name AS agency_name, ap.kind AS agency_kind, ap.is_verified AS agency_verified
     FROM   listings l
     JOIN   users u ON u.id = l.user_id
+    LEFT JOIN agency_profiles ap ON ap.slug = l.agency_slug
+    LEFT JOIN (
+        SELECT city, district, property_type, listing_type, rooms,
+               CAST(area / 5 AS INTEGER) AS area_bucket,
+               CAST(price / 5000 AS INTEGER) AS price_bucket,
+               COUNT(*) AS dup_count
+        FROM listings
+        WHERE status = 'published'
+        GROUP BY city, district, property_type, listing_type, rooms,
+                 CAST(area / 5 AS INTEGER), CAST(price / 5000 AS INTEGER)
+    ) dup
+        ON dup.city = l.city
+       AND dup.district = l.district
+       AND dup.property_type = l.property_type
+       AND dup.listing_type = l.listing_type
+       AND dup.rooms = l.rooms
+       AND dup.area_bucket = CAST(l.area / 5 AS INTEGER)
+       AND dup.price_bucket = CAST(l.price / 5000 AS INTEGER)
 """
+
+
+def _response_score(avg_response_minutes: int | None) -> int:
+    if avg_response_minutes is None:
+        return 45
+    if avg_response_minutes <= 15:
+        return 100
+    if avg_response_minutes <= 30:
+        return 88
+    if avg_response_minutes <= 60:
+        return 72
+    if avg_response_minutes <= 120:
+        return 58
+    return 42
+
+
+def _freshness_score(freshness_index: float | None) -> int:
+    if freshness_index is None:
+        return 50
+    return max(20, min(100, int(round(freshness_index))))
+
+
+def _agency_metrics(
+    db: sqlite3.Connection,
+    where_sql: str = "",
+    where_params: tuple = (),
+    sort_by: str = "reputation",
+    limit: int = 30,
+):
+    query = f"""
+        SELECT
+            ap.slug,
+            ap.name,
+            ap.kind,
+            ap.city,
+            ap.specialization,
+            ap.is_verified,
+            ap.avg_response_minutes,
+            ap.team_size,
+            ap.completed_deals,
+            ap.last_verified_at,
+            COUNT(CASE WHEN l.status = 'published' THEN 1 END) AS active_listings,
+            COUNT(l.id) AS total_listings,
+            ROUND(AVG(
+                CASE WHEN l.status = 'published'
+                    THEN (CASE WHEN l.verified_owner = 1 THEN 1 ELSE 0 END
+                        + CASE WHEN l.verified_phone = 1 THEN 1 ELSE 0 END
+                        + CASE WHEN l.verified_docs = 1 THEN 1 ELSE 0 END) / 3.0
+                END
+            ) * 100, 1) AS verified_rate
+            ,
+            ROUND(AVG(
+                CASE WHEN l.status = 'published'
+                    THEN CASE WHEN l.moderation_status = 'approved' THEN 1 ELSE 0 END
+                END
+            ) * 100, 1) AS moderation_rate,
+            ROUND(AVG(
+                CASE WHEN l.status = 'published'
+                    THEN CASE
+                        WHEN l.listing_status = 'active' THEN 100
+                        WHEN l.listing_status = 'sold' THEN 75
+                        WHEN l.listing_status = 'removed' THEN 40
+                        ELSE 60
+                    END
+                END
+            ), 1) AS freshness_index
+        FROM agency_profiles ap
+        LEFT JOIN listings l ON l.agency_slug = ap.slug
+        {where_sql}
+        GROUP BY ap.slug, ap.name, ap.kind, ap.city, ap.specialization, ap.is_verified, ap.avg_response_minutes, ap.team_size, ap.completed_deals, ap.last_verified_at
+        ORDER BY ap.is_verified DESC, active_listings DESC, ap.name ASC
+        LIMIT ?
+    """
+    rows = db.execute(query, tuple(where_params) + (limit,)).fetchall()
+    metrics: list[dict] = []
+    for row in rows:
+        avg_response_minutes = row["avg_response_minutes"]
+        active_listings = int(row["active_listings"] or 0)
+        verified_rate = float(row["verified_rate"] or 0)
+        moderation_rate = float(row["moderation_rate"] or 0)
+        freshness_index = float(row["freshness_index"]) if row["freshness_index"] is not None else None
+        response_score = _response_score(avg_response_minutes)
+        freshness_score = _freshness_score(freshness_index)
+        reputation_score = int(round(
+            verified_rate * 0.4
+            + response_score * 0.22
+            + freshness_score * 0.2
+            + moderation_rate * 0.18
+            + (5 if row["is_verified"] else 0)
+        ))
+        team_size = row["team_size"] if row["team_size"] is not None else max(2, min(60, active_listings // 3 + 2))
+        if reputation_score >= 85:
+            reputation_tier = "A+"
+        elif reputation_score >= 75:
+            reputation_tier = "A"
+        elif reputation_score >= 65:
+            reputation_tier = "B"
+        else:
+            reputation_tier = "C"
+
+        metrics.append({
+            "slug": row["slug"],
+            "name": row["name"],
+            "kind": row["kind"],
+            "city": row["city"],
+            "specialization": row["specialization"] or "",
+            "is_verified": bool(row["is_verified"]),
+            "avg_response_minutes": avg_response_minutes,
+            "team_size": int(team_size),
+            "completed_deals": int(row["completed_deals"] or 0),
+            "last_verified_at": row["last_verified_at"],
+            "active_listings": active_listings,
+            "total_listings": int(row["total_listings"] or 0),
+            "verified_rate": verified_rate,
+            "moderation_rate": moderation_rate,
+            "freshness_index": freshness_index,
+            "response_score": response_score,
+            "freshness_score": freshness_score,
+            "reputation_score": reputation_score,
+            "reputation_tier": reputation_tier,
+        })
+
+    if sort_by == "active":
+        metrics.sort(key=lambda item: (item["active_listings"], item["reputation_score"]), reverse=True)
+    elif sort_by == "response":
+        metrics.sort(key=lambda item: (item["response_score"], item["reputation_score"]), reverse=True)
+    elif sort_by == "verified_rate":
+        metrics.sort(key=lambda item: (item["verified_rate"], item["reputation_score"]), reverse=True)
+    else:
+        metrics.sort(key=lambda item: (item["reputation_score"], item["active_listings"]), reverse=True)
+    return metrics
+
+
+@app.route("/api/agencies", methods=["GET"])
+def get_agencies():
+    db = get_db()
+    args = request.args
+    city = strip(args.get("city", ""), 100)
+    kind = strip(args.get("kind", ""), 20).lower()
+    verified_only = truthy_flag(args.get("verified_only"))
+    q = strip(args.get("q", ""), 80)
+    sort_by = strip(args.get("sort", "reputation"), 32).lower()
+    limit = nonneg_int(args.get("limit")) or 30
+    limit = min(max(limit, 1), 100)
+    filters = []
+    params: list = []
+    if verified_only:
+        filters.append("ap.is_verified = 1")
+    if city:
+        filters.append("ap.city = ?")
+        params.append(city)
+    if kind in {"agency", "developer"}:
+        filters.append("ap.kind = ?")
+        params.append(kind)
+    if q:
+        filters.append("(ap.name LIKE ? OR ap.specialization LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%"])
+    where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+    return jsonify(agencies=_agency_metrics(db, where_sql, tuple(params), sort_by=sort_by, limit=limit))
+
+
+@app.route("/agencies", methods=["GET"])
+def agencies_catalog_page():
+    db = get_db()
+    city = strip(request.args.get("city", ""), 100)
+    kind = strip(request.args.get("kind", ""), 20).lower()
+    verified_only = truthy_flag(request.args.get("verified_only"))
+    sort_by = strip(request.args.get("sort", "reputation"), 32).lower()
+    q = strip(request.args.get("q", ""), 80)
+    filters = []
+    params: list = []
+    if verified_only:
+        filters.append("ap.is_verified = 1")
+    if city:
+        filters.append("ap.city = ?")
+        params.append(city)
+    if kind in {"agency", "developer"}:
+        filters.append("ap.kind = ?")
+        params.append(kind)
+    if q:
+        filters.append("(ap.name LIKE ? OR ap.specialization LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%"])
+    where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+    agencies = _agency_metrics(db, where_sql, tuple(params), sort_by=sort_by, limit=100)
+    cards_html = "".join(
+        f"""
+        <article style="border:1px solid #dbeafe;background:#f8fbff;border-radius:14px;padding:14px">
+          <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">
+            <div>
+              <h3 style="margin:0 0 4px;font-size:18px">{escape(item["name"])}</h3>
+              <p style="margin:0;color:#475569">{'Агентство' if item["kind"] == 'agency' else 'Забудовник'} · {escape(item["city"])} · Команда: {item["team_size"]}</p>
+            </div>
+            <span style="padding:6px 10px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-weight:700">Рейтинг {item["reputation_tier"]} · {item["reputation_score"]}/100</span>
+          </div>
+          <p style="margin:8px 0 10px;color:#334155">{escape(item["specialization"] or 'Нерухомість і супровід угод')}</p>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+            <span style="font-size:12px;padding:5px 8px;border:1px solid #bfdbfe;background:#eff6ff;border-radius:10px">Активні: {item["active_listings"]}</span>
+            <span style="font-size:12px;padding:5px 8px;border:1px solid #bbf7d0;background:#f0fdf4;border-radius:10px">Verified-rate: {item["verified_rate"]:.1f}%</span>
+            <span style="font-size:12px;padding:5px 8px;border:1px solid #fde68a;background:#fffbeb;border-radius:10px">SLA відповіді: {item["avg_response_minutes"] or '—'} хв</span>
+            <span style="font-size:12px;padding:5px 8px;border:1px solid #e2e8f0;background:#f8fafc;border-radius:10px">Угод: {item["completed_deals"]}</span>
+          </div>
+          <a href="/agencies/{quote(item["slug"])}" style="display:inline-block;padding:8px 12px;border-radius:10px;background:#0f172a;color:#fff;text-decoration:none;font-weight:600">Відкрити профіль</a>
+        </article>
+        """
+        for item in agencies
+    ) or '<p style="color:#64748b">Нічого не знайдено за фільтрами.</p>'
+    html = f"""<!doctype html>
+<html lang="uk"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Каталог агентств і забудовників — UA Dim</title>
+<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f8fafc;margin:0;padding:24px;color:#0f172a">
+<main style="max-width:1060px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:20px">
+  <a href="{public_app_url()}" style="color:#2563eb;text-decoration:none">← До каталогу нерухомості</a>
+  <h1 style="margin:12px 0 4px">Каталог агентств / забудовників</h1>
+  <p style="margin:0 0 14px;color:#475569">Рейтинг за репутацією, trust-якістю, швидкістю відповіді та свіжістю активних оголошень.</p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:0 0 16px">
+    <div style="border:1px solid #dbeafe;background:#eff6ff;border-radius:12px;padding:10px"><b>{len(agencies)}</b><div style="color:#475569">Профілів</div></div>
+    <div style="border:1px solid #dcfce7;background:#f0fdf4;border-radius:12px;padding:10px"><b>{sum(1 for item in agencies if item['is_verified'])}</b><div style="color:#475569">Верифікованих</div></div>
+    <div style="border:1px solid #e2e8f0;background:#f8fafc;border-radius:12px;padding:10px"><b>{sum(item['active_listings'] for item in agencies)}</b><div style="color:#475569">Активних оголошень</div></div>
+    <div style="border:1px solid #fef3c7;background:#fffbeb;border-radius:12px;padding:10px"><b>{round(sum(item['reputation_score'] for item in agencies)/len(agencies),1) if agencies else 0}</b><div style="color:#475569">Середній репутаційний score</div></div>
+  </div>
+  <section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">{cards_html}</section>
+</main></body></html>"""
+    return Response(html, mimetype="text/html")
+
+
+@app.route("/api/agencies/<slug>", methods=["GET"])
+def get_agency_profile(slug: str):
+    db = get_db()
+    metrics = _agency_metrics(db, "WHERE ap.slug = ?", (slug,))
+    if not metrics:
+        return jsonify(error="Агентство/забудовника не знайдено"), 404
+    profile = metrics[0]
+    listing_rows = db.execute(
+        LISTING_SELECT + " WHERE l.status = 'published' AND l.agency_slug = ? ORDER BY l.created_at DESC LIMIT 12",
+        (slug,),
+    ).fetchall()
+    profile["listings"] = [_row_to_listing(r) for r in listing_rows]
+    return jsonify(profile=profile)
+
+
+@app.route("/agencies/<slug>", methods=["GET"])
+def agency_profile_page(slug: str):
+    db = get_db()
+    metrics = _agency_metrics(db, "WHERE ap.slug = ?", (slug,))
+    if not metrics:
+        return Response("<h1>Профіль не знайдено</h1>", status=404, mimetype="text/html")
+    profile = metrics[0]
+    listing_rows = db.execute(
+        "SELECT id, title, city, district, price FROM listings WHERE status='published' AND agency_slug=? ORDER BY created_at DESC LIMIT 10",
+        (slug,),
+    ).fetchall()
+    listing_items = "".join(
+        f'<li><a href="/listing/{row["id"]}" style="color:#1d4ed8;text-decoration:none">{escape(row["title"])}</a>'
+        f' <span style="color:#64748b">({escape(row["city"])}, {escape(row["district"])}) — ${int(row["price"]):,}</span></li>'
+        for row in listing_rows
+    ) or "<li>Поки немає активних оголошень</li>"
+    kind_label = "Агентство" if profile["kind"] == "agency" else "Забудовник"
+    verified_label = "Перевірено" if profile["is_verified"] else "Не перевірено"
+    trust_text = {
+        "A+": "Високий рівень довіри",
+        "A": "Сильний рівень довіри",
+        "B": "Стабільний рівень довіри",
+        "C": "Базовий рівень довіри",
+    }.get(profile["reputation_tier"], "Рівень довіри уточнюється")
+    html = f"""<!doctype html>
+<html lang="uk"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{escape(profile["name"])} — UA Dim</title>
+<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f8fafc;margin:0;padding:24px;color:#0f172a">
+<main style="max-width:920px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:24px">
+  <a href="/agencies" style="color:#2563eb;text-decoration:none">← До каталогу агентств</a>
+  <h1 style="margin:14px 0 8px">{escape(profile["name"])}</h1>
+  <p style="margin:0 0 8px;color:#475569">{kind_label} · {escape(profile["city"])} · {verified_label}</p>
+  <p style="margin:0 0 16px;color:#1e3a8a;font-weight:600">Репутація: {profile["reputation_tier"]} ({profile["reputation_score"]}/100) · {trust_text}</p>
+  <p style="margin:0 0 16px;color:#334155">{escape(profile["specialization"])}</p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px">
+    <div style="border:1px solid #dbeafe;background:#eff6ff;border-radius:12px;padding:12px"><b>{profile["active_listings"]}</b><div style="color:#475569">Активні оголошення</div></div>
+    <div style="border:1px solid #dcfce7;background:#f0fdf4;border-radius:12px;padding:12px"><b>{profile["verified_rate"]:.1f}%</b><div style="color:#475569">Verified-rate</div></div>
+    <div style="border:1px solid #fef3c7;background:#fffbeb;border-radius:12px;padding:12px"><b>{profile["avg_response_minutes"] or "—"} хв</b><div style="color:#475569">Середній час відповіді</div></div>
+    <div style="border:1px solid #ede9fe;background:#f5f3ff;border-radius:12px;padding:12px"><b>{profile["team_size"]}</b><div style="color:#475569">Команда</div></div>
+    <div style="border:1px solid #e2e8f0;background:#f8fafc;border-radius:12px;padding:12px"><b>{profile["completed_deals"]}</b><div style="color:#475569">Закриті угоди</div></div>
+    <div style="border:1px solid #e2e8f0;background:#f8fafc;border-radius:12px;padding:12px"><b>{escape(profile["last_verified_at"] or "—")}</b><div style="color:#475569">Остання перевірка</div></div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:8px;margin:0 0 16px">
+    <span style="font-size:12px;padding:6px 10px;border-radius:999px;border:1px solid #bfdbfe;background:#eff6ff">Quality score: {profile["reputation_score"]}/100</span>
+    <span style="font-size:12px;padding:6px 10px;border-radius:999px;border:1px solid #bbf7d0;background:#f0fdf4">Moderation approve-rate: {profile["moderation_rate"]:.1f}%</span>
+    <span style="font-size:12px;padding:6px 10px;border-radius:999px;border:1px solid #fde68a;background:#fffbeb">Freshness-index: {round(profile["freshness_index"], 1) if profile["freshness_index"] is not None else "—"} / 100</span>
+  </div>
+  <h2 style="margin:8px 0 10px">Актуальні оголошення</h2>
+  <ul style="margin:0;padding-left:20px;line-height:1.7">{listing_items}</ul>
+</main></body></html>"""
+    return Response(html, mimetype="text/html")
+
+
+@app.route("/api/content", methods=["GET"])
+def get_content_articles():
+    db = get_db()
+    limit = nonneg_int(request.args.get("limit")) or 6
+    limit = min(max(limit, 1), 12)
+    category = strip(request.args.get("category", ""), 32)
+    articles = _content_articles(db)
+    if category:
+        articles = [article for article in articles if article["category"].lower() == category.lower()]
+    return jsonify(articles=articles[:limit], featured=[article for article in articles if article.get("featured")][:limit])
+
+
+@app.route("/insights", methods=["GET"])
+def insights_hub():
+    db = get_db()
+    articles = _content_articles(db)
+    cards = "".join(
+        f"""
+        <article style="border:1px solid #e2e8f0;background:#fff;border-radius:16px;padding:16px">
+          <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
+            <span style="font-size:12px;font-weight:700;color:#2563eb;background:#eff6ff;padding:6px 10px;border-radius:999px">{escape(article["category"])}</span>
+            <span style="font-size:12px;color:#64748b">{escape(article["published_at"])} · {article["reading_time"]} хв</span>
+          </div>
+          <h2 style="margin:10px 0 6px;font-size:20px">{escape(article["title"])}</h2>
+          <p style="margin:0 0 12px;color:#475569">{escape(article["excerpt"])}</p>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+            {''.join(f'<span style="font-size:12px;padding:5px 8px;border-radius:10px;border:1px solid #dbeafe;background:#eff6ff">{escape(str(stat["label"]))}: {escape(str(stat["value"]))}</span>' for stat in article["stats"])}
+          </div>
+          <a href="/insights/{quote(article["slug"])}" style="color:#1d4ed8;font-weight:700;text-decoration:none">Читати →</a>
+        </article>
+        """
+        for article in articles
+    )
+    featured = [article for article in articles if article.get("featured")]
+    featured_html = "".join(
+        f'<span style="display:inline-block;margin:4px 8px 4px 0;padding:6px 10px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-weight:700">{escape(article["title"])}</span>'
+        for article in featured
+    ) or "<span style='color:#64748b'>Немає featured контенту</span>"
+    html = f"""<!doctype html>
+<html lang="uk"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Insights — UA Homes</title>
+<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f8fafc;margin:0;padding:24px;color:#0f172a">
+<main style="max-width:1100px;margin:0 auto">
+  <a href="{public_app_url()}" style="color:#2563eb;text-decoration:none">← До каталогу</a>
+  <h1 style="margin:12px 0 6px;font-size:36px">Market insights / контентна машина</h1>
+  <p style="margin:0 0 14px;color:#475569">Сторінки оновлюються з ринкових даних: міста, райони, єОселя, trust та карта.</p>
+  <div style="margin:0 0 18px">{featured_html}</div>
+  <section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px">{cards}</section>
+</main></body></html>"""
+    return Response(html, mimetype="text/html")
+
+
+@app.route("/insights/<slug>", methods=["GET"])
+def insight_article(slug: str):
+    db = get_db()
+    article = _content_article_by_slug(db, slug)
+    if not article:
+        return Response("<h1>Матеріал не знайдено</h1>", status=404, mimetype="text/html")
+    related_html = "".join(
+        f'<li><a href="{escape(link["href"])}" style="color:#1d4ed8;text-decoration:none">{escape(link["label"])}</a></li>'
+        for link in article.get("related", [])
+    )
+    stats_html = "".join(
+        f'<div style="border:1px solid #e2e8f0;background:#f8fafc;border-radius:12px;padding:12px"><b>{escape(str(stat["value"]))}</b><div style="color:#475569">{escape(str(stat["label"]))}</div></div>'
+        for stat in article.get("stats", [])
+    )
+    html = f"""<!doctype html>
+<html lang="uk"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{escape(article["title"])} — UA Homes Insights</title>
+<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f8fafc;margin:0;padding:24px;color:#0f172a">
+<main style="max-width:920px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:24px">
+  <a href="/insights" style="color:#2563eb;text-decoration:none">← До Insights</a>
+  <div style="margin-top:10px;font-size:12px;font-weight:700;color:#2563eb;background:#eff6ff;display:inline-block;padding:6px 10px;border-radius:999px">{escape(article["category"])}</div>
+  <h1 style="margin:12px 0 6px;font-size:34px">{escape(article["title"])}</h1>
+  <p style="margin:0 0 12px;color:#64748b">{escape(article["published_at"])} · {article["reading_time"]} хв читання</p>
+  <p style="margin:0 0 18px;color:#334155;font-size:18px">{escape(article["excerpt"])}</p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:18px">{stats_html}</div>
+  <article style="line-height:1.7;color:#334155">{article["body_html"]}</article>
+  <h2 style="margin:20px 0 8px">Пов'язані переходи</h2>
+  <ul style="margin:0;padding-left:20px;line-height:1.8">{related_html}</ul>
+</main></body></html>"""
+    return Response(html, mimetype="text/html")
 
 
 @app.route("/api/listings", methods=["GET"])
@@ -1112,6 +2235,9 @@ def get_listings():
     max_floor     = nonneg_int(args.get("maxFloor"))
     min_year      = nonneg_int(args.get("minYear"))
     max_year      = nonneg_int(args.get("maxYear"))
+    agency_slug   = strip(args.get("agency", ""), 80).lower()
+    verified_agency_only = truthy_flag(args.get("verifiedAgency"))
+    duplicate_risk_filter = strip(args.get("duplicateRisk", ""), 10).lower()
     listing_ids: list[int] = []
     ranked_fts_ids: list[int] = []
     if ids_param:
@@ -1147,6 +2273,17 @@ def get_listings():
     if prop_type:
         query += " AND l.property_type = ?"
         params.append(prop_type)
+    if agency_slug:
+        query += " AND l.agency_slug = ?"
+        params.append(agency_slug)
+    if verified_agency_only:
+        query += " AND EXISTS (SELECT 1 FROM agency_profiles ap2 WHERE ap2.slug = l.agency_slug AND ap2.is_verified = 1)"
+    if duplicate_risk_filter == "high":
+        query += " AND COALESCE(dup.dup_count, 1) >= 3"
+    elif duplicate_risk_filter == "medium":
+        query += " AND COALESCE(dup.dup_count, 1) = 2"
+    elif duplicate_risk_filter == "low":
+        query += " AND COALESCE(dup.dup_count, 1) <= 1"
     if ids_param:
         if listing_ids:
             placeholders = ",".join("?" for _ in listing_ids)
@@ -1381,6 +2518,7 @@ def create_listing():
     listing_type  = strip(data.get("listingType", "sale"), 10).lower()
     listing_status= strip(data.get("listingStatus", "active"), 20).lower()
     source        = strip(data.get("source", "owner"), 20).lower()
+    agency_slug   = strip(data.get("agencySlug", ""), 80).lower() or None
     has_photo_tour = bool(data.get("hasPhotoTour", False))
     has_video_tour = bool(data.get("hasVideoTour", False))
     owner_verification_requested = bool(data.get("verifiedOwner", False) or data.get("requestOwnerVerification", False))
@@ -1401,6 +2539,8 @@ def create_listing():
     if listing_type not in VALID_LISTING_TYPES: listing_type = "sale"
     if listing_status not in VALID_LISTING_STATUS: listing_status = "active"
     if source not in VALID_SOURCES: source = "owner"
+    if agency_slug and not re.match(r"^[a-z0-9-]{2,80}$", agency_slug):
+        agency_slug = None
 
     errors = {}
     if not title:    errors["title"]    = "Назва обов'язкова"
@@ -1431,14 +2571,14 @@ def create_listing():
         """INSERT INTO listings
             (user_id,title,city,district,property_type,condition_type,price,rooms,area,
             floor,total_floors,year_built,e_oselya,images,latitude,longitude,description,
-            status,published_at,listing_type,source,listing_status,has_photo_tour,has_video_tour,
+            status,published_at,listing_type,source,agency_slug,listing_status,has_photo_tour,has_video_tour,
             verified_owner,verified_phone,verified_docs,
             owner_verification_status,phone_verification_status,
             moderation_status,moderation_reason,moderation_updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (g.user_id, title, city, district, prop_type, condition, price, rooms, area,
          floor, total_floors, year_built, int(e_oselya), images, lat, lng, description, status,
-         published_at_value, listing_type, source, listing_status, int(has_photo_tour), int(has_video_tour),
+         published_at_value, listing_type, source, agency_slug, listing_status, int(has_photo_tour), int(has_video_tour),
          int(verified_owner), int(verified_phone), int(verified_docs),
          owner_verification_status, phone_verification_status, moderation_status, moderation_reason, moderation_updated_at),
     )
@@ -1449,6 +2589,14 @@ def create_listing():
     if not is_admin:
         log_listing_event(db, cur.lastrowid, "submit_for_moderation", moderation_reason)
     db.commit()
+    if status == "published":
+        run_dispatch_with_logging(
+            db,
+            trigger_type="listing_create_published",
+            listing_id=cur.lastrowid,
+            dry_run=False,
+            raise_errors=False,
+        )
 
     row = db.execute(LISTING_SELECT + " WHERE l.id = ?", (cur.lastrowid,)).fetchone()
     return jsonify(listing=_row_to_listing(row)), 201
@@ -1592,6 +2740,14 @@ def update_listing_verification(listing_id: int):
         if data.get("phone_verification_status"):
             log_listing_event(db, listing_id, f"phone_verification_{phone_status}", reason)
     db.commit()
+    if next_status == "published" and listing["status"] != "published":
+        run_dispatch_with_logging(
+            db,
+            trigger_type="moderation_publish",
+            listing_id=listing_id,
+            dry_run=False,
+            raise_errors=False,
+        )
 
     row = db.execute(LISTING_SELECT + " WHERE l.id = ?", (listing_id,)).fetchone()
     return jsonify(listing=_row_to_listing(row))
@@ -1610,6 +2766,9 @@ def create_listing_alert():
     min_rooms = nonneg_int(data.get("minRooms"))
     max_rooms = nonneg_int(data.get("maxRooms"))
     e_oselya = bool(data.get("eOselya"))
+    listing_type = strip(data.get("listingType"), 10).lower()
+    email_channel = data.get("email")
+    push_channel = data.get("push")
 
     user_id = None
     email = strip(data.get("email"), 254).lower()
@@ -1627,15 +2786,25 @@ def create_listing_alert():
     if not email or not validate_email(email):
         return jsonify(error="Потрібен валідний email для алерта"), 422
 
+    channels: list[str] = []
+    if email_channel is None or bool(email_channel):
+        channels.append("email")
+    if bool(push_channel):
+        channels.append("push")
+    if not channels:
+        channels = ["email"]
+
     filters = {
         "city": city or None,
         "district": district or None,
         "type": prop_type or None,
+        "listingType": listing_type if listing_type in {"sale", "rent"} else None,
         "minPrice": min_price,
         "maxPrice": max_price,
         "minRooms": min_rooms,
         "maxRooms": max_rooms,
         "eOselya": e_oselya,
+        "channels": channels,
     }
     cur = db.execute(
         """
@@ -1646,6 +2815,125 @@ def create_listing_alert():
     )
     db.commit()
     return jsonify(ok=True, id=cur.lastrowid)
+
+
+@app.route("/api/alerts/dispatch", methods=["GET", "POST"])
+def dispatch_listing_alerts():
+    db = get_db()
+    allowed, trigger_auth = alerts_dispatch_authorized(db)
+    if not allowed:
+        return jsonify(error="Недостатньо прав для dispatch алертів"), 403
+
+    data = request.get_json(silent=True) or {}
+    listing_id = nonneg_int(data.get("listing_id")) or nonneg_int(request.args.get("listing_id"))
+    dry_run = bool(data.get("dry_run")) or truthy_flag(request.args.get("dry_run"))
+    trigger_type = strip(data.get("trigger"), 40).lower() or "manual"
+    stats = run_dispatch_with_logging(
+        db,
+        trigger_type=f"{trigger_type}:{trigger_auth}",
+        listing_id=listing_id,
+        dry_run=dry_run,
+        raise_errors=False,
+    )
+    return jsonify(ok=True, dry_run=dry_run, listing_id=listing_id, stats=stats, trigger_auth=trigger_auth)
+
+
+@app.route("/api/alerts/dispatch/health", methods=["GET"])
+def dispatch_listing_alerts_health():
+    db = get_db()
+    allowed, trigger_auth = alerts_dispatch_authorized(db)
+    if not allowed:
+        return jsonify(error="Недостатньо прав для health алертів"), 403
+
+    last_run = db.execute(
+        """
+        SELECT id, trigger_type, dry_run, listing_id, checked, matched, email_sent, push_sent, success, error_text, started_at, finished_at, duration_ms
+        FROM alert_dispatch_runs
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    last_success = db.execute(
+        """
+        SELECT id, started_at, finished_at
+        FROM alert_dispatch_runs
+        WHERE success = 1
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    summary_24h = db.execute(
+        """
+        SELECT
+            COUNT(*) AS runs,
+            SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS success_runs,
+            SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failed_runs,
+            SUM(checked) AS checked,
+            SUM(matched) AS matched,
+            SUM(email_sent) AS email_sent,
+            SUM(push_sent) AS push_sent
+        FROM alert_dispatch_runs
+        WHERE datetime(started_at) >= datetime('now', '-24 hours')
+        """
+    ).fetchone()
+    history_rows = db.execute(
+        """
+        SELECT id, trigger_type, dry_run, listing_id, checked, matched, email_sent, push_sent, success, error_text, started_at, finished_at, duration_ms
+        FROM alert_dispatch_runs
+        ORDER BY id DESC
+        LIMIT 10
+        """
+    ).fetchall()
+
+    now = datetime.datetime.utcnow()
+    stale = True
+    stale_reason = "Немає успішних запусків"
+    if last_success and last_success["finished_at"]:
+        last_ok_dt = _parse_dt(last_success["finished_at"])
+        if last_ok_dt:
+            hours_since_ok = (now - last_ok_dt).total_seconds() / 3600
+            stale = hours_since_ok > 6
+            stale_reason = f"Останній успішний запуск {int(hours_since_ok)} год тому"
+        else:
+            stale_reason = "Не вдалося розпарсити час останнього успішного запуску"
+
+    def _row_to_run(row):
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "trigger_type": row["trigger_type"] if "trigger_type" in row.keys() else None,
+            "dry_run": bool(row["dry_run"]) if "dry_run" in row.keys() else False,
+            "listing_id": row["listing_id"] if "listing_id" in row.keys() else None,
+            "checked": int(row["checked"] or 0) if "checked" in row.keys() else 0,
+            "matched": int(row["matched"] or 0) if "matched" in row.keys() else 0,
+            "email_sent": int(row["email_sent"] or 0) if "email_sent" in row.keys() else 0,
+            "push_sent": int(row["push_sent"] or 0) if "push_sent" in row.keys() else 0,
+            "success": bool(row["success"]) if "success" in row.keys() else False,
+            "error_text": row["error_text"] if "error_text" in row.keys() else None,
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+            "duration_ms": int(row["duration_ms"] or 0) if "duration_ms" in row.keys() else 0,
+        }
+
+    return jsonify(
+        ok=True,
+        trigger_auth=trigger_auth,
+        stale=stale,
+        stale_reason=stale_reason,
+        last_run=_row_to_run(last_run),
+        last_success=_row_to_run(last_success),
+        summary_24h={
+            "runs": int(summary_24h["runs"] or 0),
+            "success_runs": int(summary_24h["success_runs"] or 0),
+            "failed_runs": int(summary_24h["failed_runs"] or 0),
+            "checked": int(summary_24h["checked"] or 0),
+            "matched": int(summary_24h["matched"] or 0),
+            "email_sent": int(summary_24h["email_sent"] or 0),
+            "push_sent": int(summary_24h["push_sent"] or 0),
+        },
+        recent_runs=[_row_to_run(r) for r in history_rows],
+    )
 
 
 @app.route("/api/recommendations", methods=["GET"])
@@ -1938,7 +3226,7 @@ def _render_seo_page(city: str, district: str | None):
     if district_name:
         canonical_path += f"/{quote(district_name)}"
     canonical = f"{base}{canonical_path}" if page <= 1 else f"{base}{canonical_path}?{urlencode({'page': page})}"
-    app_link = f"{base}/real-estate-demo.html?city={quote(city_name)}"
+    app_link = f"{public_app_url()}?city={quote(city_name)}"
     if district_name:
         app_link += f"&district={quote(district_name)}"
     og_image = f"{base}/favicon.png"
@@ -1978,7 +3266,7 @@ def _render_seo_page(city: str, district: str | None):
 
     alternate_links = [
         f'<link rel="alternate" hreflang="uk-UA" href="{canonical}" />',
-        f'<link rel="alternate" hreflang="x-default" href="{base}/real-estate-demo.html" />',
+        f'<link rel="alternate" hreflang="x-default" href="{public_app_url()}" />',
     ]
     if district_name:
         alternate_links.append(
@@ -2022,7 +3310,7 @@ def _render_seo_page(city: str, district: str | None):
                 "@type": "ListItem",
                 "position": 1,
                 "name": "UA Homes",
-                "item": f"{base}/real-estate-demo.html",
+                "item": public_app_url(),
             },
             {
                 "@type": "ListItem",
@@ -2074,7 +3362,7 @@ def _render_seo_page(city: str, district: str | None):
         "@context": "https://schema.org",
         "@type": "Organization",
         "name": "UA Homes",
-        "url": f"{base}/real-estate-demo.html",
+        "url": public_app_url(),
         "logo": f"{base}/favicon.png",
         "description": "Платформа для пошуку нерухомості в Україні: квартири, будинки, єОселя.",
         "contactPoint": {
@@ -2094,7 +3382,7 @@ def _render_seo_page(city: str, district: str | None):
         "url": canonical,
         "description": f"Актуальні оголошення в локації {title_suffix}: {total_count} об'єктів, середня ціна ${avg_price:,}.",
         "inLanguage": "uk-UA",
-        "isPartOf": {"@type": "WebSite", "name": "UA Homes", "url": f"{base}/real-estate-demo.html"},
+        "isPartOf": {"@type": "WebSite", "name": "UA Homes", "url": public_app_url()},
         "speakable": {
             "@type": "SpeakableSpecification",
             "cssSelector": ["#main-h1", "#page-description"],
@@ -2160,7 +3448,7 @@ def _render_seo_page(city: str, district: str | None):
 </head>
 <body>
   <nav class="breadcrumbs">
-    <a href="{base}/real-estate-demo.html">UA Homes</a>
+    <a href="{public_app_url()}">UA Homes</a>
     <span>›</span>
     <a href="{base}/seo/{quote(city_name)}">{escape(city_name)}</a>
     {f'<span>›</span><span>{escape(district_name)}</span>' if district_name else ''}
@@ -2208,8 +3496,8 @@ def listing_page(lid: int):
 
     base = public_base_url()
     canonical = f"{base}/listing/{lid}"
-    og_image = listing["images"][0] if listing["images"] else f"{base}/favicon.png"
-    app_link = f"{base}/real-estate-demo.html?listing_id={lid}"
+    og_image = next((img for img in listing["images"] if not str(img).startswith("data:")), f"{base}/favicon.png")
+    app_link = f"{public_app_url()}?listing_id={lid}"
     city_link = f"{base}/seo/{quote(listing['city'])}"
     district_link = f"{base}/seo/{quote(listing['city'])}/{quote(listing['district'])}"
     listing_type_label = "Оренда" if listing.get("listing_type") == "rent" else "Продаж"
@@ -2297,7 +3585,7 @@ def listing_page(lid: int):
         "@context": "https://schema.org",
         "@type": "BreadcrumbList",
         "itemListElement": [
-            {"@type": "ListItem", "position": 1, "name": "UA Homes", "item": f"{base}/real-estate-demo.html"},
+            {"@type": "ListItem", "position": 1, "name": "UA Homes", "item": public_app_url()},
             {"@type": "ListItem", "position": 2, "name": listing["city"], "item": city_link},
             {"@type": "ListItem", "position": 3, "name": listing["district"], "item": district_link},
             {"@type": "ListItem", "position": 4, "name": listing["title"], "item": canonical},
@@ -2392,7 +3680,13 @@ def listing_page(lid: int):
 <script>
   var m=L.map('map',{{zoomControl:true}}).setView([{lat},{lng}],15);
   L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'© OpenStreetMap'}}).addTo(m);
-  L.marker([{lat},{lng}]).addTo(m).bindPopup('{escape(listing["title"])}').openPopup();
+  var markerIcon=L.divIcon({{
+    className:'',
+    html:'<div style="background:#2563eb;border:3px solid #fff;border-radius:9999px;width:18px;height:18px;box-shadow:0 4px 12px rgba(37,99,235,.35)"></div>',
+    iconSize:[18,18],
+    iconAnchor:[9,9]
+  }});
+  L.marker([{lat},{lng}],{{icon:markerIcon}}).addTo(m).bindPopup('{escape(listing["title"])}').openPopup();
 </script>"""
 
     # Reviews HTML
@@ -2416,7 +3710,7 @@ def listing_page(lid: int):
         "@context": "https://schema.org",
         "@type": "Organization",
         "name": "UA Homes",
-        "url": f"{base}/real-estate-demo.html",
+        "url": public_app_url(),
         "logo": f"{base}/favicon.png",
         "description": "Платформа для пошуку нерухомості в Україні: квартири, будинки, комерція, оренда та єОселя.",
     }
@@ -2427,7 +3721,7 @@ def listing_page(lid: int):
         "url": canonical,
         "description": desc_seo,
         "inLanguage": "uk-UA",
-        "isPartOf": {"@type": "WebSite", "name": "UA Homes", "url": f"{base}/real-estate-demo.html"},
+        "isPartOf": {"@type": "WebSite", "name": "UA Homes", "url": public_app_url()},
         "speakable": {
             "@type": "SpeakableSpecification",
             "cssSelector": ["#listing-title", "#listing-desc", "#trust-summary"],
@@ -2502,7 +3796,7 @@ def listing_page(lid: int):
   <meta name="description" content="{escape(desc_seo)}"/>
   <link rel="canonical" href="{canonical}"/>
   <link rel="alternate" hreflang="uk-UA" href="{canonical}"/>
-  <link rel="alternate" hreflang="x-default" href="{base}/real-estate-demo.html"/>
+  <link rel="alternate" hreflang="x-default" href="{public_app_url()}"/>
   <link rel="preconnect" href="https://unpkg.com" crossorigin/>
   <link rel="preconnect" href="https://images.unsplash.com" crossorigin/>
   <meta property="og:locale" content="uk_UA"/>
@@ -2555,7 +3849,7 @@ def listing_page(lid: int):
 </head>
 <body>
   <nav class="breadcrumbs">
-    <a href="{base}/real-estate-demo.html">UA Homes</a><span>›</span>
+    <a href="{public_app_url()}">UA Homes</a><span>›</span>
     <a href="{city_link}">{escape(listing["city"])}</a><span>›</span>
     <a href="{district_link}">{escape(listing["district"])}</a><span>›</span>
     <span>{escape(listing["title"][:40])}…</span>
@@ -2660,7 +3954,7 @@ def sitemap_xml():
     ).fetchall()
 
     items = [
-        f"<url><loc>{base}/real-estate-demo.html</loc></url>",
+        f"<url><loc>{public_app_url()}</loc></url>",
     ]
     seen_cities = set()
     for row in rows:

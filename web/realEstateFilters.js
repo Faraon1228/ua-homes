@@ -11,6 +11,8 @@ export const STORAGE_KEYS = [
   "re.minArea",
   "re.maxArea",
   "re.sortBy",
+  "re.showFavoritesOnly",
+  "re.favoriteIds",
 ];
 
 export function resolveSortByForEOselya(previousSort, onlyEOselya) {

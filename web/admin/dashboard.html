@@ -510,6 +510,67 @@
                             </div>
                         </div>
                         <div class="bg-white p-6 rounded-lg shadow-sm xl:col-span-2">
+                            <div class="flex items-center justify-between mb-4 gap-2">
+                                <h3 class="font-bold">Alerts delivery health</h3>
+                                <button onclick="loadAlertsDispatchHealth()" class="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-200">Оновити</button>
+                            </div>
+                            <div id="alerts-health-banner" class="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                                Зчитування статусу dispatch...
+                            </div>
+                            <div class="mb-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">Runs 24h</div>
+                                    <div id="alerts-runs-24h" class="text-lg font-black text-slate-800">-</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">Matched 24h</div>
+                                    <div id="alerts-matched-24h" class="text-lg font-black text-blue-700">-</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">Email sent 24h</div>
+                                    <div id="alerts-email-24h" class="text-lg font-black text-emerald-700">-</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">Push sent 24h</div>
+                                    <div id="alerts-push-24h" class="text-lg font-black text-violet-700">-</div>
+                                </div>
+                            </div>
+                            <div class="mb-4 grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
+                                <label class="block">
+                                    <span class="text-xs text-gray-500">Dispatch key (optional)</span>
+                                    <input id="alerts-dispatch-key" type="password" placeholder="UA_HOMES_ALERTS_DISPATCH_KEY" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                                </label>
+                                <label class="block">
+                                    <span class="text-xs text-gray-500">Listing ID (optional)</span>
+                                    <input id="alerts-dispatch-listing-id" type="number" min="1" placeholder="Напр. 123" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                                </label>
+                                <label class="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                                    <input id="alerts-dispatch-dry-run" type="checkbox" checked class="w-4 h-4">
+                                    Dry run
+                                </label>
+                                <button onclick="runAlertsDispatchNow()" class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700">Run dispatch</button>
+                            </div>
+                            <div class="overflow-auto mb-2">
+                                <table class="w-full text-sm">
+                                    <thead>
+                                        <tr class="text-left text-gray-500 border-b">
+                                            <th class="py-2">Run</th>
+                                            <th class="py-2">Trigger</th>
+                                            <th class="py-2">Result</th>
+                                            <th class="py-2">Matched</th>
+                                            <th class="py-2">Email</th>
+                                            <th class="py-2">Push</th>
+                                            <th class="py-2">Duration</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="alerts-runs-table">
+                                        <tr><td colspan="7" class="py-3 text-gray-500">Завантаження...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <p class="text-xs text-gray-500">Джерело: <code>/api/alerts/dispatch/health</code>. Для cron використовуйте <code>GET /api/alerts/dispatch?dry_run=0</code>.</p>
+                        </div>
+                        <div class="bg-white p-6 rounded-lg shadow-sm xl:col-span-2">
                             <div class="flex items-center justify-between mb-4">
                                 <h3 class="font-bold">Benchmark mode (7/30/90)</h3>
                                 <span class="text-xs text-gray-500">CTR intent→submit + sparkline по source</span>
@@ -575,6 +636,7 @@
         const PUBLIC_API_BASE = `${API_HOST}/api`;
         const LOGIN_URL = window.location.protocol === 'file:' ? './login.html' : '/admin/login.html';
         let authToken = localStorage.getItem('admin_token');
+        let alertsDispatchKey = localStorage.getItem('admin_alerts_dispatch_key') || '';
         let listingsCache = [];
         let editingListingId = null;
         let selectedListingIds = new Set();
@@ -584,6 +646,7 @@
         let ctrDropThresholdPp = Number(localStorage.getItem('admin_lf_ctr_drop_threshold_pp') || 5);
         let leadFunnelBenchmarkReports = { report7: null, report30: null, report90: null };
         let routeSourceFilter = localStorage.getItem('admin_lf_route_source') || '__all__';
+        let reportsHealthAutoRefreshTimer = null;
 
         // Check auth
         window.addEventListener('load', async () => {
@@ -610,6 +673,10 @@
         function showPage(page) {
             document.querySelectorAll('[id^="page-"]').forEach(el => el.classList.add('hidden'));
             document.getElementById(`page-${page}`).classList.remove('hidden');
+
+            if (page !== 'reports') {
+                stopReportsHealthAutoRefresh();
+            }
             
             if (page === 'dashboard') {
                 loadDashboard();
@@ -625,6 +692,7 @@
                 loadModeration();
             } else if (page === 'reports') {
                 loadReports();
+                startReportsHealthAutoRefresh();
             }
         }
 
@@ -1787,6 +1855,123 @@
             }
         }
 
+        function getAlertsAuthHeaders(extra = {}) {
+            const headers = getAuthHeaders(extra);
+            if (alertsDispatchKey) {
+                headers['X-Alerts-Dispatch-Key'] = alertsDispatchKey;
+            }
+            return headers;
+        }
+
+        async function loadAlertsDispatchHealth() {
+            const keyInput = document.getElementById('alerts-dispatch-key');
+            if (keyInput && keyInput.value !== alertsDispatchKey) {
+                alertsDispatchKey = keyInput.value.trim();
+                localStorage.setItem('admin_alerts_dispatch_key', alertsDispatchKey);
+            } else if (keyInput && !keyInput.value && alertsDispatchKey) {
+                keyInput.value = alertsDispatchKey;
+            }
+
+            try {
+                const res = await fetch(`${PUBLIC_API_BASE}/alerts/dispatch/health`, {
+                    headers: getAlertsAuthHeaders()
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    const message = data?.error || 'Немає доступу до alerts health';
+                    document.getElementById('alerts-health-banner').className = 'mb-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800';
+                    document.getElementById('alerts-health-banner').textContent = message;
+                    document.getElementById('alerts-runs-table').innerHTML = '<tr><td colspan="7" class="py-3 text-gray-500">Немає даних</td></tr>';
+                    return;
+                }
+
+                const stale = !!data.stale;
+                const staleReason = data.stale_reason || '';
+                const summary = data.summary_24h || {};
+                document.getElementById('alerts-runs-24h').textContent = Number(summary.runs || 0).toLocaleString('uk-UA');
+                document.getElementById('alerts-matched-24h').textContent = Number(summary.matched || 0).toLocaleString('uk-UA');
+                document.getElementById('alerts-email-24h').textContent = Number(summary.email_sent || 0).toLocaleString('uk-UA');
+                document.getElementById('alerts-push-24h').textContent = Number(summary.push_sent || 0).toLocaleString('uk-UA');
+
+                const banner = document.getElementById('alerts-health-banner');
+                if (stale) {
+                    banner.className = 'mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900';
+                    banner.textContent = `⚠ Dispatch stale: ${staleReason}`;
+                } else {
+                    banner.className = 'mb-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800';
+                    banner.textContent = `✓ Alerts delivery healthy: ${staleReason}`;
+                }
+
+                const rows = (data.recent_runs || []).map(run => `
+                    <tr class="border-b">
+                        <td class="py-2">#${run.id}</td>
+                        <td class="py-2">${run.trigger_type || 'manual'}</td>
+                        <td class="py-2">${run.success ? '<span class="text-emerald-700 font-semibold">ok</span>' : '<span class="text-rose-700 font-semibold">fail</span>'}</td>
+                        <td class="py-2">${Number(run.matched || 0).toLocaleString('uk-UA')}/${Number(run.checked || 0).toLocaleString('uk-UA')}</td>
+                        <td class="py-2">${Number(run.email_sent || 0).toLocaleString('uk-UA')}</td>
+                        <td class="py-2">${Number(run.push_sent || 0).toLocaleString('uk-UA')}</td>
+                        <td class="py-2">${Number(run.duration_ms || 0).toLocaleString('uk-UA')}ms</td>
+                    </tr>
+                `).join('');
+                document.getElementById('alerts-runs-table').innerHTML = rows || '<tr><td colspan="7" class="py-3 text-gray-500">Немає запусків</td></tr>';
+            } catch (err) {
+                console.error('Failed to load alerts health:', err);
+                document.getElementById('alerts-health-banner').className = 'mb-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800';
+                document.getElementById('alerts-health-banner').textContent = 'Помилка завантаження alerts health';
+            }
+        }
+
+        function stopReportsHealthAutoRefresh() {
+            if (!reportsHealthAutoRefreshTimer) return;
+            clearInterval(reportsHealthAutoRefreshTimer);
+            reportsHealthAutoRefreshTimer = null;
+        }
+
+        function startReportsHealthAutoRefresh() {
+            stopReportsHealthAutoRefresh();
+            reportsHealthAutoRefreshTimer = setInterval(() => {
+                const reportsPage = document.getElementById('page-reports');
+                if (!reportsPage || reportsPage.classList.contains('hidden')) {
+                    stopReportsHealthAutoRefresh();
+                    return;
+                }
+                loadAlertsDispatchHealth();
+            }, 60_000);
+        }
+
+        async function runAlertsDispatchNow() {
+            const keyInput = document.getElementById('alerts-dispatch-key');
+            alertsDispatchKey = (keyInput?.value || '').trim();
+            localStorage.setItem('admin_alerts_dispatch_key', alertsDispatchKey);
+
+            const listingInput = document.getElementById('alerts-dispatch-listing-id');
+            const dryRun = document.getElementById('alerts-dispatch-dry-run')?.checked !== false;
+            const listingId = Number(listingInput?.value || 0);
+            const payload = {
+                dry_run: dryRun,
+                trigger: 'admin_widget',
+            };
+            if (Number.isFinite(listingId) && listingId > 0) payload.listing_id = listingId;
+
+            try {
+                const res = await fetch(`${PUBLIC_API_BASE}/alerts/dispatch`, {
+                    method: 'POST',
+                    headers: getAlertsAuthHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify(payload),
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    alert(data?.error || 'Не вдалося запустити dispatch');
+                    return;
+                }
+                const stats = data.stats || {};
+                alert(`Dispatch completed: checked=${stats.checked || 0}, matched=${stats.matched || 0}, email=${stats.email_sent || 0}, push=${stats.push_sent || 0}`);
+                await loadAlertsDispatchHealth();
+            } catch (err) {
+                alert('Помилка запуску dispatch');
+            }
+        }
+
         // Load reports
         async function loadReports() {
             try {
@@ -1869,6 +2054,7 @@
                 renderLeadTrendChart(funnelData.daily_trend || []);
                 renderCtrDropThresholdLabel();
                 renderSourceBenchmark(funnel7, funnel30, funnel90);
+                await loadAlertsDispatchHealth();
             } catch (err) {
                 console.error('Failed to load reports:', err);
             }

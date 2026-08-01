@@ -109,6 +109,9 @@ export default function RealEstateApp() {
   const [onlyEOselya, setOnlyEOselya] = useState(
     () => getStored("re.onlyEOselya", "false") === "true"
   );
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(
+    () => getStored("re.showFavoritesOnly", "false") === "true"
+  );
   const [minPrice, setMinPrice] = useState(() => getStored("re.minPrice", ""));
   const [maxPrice, setMaxPrice] = useState(() => getStored("re.maxPrice", ""));
   const [minRooms, setMinRooms] = useState(() => getStored("re.minRooms", ""));
@@ -116,6 +119,15 @@ export default function RealEstateApp() {
   const [minArea, setMinArea] = useState(() => getStored("re.minArea", ""));
   const [maxArea, setMaxArea] = useState(() => getStored("re.maxArea", ""));
   const [sortBy, setSortBy] = useState(() => getStored("re.sortBy", DEFAULT_SORT));
+  const [favoriteIds, setFavoriteIds] = useState(() => {
+    try {
+      const raw = getStored("re.favoriteIds", "[]");
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
 
   const cities = useMemo(
     () => ["Всі", ...Array.from(new Set(MOCK_PROPERTIES.map((p) => p.city)))],
@@ -129,6 +141,7 @@ export default function RealEstateApp() {
   useEffect(() => {
     window.localStorage.setItem("re.cityFilter", cityFilter);
     window.localStorage.setItem("re.onlyEOselya", String(onlyEOselya));
+    window.localStorage.setItem("re.showFavoritesOnly", String(showFavoritesOnly));
     window.localStorage.setItem("re.minPrice", minPrice);
     window.localStorage.setItem("re.maxPrice", maxPrice);
     window.localStorage.setItem("re.minRooms", minRooms);
@@ -136,7 +149,20 @@ export default function RealEstateApp() {
     window.localStorage.setItem("re.minArea", minArea);
     window.localStorage.setItem("re.maxArea", maxArea);
     window.localStorage.setItem("re.sortBy", sortBy);
-  }, [cityFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, sortBy]);
+    window.localStorage.setItem("re.favoriteIds", JSON.stringify(favoriteIds));
+  }, [
+    cityFilter,
+    onlyEOselya,
+    showFavoritesOnly,
+    minPrice,
+    maxPrice,
+    minRooms,
+    maxRooms,
+    minArea,
+    maxArea,
+    sortBy,
+    favoriteIds,
+  ]);
 
   const filteredProperties = useMemo(
     () =>
@@ -153,10 +179,36 @@ export default function RealEstateApp() {
       }),
     [cityFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, sortBy]
   );
+  const favoriteProperties = useMemo(
+    () => MOCK_PROPERTIES.filter((property) => favoriteIds.includes(property.id)),
+    [favoriteIds]
+  );
+  const visibleProperties = useMemo(
+    () => (showFavoritesOnly ? filteredProperties.filter((p) => favoriteIds.includes(p.id)) : filteredProperties),
+    [filteredProperties, favoriteIds, showFavoritesOnly]
+  );
+  const favoriteStats = useMemo(() => {
+    if (!favoriteProperties.length) return { count: 0, avgPrice: 0, verifiedCount: 0 };
+    const totalPrice = favoriteProperties.reduce((sum, item) => sum + item.price, 0);
+    return {
+      count: favoriteProperties.length,
+      avgPrice: Math.round(totalPrice / favoriteProperties.length),
+      verifiedCount: favoriteProperties.filter((item) => item.eOselya).length,
+    };
+  }, [favoriteProperties]);
+
+  const toggleFavorite = (property) => {
+    setFavoriteIds((current) =>
+      current.includes(property.id)
+        ? current.filter((id) => id !== property.id)
+        : [...current, property.id]
+    );
+  };
 
   const resetFilters = () => {
     setCityFilter("Всі");
     setOnlyEOselya(false);
+    setShowFavoritesOnly(false);
     setMinPrice("");
     setMaxPrice("");
     setMinRooms("");
@@ -168,7 +220,10 @@ export default function RealEstateApp() {
 
   const clearSavedFilters = () => {
     STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
+    window.localStorage.removeItem("re.showFavoritesOnly");
+    window.localStorage.removeItem("re.favoriteIds");
     resetFilters();
+    setFavoriteIds([]);
   };
 
   return (
@@ -304,17 +359,90 @@ export default function RealEstateApp() {
               </button>
             </div>
           </div>
+
+          <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-rose-600">Обрані</p>
+                <p className="mt-1 text-sm text-slate-600">
+                  {favoriteStats.count
+                    ? `Збережено ${favoriteStats.count} об'єктів, середня ціна $${favoriteStats.avgPrice.toLocaleString(
+                        "uk-UA"
+                      )}, ${favoriteStats.verifiedCount} під єОселя.`
+                    : "Додавайте об'єкти в обране, щоб повертатися до них швидше."}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowFavoritesOnly((current) => !current)}
+                  className={`min-h-[44px] rounded-2xl px-4 text-sm font-bold transition ${
+                    showFavoritesOnly
+                      ? "bg-rose-600 text-white hover:bg-rose-700"
+                      : "bg-white text-rose-700 border border-rose-200 hover:bg-rose-100"
+                  }`}
+                >
+                  {showFavoritesOnly ? "❤️ Показую лише обрані" : "🤍 Показати лише обрані"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFavoriteIds([]);
+                    setShowFavoritesOnly(false);
+                  }}
+                  className="min-h-[44px] rounded-2xl border border-rose-200 px-4 text-sm font-bold text-rose-700 hover:bg-rose-100 transition"
+                >
+                  Очистити обрані
+                </button>
+              </div>
+            </div>
+
+            {!!favoriteProperties.length && (
+              <div className="mt-4 flex flex-wrap gap-2">
+                {favoriteProperties.slice(0, 4).map((property) => (
+                  <span
+                    key={property.id}
+                    className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 border border-rose-100"
+                  >
+                    {property.title}
+                    <button
+                      type="button"
+                      onClick={() => toggleFavorite(property)}
+                      className="text-rose-500 hover:text-rose-700"
+                      aria-label={`Прибрати ${property.title} з обраного`}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </section>
 
       <main className="max-w-7xl mx-auto px-4 my-8">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredProperties.map((property) => (
+          {visibleProperties.map((property) => (
             <div
               key={property.id}
               className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100"
             >
-              <PhotoGallery images={property.images} title={property.title} />
+              <div className="relative">
+                <PhotoGallery images={property.images} title={property.title} />
+                <button
+                  type="button"
+                  onClick={() => toggleFavorite(property)}
+                  className="absolute right-3 top-3 rounded-full bg-white/90 px-3 py-1 text-sm font-bold shadow hover:bg-white"
+                  aria-label={
+                    favoriteIds.includes(property.id)
+                      ? `Прибрати ${property.title} з обраного`
+                      : `Додати ${property.title} в обране`
+                  }
+                >
+                  {favoriteIds.includes(property.id) ? "❤️" : "🤍"}
+                </button>
+              </div>
               <div className="p-5">
                 <h3 className="font-bold text-lg mb-2">{property.title}</h3>
                 <div className="flex gap-4 text-sm text-gray-500 font-medium mb-4">
@@ -330,10 +458,12 @@ export default function RealEstateApp() {
           ))}
         </div>
 
-        {filteredProperties.length === 0 && (
+        {visibleProperties.length === 0 && (
           <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-gray-200 mt-6">
             <p className="text-gray-400 font-medium text-lg">
-              За вказаними фільтрами нічого не знайдено.
+              {showFavoritesOnly
+                ? "У вас ще немає обраних об'єктів."
+                : "За вказаними фільтрами нічого не знайдено."}
             </p>
           </div>
         )}

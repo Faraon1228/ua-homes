@@ -8,7 +8,7 @@
   <link rel="canonical" href="https://ua-dim.com/" />
   <meta property="og:title" content="UA-Dim.com — Нерухомість України без посередників" />
   <meta property="og:description" content="Більше 40 об'єктів, єОселя 3%/7%, фільтри по поверху та року — безкоштовно і без посередників." />
-  <meta property="og:image" content="https://images.unsplash.com/photo-1560185007-c5ca9d2c014d?auto=format&fit=crop&w=1200&q=80" />
+  <meta property="og:image" content="favicon.png" />
   <meta property="og:url" content="https://ua-dim.com/" />
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="UA-Dim" />
@@ -17,7 +17,7 @@
   <meta name="twitter:site" content="@ua_dom" />
   <meta name="twitter:title" content="UA-Dim.com — Нерухомість України" />
   <meta name="twitter:description" content="Більше 40 об'єктів, єОселя 3%/7%, пошук без посередників." />
-  <meta name="twitter:image" content="https://images.unsplash.com/photo-1560185007-c5ca9d2c014d?auto=format&fit=crop&w=1200&q=80" />
+  <meta name="twitter:image" content="favicon.png" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏠</text></svg>" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -39,6 +39,10 @@
     .stat-count { font-variant-numeric: tabular-nums; }
     @keyframes pulse-slow { 0%,100%{opacity:1} 50%{opacity:.7} }
     .pulse-slow { animation: pulse-slow 2s infinite; }
+    @supports (content-visibility: auto) {
+      .cv-auto { content-visibility: auto; contain-intrinsic-size: 800px; }
+      .cv-slim { content-visibility: auto; contain-intrinsic-size: 500px; }
+    }
   </style>
 </head>
 <body class="font-sans bg-white text-gray-900 antialiased">
@@ -53,6 +57,7 @@
       <div class="hidden md:flex items-center gap-8 text-sm font-medium text-gray-600">
         <a href="#features" class="hover:text-blue-700 transition">Можливості</a>
         <a href="#listings" class="hover:text-blue-700 transition">Об'єкти</a>
+        <a href="#insights" class="hover:text-blue-700 transition">Insights</a>
         <a href="#eoselya" class="hover:text-blue-700 transition">єОселя</a>
       </div>
       <a href="real-estate-demo.html"
@@ -106,7 +111,7 @@
   </section>
 
   <!-- Features -->
-  <section id="features" class="py-24 px-4 bg-gray-50">
+  <section id="features" class="py-24 px-4 bg-gray-50 cv-auto">
     <div class="max-w-6xl mx-auto">
       <div class="text-center mb-16">
         <h2 class="text-4xl font-black mb-4">Чому UA Homes?</h2>
@@ -154,7 +159,7 @@
   </section>
 
   <!-- Preview listings -->
-  <section id="listings" class="py-24 px-4">
+  <section id="listings" class="py-24 px-4 cv-auto">
     <div class="max-w-6xl mx-auto">
       <div class="text-center mb-16">
         <h2 class="text-4xl font-black mb-4">Свіжі об'єкти</h2>
@@ -165,7 +170,7 @@
         <div class="bg-white rounded-2xl overflow-hidden border border-gray-100 card-hover">
           <div class="relative h-48 bg-gray-200 overflow-hidden">
             <img src="https://images.unsplash.com/photo-1560185007-c5ca9d2c014d?auto=format&fit=crop&w=600&q=80"
-                 alt="Квартира Київ" class="w-full h-full object-cover" loading="lazy" />
+                 alt="Квартира Київ" class="w-full h-full object-cover" loading="lazy" decoding="async" />
             <span class="absolute top-3 left-3 bg-blue-700 text-white text-xs font-bold px-3 py-1 rounded-lg">єОселя</span>
           </div>
           <div class="p-5">
@@ -180,7 +185,7 @@
         <div class="bg-white rounded-2xl overflow-hidden border border-gray-100 card-hover">
           <div class="relative h-48 bg-gray-200 overflow-hidden">
             <img src="https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?auto=format&fit=crop&w=600&q=80"
-                 alt="Квартира Львів" class="w-full h-full object-cover" loading="lazy" />
+                 alt="Квартира Львів" class="w-full h-full object-cover" loading="lazy" decoding="async" />
           </div>
           <div class="p-5">
             <h3 class="font-bold text-lg mb-1 line-clamp-2">Простора 3-кімнатна для родини</h3>
@@ -194,7 +199,7 @@
         <div class="bg-white rounded-2xl overflow-hidden border border-gray-100 card-hover">
           <div class="relative h-48 bg-gray-200 overflow-hidden">
             <img src="https://images.unsplash.com/photo-1493809842364-78817add7ffb?auto=format&fit=crop&w=600&q=80"
-                 alt="Квартира оренда" class="w-full h-full object-cover" loading="lazy" />
+                 alt="Квартира оренда" class="w-full h-full object-cover" loading="lazy" decoding="async" />
             <span class="absolute top-3 left-3 bg-emerald-600 text-white text-xs font-bold px-3 py-1 rounded-lg">Оренда</span>
           </div>
           <div class="p-5">
@@ -217,7 +222,7 @@
   </section>
 
   <!-- єОселя block -->
-  <section id="eoselya" class="py-24 px-4 bg-blue-50">
+  <section id="eoselya" class="py-24 px-4 bg-blue-50 cv-slim">
     <div class="max-w-4xl mx-auto">
       <div class="bg-white rounded-3xl p-10 md:p-14 border border-blue-100 text-center">
         <div class="text-5xl mb-6">🏦</div>
@@ -254,8 +259,35 @@
     </div>
   </section>
 
+  <!-- Insights -->
+  <section id="insights" class="py-24 px-4 bg-slate-50 cv-auto">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-16">
+        <h2 class="text-4xl font-black mb-4">Market insights & discovery</h2>
+        <p class="text-gray-500 text-lg max-w-2xl mx-auto">Короткі матеріали про ринок, єОселя, trust і hotspots — живі SEO-сторінки замість статичного блогу.</p>
+      </div>
+      <div class="grid md:grid-cols-3 gap-6">
+        <a href="/insights" class="bg-white rounded-2xl p-6 border border-gray-100 card-hover block">
+          <div class="text-xs font-bold uppercase tracking-wide text-blue-700 mb-2">Content hub</div>
+          <h3 class="text-xl font-bold mb-2">Огляд ринку по містах</h3>
+          <p class="text-gray-500 leading-relaxed">Сторінки оновлюються з даних по містах, районах, єОселя і trust-сигналах.</p>
+        </a>
+        <a href="/insights/eoselya-watch" class="bg-white rounded-2xl p-6 border border-gray-100 card-hover block">
+          <div class="text-xs font-bold uppercase tracking-wide text-emerald-700 mb-2">єОселя</div>
+          <h3 class="text-xl font-bold mb-2">Де більше об'єктів під 3%/7%</h3>
+          <p class="text-gray-500 leading-relaxed">Discovery-матеріали допомагають швидко перейти від інтересу до релевантної видачі.</p>
+        </a>
+        <a href="/insights/verified-agencies-leadership" class="bg-white rounded-2xl p-6 border border-gray-100 card-hover block">
+          <div class="text-xs font-bold uppercase tracking-wide text-purple-700 mb-2">Trust</div>
+          <h3 class="text-xl font-bold mb-2">Рейтинг агентств і забудовників</h3>
+          <p class="text-gray-500 leading-relaxed">Окремий discovery-шар для профілів, репутації, команди й угод.</p>
+        </a>
+      </div>
+    </div>
+  </section>
+
   <!-- CTA -->
-  <section class="gradient-ua py-24 px-4 text-white text-center">
+  <section class="gradient-ua py-24 px-4 text-white text-center cv-slim">
     <div class="max-w-3xl mx-auto">
       <h2 class="text-4xl md:text-5xl font-black mb-6">Спробуйте UA Homes<br/>прямо зараз</h2>
       <p class="text-blue-100 text-lg mb-10">Безкоштовно. Без реєстрації для перегляду. Без ріелторів.</p>
