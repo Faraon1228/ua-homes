@@ -507,8 +507,7 @@
       <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
         <div class="flex flex-col gap-5">
           <div>
-            <h2 class="text-lg font-bold text-slate-900">Розумний пошук (як на топ-порталах)</h2>
-            <p class="text-sm text-slate-600 mt-1">Швидкі сценарії, розумні підказки району, збережені пошуки і trust-блоки.</p>
+            <h2 class="text-lg font-bold text-slate-900">РОЗУМНИЙ ПОШУК</h2>
             <div class="mt-3 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3">
               <p class="text-[11px] font-bold uppercase tracking-wide text-blue-700">Активний запит</p>
               <p class="mt-1 text-sm text-slate-700" data-role="search-summary">—</p>
