@@ -5,14 +5,14 @@
  * ⚙️  НАЛАШТУВАННЯ:
  *
  *  1. Зайдіть на https://tagmanager.google.com/ → "Створити акаунт"
- *     Платформа: Web | URL: ua-dim.com → Отримайте GTM-XXXXXXX
+ *     Платформа: Web | URL: ua-dim.com → Отримайте GTM-KVWMVQGM
  *
  *  2. Зайдіть на https://analytics.google.com/ → "Додати ресурс"
- *     Отримайте G-XXXXXXXXXX (Measurement ID)
+ *     Отримайте G-LJSB794FJK (Measurement ID)
  *
  *  3. Замініть рядки нижче:
- *     GTM_CONTAINER_ID = 'GTM-XXXXXXX'    ← ваш GTM ID
- *     GA4_MEASUREMENT_ID = 'G-XXXXXXXXXX' ← ваш GA4 ID
+ *     GTM_CONTAINER_ID = 'GTM-KVWMVQGM'    ← ваш GTM ID
+ *     GA4_MEASUREMENT_ID = 'G-LJSB794FJK' ← ваш GA4 ID
  *
  * ─────────────────────────────────────────────────────────────────
  */
@@ -21,10 +21,10 @@
   'use strict';
 
   // ── IDs (замініть на реальні після реєстрації в GTM/GA4) ──
-  var GTM_CONTAINER_ID  = 'GTM-XXXXXXX';
-  var GA4_MEASUREMENT_ID = 'G-XXXXXXXXXX';
+  var GTM_CONTAINER_ID  = 'GTM-KVWMVQGM';
+  var GA4_MEASUREMENT_ID = 'G-LJSB794FJK';
 
-  var IS_CONFIGURED = GTM_CONTAINER_ID !== 'GTM-XXXXXXX';
+  var IS_CONFIGURED = GTM_CONTAINER_ID.startsWith('GTM-') && GA4_MEASUREMENT_ID.startsWith('G-');
   var IS_DEV = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
 
   // ── dataLayer init (GTM standard) ──────────────────────────────
