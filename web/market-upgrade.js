@@ -7,6 +7,9 @@
   const VIEW_MODE_KEY = "ua_homes_view_mode_v1";
   const LISTING_MODE_KEY = "ua_homes_listing_mode_v1";
   const MAX_SAVED_SEARCHES = 10;
+  const UA_CENTERS_DATASET_URLS = ["/admin/ua-centers.json", "./admin/ua-centers.json"];
+  let uaCentersDataset = null;
+  let uaCentersDatasetPromise = null;
 
   const QUICK_SCENARIOS = [
     { label: "Київ · єОселя · до $130k", filters: { city: "Київ", onlyEOselya: true, maxPrice: "130000", minRooms: "1" } },
@@ -38,9 +41,60 @@
     { name: "Odesa Coast Build", kind: "Забудовник", city: "Одеса", specialization: "Будинки та апартаменти біля моря", trustSignals: ["Ліцензія верифікована", "Здані черги", "Публічні документи"] },
   ];
 
+  const KEYWORD_SUGGESTIONS = [
+    "ЖК",
+    "метро",
+    "центр",
+    "з ремонтом",
+    "тераса",
+    "єОселя",
+    "без комісії",
+    "новобудова",
+  ];
+
   function fireInput(el) {
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  async function ensureUaCentersDataset() {
+    if (uaCentersDataset) return uaCentersDataset;
+    if (uaCentersDatasetPromise) return uaCentersDatasetPromise;
+    uaCentersDatasetPromise = (async () => {
+      for (const candidate of UA_CENTERS_DATASET_URLS) {
+        try {
+          const response = await fetch(candidate, { credentials: "omit" });
+          if (!response.ok) continue;
+          const data = await response.json();
+          if (Array.isArray(data?.regions) && data?.regionData && Array.isArray(data?.allCenters)) {
+            uaCentersDataset = data;
+            return uaCentersDataset;
+          }
+        } catch (_err) {}
+      }
+      uaCentersDataset = { regions: [], regionData: {}, allCenters: [] };
+      return uaCentersDataset;
+    })();
+    return uaCentersDatasetPromise;
+  }
+
+  function sortUaNames(values) {
+    return [...new Set((values || []).filter(Boolean))].sort((a, b) =>
+      String(a).localeCompare(String(b), "uk", { sensitivity: "base" })
+    );
+  }
+
+  function appendMissingCityOptions(citySelect, cities) {
+    if (!citySelect || !Array.isArray(cities) || !cities.length) return;
+    const existing = new Set([...citySelect.options].map((option) => option.value));
+    sortUaNames(cities).forEach((city) => {
+      if (!city || existing.has(city)) return;
+      const option = document.createElement("option");
+      option.value = city;
+      option.textContent = city;
+      citySelect.appendChild(option);
+      existing.add(city);
+    });
   }
 
   function resolveApiBase() {
@@ -247,6 +301,39 @@
     return DISTRICT_HINTS[city] || [];
   }
 
+  function getFavoriteIds() {
+    try {
+      const raw = localStorage.getItem("re.favoriteIds");
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter((id) => Number.isFinite(Number(id))) : [];
+    } catch (_err) {
+      return [];
+    }
+  }
+
+  function describeSearchState(values) {
+    const parts = [];
+    if (values.city && values.city !== "Всі") parts.push(values.city);
+    if (values.district) parts.push(values.district);
+    if (values.propertyType && values.propertyType !== "Всі типи") parts.push(values.propertyType);
+    if (values.onlyEOselya) parts.push("єОселя");
+    if (values.minRooms || values.maxRooms) {
+      const rooms = `${values.minRooms || "1"}-${values.maxRooms || "∞"} кімн.`;
+      parts.push(rooms);
+    }
+    if (values.minPrice || values.maxPrice) {
+      const price = `$${values.minPrice || "0"}-${values.maxPrice || "∞"}`;
+      parts.push(price);
+    }
+    if (values.minArea || values.maxArea) {
+      const area = `${values.minArea || "0"}-${values.maxArea || "∞"} м²`;
+      parts.push(area);
+    }
+    const keyword = (localStorage.getItem(KEYWORD_SEARCH_KEY) || "").trim();
+    if (keyword) parts.push(`"${keyword}"`);
+    return parts.length ? parts.join(" · ") : "Увімкніть фільтри або швидкий сценарій, щоб звузити пошук.";
+  }
+
   function getListingMode(filters) {
     const cached = localStorage.getItem(LISTING_MODE_KEY);
     if (cached === "sale" || cached === "rent" || cached === "all") return cached;
@@ -422,6 +509,22 @@
           <div>
             <h2 class="text-lg font-bold text-slate-900">Розумний пошук (як на топ-порталах)</h2>
             <p class="text-sm text-slate-600 mt-1">Швидкі сценарії, розумні підказки району, збережені пошуки і trust-блоки.</p>
+            <div class="mt-3 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3">
+              <p class="text-[11px] font-bold uppercase tracking-wide text-blue-700">Активний запит</p>
+              <p class="mt-1 text-sm text-slate-700" data-role="search-summary">—</p>
+            </div>
+          </div>
+
+          <div class="sticky top-4 z-20 rounded-xl border border-slate-200 bg-white/95 p-4 shadow-sm backdrop-blur">
+            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <p class="text-xs font-black uppercase tracking-wide text-slate-500">Активні фільтри</p>
+                <p class="mt-1 text-sm text-slate-600">Швидко вимикайте окремі умови або застосовуйте one-click chips.</p>
+              </div>
+              <button type="button" class="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-blue-700 transition" data-role="clear-all-filters">Скинути все</button>
+            </div>
+            <div class="mt-3 flex flex-wrap gap-2" data-role="active-filter-chips"></div>
+            <div class="mt-4 flex flex-wrap gap-2" data-role="one-click-chips"></div>
           </div>
 
           <div>
@@ -438,6 +541,7 @@
               <input type="text" class="flex-1 px-3 py-2 rounded-lg border border-blue-200 bg-white text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-400" placeholder="ЖК, метро, вулиця, ремонт, тераса..." data-role="keyword-search-input"/>
               <button type="button" class="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 transition" data-role="apply-keyword-search">Застосувати</button>
             </div>
+            <div class="mt-3 flex flex-wrap gap-2" data-role="keyword-suggestions"></div>
             <p class="text-xs text-blue-700 mt-2">Працює з релевантністю. Після застосування сторінка оновиться.</p>
             <label class="mt-2 inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
               <input type="checkbox" class="w-4 h-4" data-role="verified-agency-filter"/>
@@ -464,6 +568,25 @@
             <div class="flex flex-wrap gap-2" data-role="district-hints"></div>
           </div>
 
+          <div class="p-3 rounded-xl bg-emerald-50 border border-emerald-100">
+            <p class="text-xs font-bold uppercase tracking-wide text-emerald-700 mb-2">Центри України у пошуку</p>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <select data-role="ua-region-select" class="px-2 py-2 rounded-lg border border-emerald-200 bg-white text-sm">
+                <option value="">Оберіть область</option>
+              </select>
+              <select data-role="ua-center-select" class="px-2 py-2 rounded-lg border border-emerald-200 bg-white text-sm">
+                <option value="">Оберіть обласний/районний центр</option>
+              </select>
+              <select data-role="ua-district-select" class="px-2 py-2 rounded-lg border border-emerald-200 bg-white text-sm">
+                <option value="">Оберіть район</option>
+              </select>
+            </div>
+            <div class="mt-2 flex items-center justify-between gap-2">
+              <p class="text-xs text-emerald-700" data-role="ua-centers-meta">Завантажуємо перелік центрів…</p>
+              <button type="button" class="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700 transition" data-role="ua-centers-apply">Застосувати локацію</button>
+            </div>
+          </div>
+
           <div>
             <div class="flex items-center justify-between gap-3 mb-2">
               <p class="text-xs font-bold uppercase tracking-wide text-slate-500">Збережені пошуки</p>
@@ -473,6 +596,26 @@
               </div>
             </div>
             <div class="flex flex-wrap gap-2" data-role="saved-scenarios"></div>
+          </div>
+
+          <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <p class="text-xs font-bold uppercase tracking-wide text-slate-500">Порівняння обраних</p>
+                <p class="text-sm text-slate-600 mt-1">Швидкий shortlist для прийняття рішення: ціна, площа, кімнати, єОселя.</p>
+              </div>
+              <button
+                type="button"
+                class="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold hover:bg-blue-700 transition"
+                data-role="compare-favorites"
+              >
+                Порівняти зараз
+              </button>
+            </div>
+            <div class="mt-3 rounded-xl bg-slate-50 border border-slate-200 p-3" data-role="compare-summary">
+              <p class="text-sm text-slate-500">Додайте кілька обраних об'єктів, а потім натисніть «Порівняти зараз».</p>
+            </div>
+            <div class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3" data-role="compare-grid"></div>
           </div>
 
           <div>
@@ -510,11 +653,24 @@
     const keywordSearchInput = panel.querySelector('[data-role="keyword-search-input"]');
     const applyKeywordSearchButton = panel.querySelector('[data-role="apply-keyword-search"]');
     const clearKeywordSearchButton = panel.querySelector('[data-role="clear-keyword-search"]');
+    const searchSummary = panel.querySelector('[data-role="search-summary"]');
+    const keywordSuggestionsWrap = panel.querySelector('[data-role="keyword-suggestions"]');
     const verifiedAgencyFilter = panel.querySelector('[data-role="verified-agency-filter"]');
     const duplicateRiskFilter = panel.querySelector('[data-role="duplicate-risk-filter"]');
     const popularRoutesWrap = panel.querySelector('[data-role="popular-routes"]');
+    const clearAllFiltersButton = panel.querySelector('[data-role="clear-all-filters"]');
+    const activeFilterChipsWrap = panel.querySelector('[data-role="active-filter-chips"]');
+    const oneClickChipsWrap = panel.querySelector('[data-role="one-click-chips"]');
+    const compareButton = panel.querySelector('[data-role="compare-favorites"]');
+    const compareSummary = panel.querySelector('[data-role="compare-summary"]');
+    const compareGrid = panel.querySelector('[data-role="compare-grid"]');
     const trustedPartnersWrap = panel.querySelector('[data-role="trusted-partners"]');
     const contentDiscoveryWrap = panel.querySelector('[data-role="content-discovery"]');
+    const uaRegionSelect = panel.querySelector('[data-role="ua-region-select"]');
+    const uaCenterSelect = panel.querySelector('[data-role="ua-center-select"]');
+    const uaDistrictSelect = panel.querySelector('[data-role="ua-district-select"]');
+    const uaCentersMeta = panel.querySelector('[data-role="ua-centers-meta"]');
+    const uaCentersApply = panel.querySelector('[data-role="ua-centers-apply"]');
     let trustedPartnersLoaded = false;
     let contentDiscoveryLoaded = false;
 
@@ -525,6 +681,22 @@
       button.textContent = scenario.label;
       button.addEventListener("click", () => applyFilters(scenario.filters, filters));
       quickWrap.appendChild(button);
+    });
+
+    KEYWORD_SUGGESTIONS.forEach((suggestion) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "px-3 py-1.5 rounded-full border border-blue-200 bg-white text-blue-700 text-xs font-semibold hover:bg-blue-100 transition";
+      chip.textContent = suggestion;
+      chip.addEventListener("click", () => {
+        if (!keywordSearchInput) return;
+        keywordSearchInput.value = keywordSearchInput.value.trim()
+          ? `${keywordSearchInput.value.trim()} ${suggestion}`
+          : suggestion;
+        keywordSearchInput.focus();
+        applyKeywordSearch();
+      });
+      keywordSuggestionsWrap?.appendChild(chip);
     });
 
     function renderDistrictHints() {
@@ -544,6 +716,244 @@
         });
         districtWrap.appendChild(chip);
       });
+    }
+
+    async function initUaCentersDirectory() {
+      const dataset = await ensureUaCentersDataset();
+      appendMissingCityOptions(filters.citySelect, dataset.allCenters || []);
+      if (!filters.districtInput) return;
+
+      let districtList = document.getElementById("ua-homes-district-centers-list");
+      if (!districtList) {
+        districtList = document.createElement("datalist");
+        districtList.id = "ua-homes-district-centers-list";
+        document.body.appendChild(districtList);
+      }
+      const allDistricts = Array.from(
+        new Set(
+          Object.values(dataset.regionData || {}).flatMap((item) => item?.districts || [])
+        )
+      ).sort((a, b) => String(a).localeCompare(String(b), "uk", { sensitivity: "base" }));
+      districtList.innerHTML = allDistricts.map((district) => `<option value="${district}"></option>`).join("");
+      filters.districtInput.setAttribute("list", "ua-homes-district-centers-list");
+
+      if (!uaRegionSelect || !uaCenterSelect || !uaDistrictSelect) return;
+      uaRegionSelect.innerHTML = `<option value="">Оберіть область</option>${sortUaNames(dataset.regions || [])
+        .map((region) => `<option value="${region}">${region}</option>`)
+        .join("")}`;
+
+      const renderRegionOptions = (region) => {
+        const regionItem = (dataset.regionData || {})[region] || { centers: dataset.allCenters || [], districts: allDistricts };
+        const sortedCenters = sortUaNames(regionItem.centers || []);
+        const sortedDistricts = sortUaNames(regionItem.districts || []);
+        uaCenterSelect.innerHTML = `<option value="">Оберіть обласний/районний центр</option>${sortedCenters
+          .map((center) => `<option value="${center}">${center}</option>`)
+          .join("")}`;
+        uaDistrictSelect.innerHTML = `<option value="">Оберіть район</option>${sortedDistricts
+          .map((district) => `<option value="${district}">${district}</option>`)
+          .join("")}`;
+        if (uaCentersMeta) {
+          uaCentersMeta.textContent = region
+            ? `${sortedCenters.length} центрів, ${sortedDistricts.length} районів у регіоні`
+            : `${dataset.allCenters?.length || 0} центрів по Україні`;
+        }
+      };
+
+      uaRegionSelect.addEventListener("change", () => {
+        renderRegionOptions(uaRegionSelect.value);
+      });
+
+      uaCentersApply?.addEventListener("click", () => {
+        const center = uaCenterSelect.value.trim();
+        const district = uaDistrictSelect.value.trim();
+        if (center) {
+          filters.citySelect.value = center;
+          fireInput(filters.citySelect);
+        }
+        if (filters.districtInput) {
+          filters.districtInput.value = district;
+          fireInput(filters.districtInput);
+        }
+      });
+
+      renderRegionOptions("");
+    }
+
+    function renderSearchSummary() {
+      if (!searchSummary) return;
+      searchSummary.textContent = describeSearchState(readFilters(filters));
+    }
+
+    function clearActiveFilter(key) {
+      if (key === "city") {
+        filters.citySelect.value = "Всі";
+        fireInput(filters.citySelect);
+        return;
+      }
+      if (key === "district" && filters.districtInput) {
+        filters.districtInput.value = "";
+        fireInput(filters.districtInput);
+        return;
+      }
+      if (key === "propertyType" && filters.propertyTypeSelect) {
+        filters.propertyTypeSelect.value = "Всі типи";
+        fireInput(filters.propertyTypeSelect);
+        return;
+      }
+      if (key === "eOselya" && filters.eoselyaCheckbox) {
+        filters.eoselyaCheckbox.checked = false;
+        fireInput(filters.eoselyaCheckbox);
+        return;
+      }
+      if (key === "price") {
+        filters.minPrice.value = "";
+        filters.maxPrice.value = "";
+        fireInput(filters.minPrice);
+        fireInput(filters.maxPrice);
+        return;
+      }
+      if (key === "rooms") {
+        filters.minRooms.value = "";
+        filters.maxRooms.value = "";
+        fireInput(filters.minRooms);
+        fireInput(filters.maxRooms);
+        return;
+      }
+      if (key === "area") {
+        filters.minArea.value = "";
+        filters.maxArea.value = "";
+        fireInput(filters.minArea);
+        fireInput(filters.maxArea);
+        return;
+      }
+      if (key === "keyword") {
+        localStorage.removeItem(KEYWORD_SEARCH_KEY);
+        if (keywordSearchInput) keywordSearchInput.value = "";
+        window.location.reload();
+      }
+    }
+
+    function renderActiveFilters() {
+      if (!activeFilterChipsWrap) return;
+      const values = readFilters(filters);
+      const items = [];
+      if (values.city !== "Всі") items.push({ key: "city", label: `Місто: ${values.city}` });
+      if (values.district) items.push({ key: "district", label: `Район: ${values.district}` });
+      if (values.propertyType && values.propertyType !== "Всі типи") items.push({ key: "propertyType", label: `Тип: ${values.propertyType}` });
+      if (values.onlyEOselya) items.push({ key: "eOselya", label: "єОселя" });
+      if (values.minPrice || values.maxPrice) items.push({ key: "price", label: `Ціна: $${values.minPrice || "0"}-${values.maxPrice || "∞"}` });
+      if (values.minRooms || values.maxRooms) items.push({ key: "rooms", label: `Кімнати: ${values.minRooms || "1"}-${values.maxRooms || "∞"}` });
+      if (values.minArea || values.maxArea) items.push({ key: "area", label: `Площа: ${values.minArea || "0"}-${values.maxArea || "∞"} м²` });
+      const keyword = (localStorage.getItem(KEYWORD_SEARCH_KEY) || "").trim();
+      if (keyword) items.push({ key: "keyword", label: `Пошук: "${keyword}"` });
+
+      activeFilterChipsWrap.innerHTML = "";
+      if (!items.length) {
+        activeFilterChipsWrap.innerHTML = '<p class="text-sm text-slate-500">Активних фільтрів немає.</p>';
+        return;
+      }
+
+      items.forEach((item) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-blue-50 hover:border-blue-200 transition";
+        chip.textContent = item.label;
+        chip.addEventListener("click", () => clearActiveFilter(item.key));
+        activeFilterChipsWrap.appendChild(chip);
+      });
+    }
+
+    function renderOneClickChips() {
+      if (!oneClickChipsWrap) return;
+      const values = readFilters(filters);
+      const chips = [
+        { label: "Київ", onClick: () => applyFilters({ city: "Київ" }, filters) },
+        { label: "Львів", onClick: () => applyFilters({ city: "Львів" }, filters) },
+        { label: "єОселя", onClick: () => applyFilters({ onlyEOselya: !values.onlyEOselya }, filters) },
+        { label: "1-2 кімн.", onClick: () => applyFilters({ minRooms: "1", maxRooms: "2" }, filters) },
+        { label: "до $100k", onClick: () => applyFilters({ maxPrice: "100000" }, filters) },
+        { label: "35+ м²", onClick: () => applyFilters({ minArea: "35" }, filters) },
+        { label: "Релевантні", onClick: () => {
+          localStorage.setItem(KEYWORD_SEARCH_KEY, (localStorage.getItem(KEYWORD_SEARCH_KEY) || "").trim());
+          window.location.reload();
+        } },
+      ];
+      oneClickChipsWrap.innerHTML = "";
+      chips.forEach((chipDef) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "px-3 py-1.5 rounded-full border border-blue-200 bg-white text-blue-700 text-xs font-semibold hover:bg-blue-100 transition";
+        chip.textContent = chipDef.label;
+        chip.addEventListener("click", chipDef.onClick);
+        oneClickChipsWrap.appendChild(chip);
+      });
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.className = "px-3 py-1.5 rounded-full border border-slate-200 bg-slate-50 text-slate-700 text-xs font-semibold hover:bg-slate-100 transition";
+      reset.textContent = "Скинути все";
+      reset.addEventListener("click", () => window.location.reload());
+      oneClickChipsWrap.appendChild(reset);
+    }
+
+    async function renderFavoriteCompare() {
+      if (!compareSummary || !compareGrid) return;
+      const favoriteIds = getFavoriteIds().slice(0, 3);
+      compareGrid.innerHTML = "";
+      if (!favoriteIds.length) {
+        compareSummary.innerHTML = '<p class="text-sm text-slate-500">Поки що немає обраних об\'єктів для порівняння.</p>';
+        return;
+      }
+
+      compareSummary.innerHTML = `<p class="text-sm text-slate-700">Порівнюємо ${favoriteIds.length} обраних об\'єктів. Кращий value позначимо окремо.</p>`;
+      compareGrid.innerHTML = '<p class="text-sm text-slate-500">Завантаження порівняння…</p>';
+
+      try {
+        const listings = await Promise.all(
+          favoriteIds.map(async (id) => {
+            const res = await fetch(`${resolveApiBase()}/api/listings/${id}`, { credentials: "omit" });
+            if (!res.ok) throw new Error(`Listing ${id} failed`);
+            const payload = await res.json();
+            return payload?.listing || payload;
+          })
+        );
+
+        const activeListings = listings.filter(Boolean);
+        if (!activeListings.length) {
+          compareGrid.innerHTML = '<p class="text-sm text-slate-500">Не вдалося завантажити обрані об\'єкти.</p>';
+          return;
+        }
+
+        const bestValueId = activeListings.reduce((best, item) => {
+          const currentScore = Number(item.price || 0) / Math.max(Number(item.area || 1), 1);
+          if (!best) return item.id;
+          const bestItem = activeListings.find((candidate) => candidate.id === best);
+          const bestScore = Number(bestItem?.price || 0) / Math.max(Number(bestItem?.area || 1), 1);
+          return currentScore < bestScore ? item.id : best;
+        }, null);
+
+        compareGrid.innerHTML = activeListings
+          .map((item) => `
+            <div class="rounded-xl border ${item.id === bestValueId ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-white"} p-3">
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <p class="text-sm font-bold text-slate-900 line-clamp-2">${item.title}</p>
+                  <p class="text-xs text-slate-500 mt-1">${item.city || "—"} · ${item.district || "—"}</p>
+                </div>
+                ${item.id === bestValueId ? '<span class="text-[10px] px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 font-semibold">BEST VALUE</span>' : ""}
+              </div>
+              <div class="mt-3 space-y-1.5 text-sm text-slate-700">
+                <div class="flex justify-between gap-3"><span>Ціна</span><b>$${Number(item.price || 0).toLocaleString("uk-UA")}</b></div>
+                <div class="flex justify-between gap-3"><span>Площа</span><b>${Number(item.area || 0)} м²</b></div>
+                <div class="flex justify-between gap-3"><span>Кімнати</span><b>${Number(item.rooms || 0)}</b></div>
+                <div class="flex justify-between gap-3"><span>єОселя</span><b>${item.eOselya ? "Так" : "Ні"}</b></div>
+              </div>
+              <a class="mt-3 inline-flex text-xs font-semibold text-blue-700 hover:text-blue-800" href="/listing/${item.id}" target="_blank" rel="noopener">Відкрити ↗</a>
+            </div>
+          `)
+          .join("");
+      } catch (_err) {
+        compareGrid.innerHTML = '<p class="text-sm text-slate-500">Не вдалося завантажити порівняння.</p>';
+      }
     }
 
     function renderSaved() {
@@ -753,6 +1163,34 @@
       targets.forEach((target) => observer.observe(target));
     }
 
+    compareButton?.addEventListener("click", renderFavoriteCompare);
+    window.addEventListener("focus", renderFavoriteCompare);
+    clearAllFiltersButton?.addEventListener("click", () => {
+      filters.citySelect.value = "Всі";
+      fireInput(filters.citySelect);
+      if (filters.propertyTypeSelect) {
+        filters.propertyTypeSelect.value = "Всі типи";
+        fireInput(filters.propertyTypeSelect);
+      }
+      if (filters.districtInput) {
+        filters.districtInput.value = "";
+        fireInput(filters.districtInput);
+      }
+      if (filters.eoselyaCheckbox) {
+        filters.eoselyaCheckbox.checked = false;
+        fireInput(filters.eoselyaCheckbox);
+      }
+      [filters.minPrice, filters.maxPrice, filters.minRooms, filters.maxRooms, filters.minArea, filters.maxArea].forEach((input) => {
+        input.value = "";
+        fireInput(input);
+      });
+      localStorage.removeItem(KEYWORD_SEARCH_KEY);
+      if (keywordSearchInput) keywordSearchInput.value = "";
+      renderSearchSummary();
+      renderActiveFilters();
+      refreshMapListings();
+    });
+
     saveButton.addEventListener("click", () => {
       const current = readFilters(filters);
       const defaultName = `${current.city || "Всі"} · ${current.onlyEOselya ? "єОселя" : "всі"} · ${new Date().toLocaleDateString("uk-UA")}`;
@@ -823,6 +1261,11 @@
         if (event.key === "Enter") {
           event.preventDefault();
           applyKeywordSearch();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          localStorage.removeItem(KEYWORD_SEARCH_KEY);
+          keywordSearchInput.value = "";
+          window.location.reload();
         }
       });
     }
@@ -848,8 +1291,41 @@
     }
 
     filters.citySelect.addEventListener("change", renderDistrictHints);
+    [
+      filters.citySelect,
+      filters.propertyTypeSelect,
+      filters.districtInput,
+      filters.eoselyaCheckbox,
+      filters.minPrice,
+      filters.maxPrice,
+      filters.minRooms,
+      filters.maxRooms,
+      filters.minArea,
+      filters.maxArea,
+    ].forEach((input) => {
+      if (!input) return;
+      input.addEventListener("input", renderSearchSummary);
+      input.addEventListener("change", renderSearchSummary);
+      input.addEventListener("input", renderActiveFilters);
+      input.addEventListener("change", renderActiveFilters);
+    });
+    window.addEventListener("keydown", (event) => {
+      if (event.defaultPrevented) return;
+      if (event.key !== "/") return;
+      const target = event.target;
+      const tagName = target?.tagName || "";
+      if (tagName === "INPUT" || tagName === "TEXTAREA" || target?.isContentEditable) return;
+      if (!keywordSearchInput) return;
+      event.preventDefault();
+      keywordSearchInput.focus();
+      keywordSearchInput.select();
+    });
     renderDistrictHints();
     renderSaved();
+    renderSearchSummary();
+    renderActiveFilters();
+    renderOneClickChips();
+    renderFavoriteCompare();
     if (trustedPartnersWrap && !trustedPartnersWrap.children.length) {
       trustedPartnersWrap.innerHTML = '<p class="text-sm text-slate-500">Профілі агентств завантажаться трохи нижче під час скролу.</p>';
     }
@@ -857,6 +1333,7 @@
       contentDiscoveryWrap.innerHTML = '<p class="text-sm text-slate-500">Контентні матеріали підтягнуться нижче під час скролу.</p>';
     }
     setupDeferredDiscovery();
+    initUaCentersDirectory();
     return panel;
   }
 

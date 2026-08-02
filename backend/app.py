@@ -17,6 +17,7 @@ import re
 import sqlite3
 import secrets
 import datetime
+import time
 from html import escape
 from functools import wraps
 from urllib.parse import quote, urlencode, urlsplit
@@ -42,6 +43,9 @@ DATABASE_URL: str | None = os.environ.get("DATABASE_URL", "").strip() or None
 
 # Redis DSN — if set, rate-limiter stores counters in Redis (safe for multi-worker).
 REDIS_URL: str | None = os.environ.get("REDIS_URL", "").strip() or None
+_REDIS_CACHE = None
+_REDIS_CACHE_DISABLED = False
+_REPORT_CACHE: dict[str, tuple[float, object]] = {}
 
 _DEFAULT_CORS_ORIGINS: list[str | re.Pattern[str]] = [
     "http://localhost:8080",
@@ -123,6 +127,226 @@ def get_db():
     return g.db
 
 
+def _cache_namespace_client():
+    global _REDIS_CACHE, _REDIS_CACHE_DISABLED
+    if _REDIS_CACHE_DISABLED:
+        return None
+    if _REDIS_CACHE is not None:
+        return _REDIS_CACHE
+    if not REDIS_URL:
+        return None
+    try:
+        import redis
+
+        _REDIS_CACHE = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        return _REDIS_CACHE
+    except ImportError:
+        app.logger.warning("Redis cache unavailable: redis package is not installed")
+    except Exception as exc:
+        app.logger.warning("Redis cache unavailable: %s", exc)
+    _REDIS_CACHE_DISABLED = True
+    return None
+
+
+def cached_json_get(key: str):
+    client = _cache_namespace_client()
+    if client is not None:
+        try:
+            payload = client.get(key)
+        except Exception as exc:
+            app.logger.warning("Redis cache read failed for %s: %s", key, exc)
+            return None
+        if payload is None:
+            return None
+        return json.loads(payload)
+
+    cached = _REPORT_CACHE.get(key)
+    if not cached:
+        return None
+    expires_at, value = cached
+    if expires_at <= time.time():
+        _REPORT_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def cached_json_set(key: str, value, ttl_seconds: int) -> None:
+    client = _cache_namespace_client()
+    if client is not None:
+        try:
+            client.setex(key, ttl_seconds, json.dumps(value, ensure_ascii=False))
+            return
+        except Exception as exc:
+            app.logger.warning("Redis cache write failed for %s: %s", key, exc)
+
+    _REPORT_CACHE[key] = (time.time() + ttl_seconds, value)
+
+
+def cache_delete_prefix(prefix: str) -> None:
+    client = _cache_namespace_client()
+    if client is not None:
+        try:
+            for key in client.scan_iter(match=f"{prefix}*"):
+                client.delete(key)
+            return
+        except Exception as exc:
+            app.logger.warning("Redis cache delete failed for %s: %s", prefix, exc)
+
+    for key in [key for key in _REPORT_CACHE if key.startswith(prefix)]:
+        _REPORT_CACHE.pop(key, None)
+
+
+def _refresh_lead_funnel_summaries(db) -> None:
+    db.execute("DELETE FROM lead_funnel_daily_metrics")
+    db.execute("DELETE FROM lead_funnel_listing_metrics")
+    db.execute("DELETE FROM lead_funnel_session_rollups")
+
+    db.execute(
+        """
+        INSERT INTO lead_funnel_daily_metrics (day, source, listing_type, event, event_count)
+        SELECT
+            DATE(created_at) AS day,
+            COALESCE(NULLIF(source, ''), 'unknown') AS source,
+            COALESCE(NULLIF(listing_type, ''), 'unknown') AS listing_type,
+            event,
+            COUNT(*) AS event_count
+        FROM lead_funnel_events
+        GROUP BY DATE(created_at), COALESCE(NULLIF(source, ''), 'unknown'), COALESCE(NULLIF(listing_type, ''), 'unknown'), event
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO lead_funnel_listing_metrics (day, listing_id, event, event_count)
+        SELECT
+            DATE(created_at) AS day,
+            listing_id,
+            event,
+            COUNT(*) AS event_count
+        FROM lead_funnel_events
+        WHERE listing_id IS NOT NULL
+        GROUP BY DATE(created_at), listing_id, event
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO lead_funnel_session_rollups (session_id, source, route_applies, first_route_at, submit_at, last_event_at)
+        SELECT
+            session_id,
+            COALESCE(MAX(CASE WHEN event = 'route_apply' THEN source END), MAX(source), 'unknown') AS source,
+            SUM(CASE WHEN event = 'route_apply' THEN 1 ELSE 0 END) AS route_applies,
+            MIN(CASE WHEN event = 'route_apply' THEN created_at END) AS first_route_at,
+            MIN(CASE WHEN event = 'lead_submit' THEN created_at END) AS submit_at,
+            MAX(created_at) AS last_event_at
+        FROM lead_funnel_events
+        WHERE session_id IS NOT NULL
+        GROUP BY session_id
+        """
+    )
+
+
+def _refresh_listing_city_summary(db) -> None:
+    db.execute("DELETE FROM listing_city_summary")
+    db.execute(
+        """
+        INSERT INTO listing_city_summary (city, published_count, price_sum, avg_price, updated_at)
+        SELECT
+            city,
+            COUNT(*) AS published_count,
+            COALESCE(SUM(price), 0) AS price_sum,
+            COALESCE(ROUND(AVG(price)), 0) AS avg_price,
+            datetime('now')
+        FROM listings
+        WHERE status = 'published'
+        GROUP BY city
+        """
+    )
+
+
+def _refresh_user_growth_summary(db) -> None:
+    db.execute("DELETE FROM user_growth_daily")
+    db.execute(
+        """
+        INSERT INTO user_growth_daily (day, user_count, updated_at)
+        SELECT
+            DATE(created_at) AS day,
+            COUNT(*) AS user_count,
+            datetime('now')
+        FROM users
+        GROUP BY DATE(created_at)
+        """
+    )
+
+
+def _upsert_lead_funnel_summary(db, *, day: str, source: str, listing_type: str, event: str, listing_id: int | None, created_at: str, session_id: str | None) -> None:
+    db.execute(
+        """
+        INSERT INTO lead_funnel_daily_metrics (day, source, listing_type, event, event_count)
+        VALUES (?, ?, ?, ?, 1)
+        ON CONFLICT(day, source, listing_type, event)
+        DO UPDATE SET event_count = event_count + 1
+        """,
+        (day, source, listing_type, event),
+    )
+    if listing_id is not None:
+        db.execute(
+            """
+            INSERT INTO lead_funnel_listing_metrics (day, listing_id, event, event_count)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(day, listing_id, event)
+            DO UPDATE SET event_count = event_count + 1
+            """,
+            (day, listing_id, event),
+        )
+    if session_id:
+        existing = db.execute(
+            "SELECT session_id, source, route_applies, first_route_at, submit_at, last_event_at FROM lead_funnel_session_rollups WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if existing:
+            route_applies = int(existing["route_applies"] or 0) + (1 if event == "route_apply" else 0)
+            first_route_at = existing["first_route_at"]
+            if event == "route_apply" and not first_route_at:
+                first_route_at = created_at
+            submit_at = existing["submit_at"]
+            if event == "lead_submit" and not submit_at:
+                submit_at = created_at
+            db.execute(
+                """
+                UPDATE lead_funnel_session_rollups
+                SET source = ?,
+                    route_applies = ?,
+                    first_route_at = COALESCE(first_route_at, ?),
+                    submit_at = COALESCE(submit_at, ?),
+                    last_event_at = ?
+                WHERE session_id = ?
+                """,
+                (
+                    source or existing["source"] or "unknown",
+                    route_applies,
+                    first_route_at,
+                    submit_at,
+                    created_at,
+                    session_id,
+                ),
+            )
+        else:
+            db.execute(
+                """
+                INSERT INTO lead_funnel_session_rollups
+                (session_id, source, route_applies, first_route_at, submit_at, last_event_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    source,
+                    1 if event == "route_apply" else 0,
+                    created_at if event == "route_apply" else None,
+                    created_at if event == "lead_submit" else None,
+                    created_at,
+                ),
+            )
+
+
 def db_placeholder() -> str:
     """Return the correct positional placeholder for the current DB driver."""
     return "%s" if _is_postgres() else "?"
@@ -153,6 +377,24 @@ ALERTS_PUSH_WEBHOOK_URL = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_URL", "")
 ALERTS_PUSH_WEBHOOK_BEARER = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_BEARER", "").strip()
 
 
+def _cache_control_for_request() -> str | None:
+    if request.method != "GET":
+        return None
+    if request.headers.get("Authorization"):
+        return "private, no-store"
+
+    path = request.path.rstrip("/") or "/"
+    if path == "/api/listings":
+        return "public, max-age=30, stale-while-revalidate=120"
+    if path.startswith("/api/listings/"):
+        return "public, max-age=60, stale-while-revalidate=300"
+    if path in {"/api/content", "/insights"} or path.startswith("/insights/"):
+        return "public, max-age=300, stale-while-revalidate=3600"
+    if path == "/api/agencies" or path.startswith("/api/agencies/") or path == "/agencies" or path.startswith("/agencies/"):
+        return "public, max-age=300, stale-while-revalidate=3600"
+    return None
+
+
 @app.after_request
 def apply_security_headers(response):
     for header, value in SECURITY_HEADERS.items():
@@ -163,6 +405,12 @@ def apply_security_headers(response):
 
     if response.mimetype == "text/html":
         response.headers.setdefault("Content-Security-Policy", HTML_CSP)
+
+    cache_control = _cache_control_for_request()
+    if cache_control:
+        response.headers["Cache-Control"] = cache_control
+        if request.headers.get("Authorization"):
+            response.headers.setdefault("Vary", "Authorization")
 
     return response
 
@@ -439,10 +687,17 @@ def init_db():
         );
 
         CREATE INDEX IF NOT EXISTS idx_listings_city      ON listings(city);
+        CREATE INDEX IF NOT EXISTS idx_listings_status_created_at ON listings(status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_listings_status_city ON listings(status, city);
+        CREATE INDEX IF NOT EXISTS idx_listings_status_listing_type ON listings(status, listing_type);
+        CREATE INDEX IF NOT EXISTS idx_listings_status_agency_slug ON listings(status, agency_slug);
+        CREATE INDEX IF NOT EXISTS idx_listings_agency_created_at ON listings(agency_slug, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_listings_status_published_at ON listings(status, published_at DESC);
         CREATE INDEX IF NOT EXISTS idx_listings_price     ON listings(price);
         CREATE INDEX IF NOT EXISTS idx_listings_user_id   ON listings(user_id);
         CREATE INDEX IF NOT EXISTS idx_listings_type      ON listings(property_type);
         CREATE INDEX IF NOT EXISTS idx_reviews_listing_id ON reviews(listing_id);
+        CREATE INDEX IF NOT EXISTS idx_reviews_listing_created_at ON reviews(listing_id, created_at DESC);
         
         CREATE TABLE IF NOT EXISTS listing_images (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -463,6 +718,7 @@ def init_db():
         
         CREATE INDEX IF NOT EXISTS idx_listing_images ON listing_images(listing_id);
         CREATE INDEX IF NOT EXISTS idx_moderation_log ON moderation_log(listing_id);
+        CREATE INDEX IF NOT EXISTS idx_moderation_log_created_at ON moderation_log(created_at DESC);
 
         CREATE TABLE IF NOT EXISTS listing_alerts (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -508,9 +764,81 @@ def init_db():
             created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_lead_funnel_created ON lead_funnel_events(created_at);
+        CREATE INDEX IF NOT EXISTS idx_lead_funnel_created_source_event ON lead_funnel_events(created_at, source, event);
         CREATE INDEX IF NOT EXISTS idx_lead_funnel_source ON lead_funnel_events(source);
+        CREATE INDEX IF NOT EXISTS idx_lead_funnel_source_created ON lead_funnel_events(source, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_lead_funnel_event ON lead_funnel_events(event);
         CREATE INDEX IF NOT EXISTS idx_lead_funnel_listing ON lead_funnel_events(listing_id);
+
+        CREATE TABLE IF NOT EXISTS lead_funnel_daily_metrics (
+            day TEXT NOT NULL,
+            source TEXT NOT NULL,
+            listing_type TEXT NOT NULL,
+            event TEXT NOT NULL,
+            event_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (day, source, listing_type, event)
+        );
+        CREATE INDEX IF NOT EXISTS idx_lead_funnel_daily_metrics_day ON lead_funnel_daily_metrics(day);
+        CREATE INDEX IF NOT EXISTS idx_lead_funnel_daily_metrics_source_day ON lead_funnel_daily_metrics(source, day);
+        CREATE INDEX IF NOT EXISTS idx_lead_funnel_daily_metrics_type_day ON lead_funnel_daily_metrics(listing_type, day);
+
+        CREATE TABLE IF NOT EXISTS lead_funnel_listing_metrics (
+            day TEXT NOT NULL,
+            listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+            event TEXT NOT NULL,
+            event_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (day, listing_id, event)
+        );
+        CREATE INDEX IF NOT EXISTS idx_lead_funnel_listing_metrics_day ON lead_funnel_listing_metrics(day);
+        CREATE INDEX IF NOT EXISTS idx_lead_funnel_listing_metrics_listing ON lead_funnel_listing_metrics(listing_id);
+
+        CREATE TABLE IF NOT EXISTS lead_funnel_session_rollups (
+            session_id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            route_applies INTEGER NOT NULL DEFAULT 0,
+            first_route_at TEXT,
+            submit_at TEXT,
+            last_event_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_lead_funnel_session_rollups_source ON lead_funnel_session_rollups(source);
+        CREATE INDEX IF NOT EXISTS idx_lead_funnel_session_rollups_first_route ON lead_funnel_session_rollups(first_route_at);
+
+        CREATE TABLE IF NOT EXISTS client_observability_events (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type   TEXT    NOT NULL,
+            metric_name  TEXT,
+            metric_value REAL,
+            rating       TEXT,
+            message      TEXT,
+            stack        TEXT,
+            source       TEXT,
+            page_url     TEXT,
+            session_id   TEXT,
+            user_agent   TEXT,
+            payload_json TEXT,
+            created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_client_observability_created ON client_observability_events(created_at);
+        CREATE INDEX IF NOT EXISTS idx_client_observability_type_created ON client_observability_events(event_type, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_client_observability_metric_created ON client_observability_events(metric_name, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS listing_city_summary (
+            city TEXT PRIMARY KEY,
+            published_count INTEGER NOT NULL DEFAULT 0,
+            price_sum INTEGER NOT NULL DEFAULT 0,
+            avg_price INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_city_summary_count ON listing_city_summary(published_count DESC, city ASC);
+
+        CREATE TABLE IF NOT EXISTS user_growth_daily (
+            day TEXT PRIMARY KEY,
+            user_count INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_growth_daily_day ON user_growth_daily(day);
+
+        CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC);
 
         CREATE TABLE IF NOT EXISTS agency_profiles (
             id                    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -565,6 +893,19 @@ def init_db():
     if "has_video_tour" not in listing_columns:
         db.execute("ALTER TABLE listings ADD COLUMN has_video_tour INTEGER NOT NULL DEFAULT 0")
     db.execute("CREATE INDEX IF NOT EXISTS idx_listings_agency_slug ON listings(agency_slug)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_listings_status_created_at ON listings(status, created_at DESC)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_listings_status_city ON listings(status, city)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_listings_status_listing_type ON listings(status, listing_type)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_listings_status_agency_slug ON listings(status, agency_slug)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_listings_agency_created_at ON listings(agency_slug, created_at DESC)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_listings_status_published_at ON listings(status, published_at DESC)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_reviews_listing_created_at ON reviews(listing_id, created_at DESC)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_moderation_log_created_at ON moderation_log(created_at DESC)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_lead_funnel_source_created ON lead_funnel_events(source, created_at DESC)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_lead_funnel_created_source_event ON lead_funnel_events(created_at, source, event)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_client_observability_type_created ON client_observability_events(event_type, created_at DESC)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_client_observability_metric_created ON client_observability_events(metric_name, created_at DESC)")
 
     # Users table migrations for email/phone verification
     user_columns = {
@@ -620,6 +961,8 @@ def init_db():
             moderation_updated_at = COALESCE(moderation_updated_at, published_at, created_at)
         """
     )
+    _refresh_listing_city_summary(db)
+    _refresh_user_growth_summary(db)
     db.commit()
 
     if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
@@ -703,6 +1046,11 @@ def init_db():
             completed_deals = COALESCE(completed_deals, 0)
         """
     )
+    if (
+        db.execute("SELECT COUNT(*) FROM lead_funnel_events").fetchone()[0]
+        and db.execute("SELECT COUNT(*) FROM lead_funnel_daily_metrics").fetchone()[0] == 0
+    ):
+        _refresh_lead_funnel_summaries(db)
     db.commit()
 
     db.close()
@@ -1590,6 +1938,7 @@ init_db()
 @app.route("/api/auth/register", methods=["POST"])
 @limiter.limit("10 per minute")
 def register():
+    from app import _refresh_user_growth_summary, cache_delete_prefix
     data  = request.get_json(silent=True) or {}
     name  = strip(data.get("name"),  100)
     email = strip(data.get("email"), 254).lower()
@@ -1622,7 +1971,9 @@ def register():
         "UPDATE users SET email_verify_token=?, email_verify_expires=? WHERE id=?",
         (verify_token, verify_expires, user_id)
     )
+    _refresh_user_growth_summary(db)
     db.commit()
+    cache_delete_prefix("admin:reports:user-growth:")
     verify_email_sent = send_email_verify(email, verify_token)
 
     return jsonify(
@@ -2497,6 +2848,7 @@ def add_review(lid: int):
 @require_auth
 @limiter.limit("30 per hour")
 def create_listing():
+    from app import _refresh_listing_city_summary, cache_delete_prefix
     data = request.get_json(silent=True) or {}
     db = get_db()
     actor = db.execute("SELECT role FROM users WHERE id = ?", (g.user_id,)).fetchone()
@@ -2590,6 +2942,12 @@ def create_listing():
         log_listing_event(db, cur.lastrowid, "submit_for_moderation", moderation_reason)
     db.commit()
     if status == "published":
+        _refresh_listing_city_summary(db)
+        cache_delete_prefix("admin:reports:listings-by-city:")
+    if status == "published":
+        _refresh_listing_city_summary(db)
+        cache_delete_prefix("admin:reports:listings-by-city:")
+    if status == "published":
         run_dispatch_with_logging(
             db,
             trigger_type="listing_create_published",
@@ -2605,6 +2963,7 @@ def create_listing():
 @app.route("/api/listings/<int:listing_id>", methods=["DELETE"])
 @require_auth
 def delete_listing(listing_id: int):
+    from app import _refresh_listing_city_summary, cache_delete_prefix
     db  = get_db()
     row = db.execute("SELECT user_id FROM listings WHERE id = ?", (listing_id,)).fetchone()
     if not row:
@@ -2614,12 +2973,15 @@ def delete_listing(listing_id: int):
 
     db.execute("DELETE FROM listings WHERE id = ?", (listing_id,))
     db.commit()
+    _refresh_listing_city_summary(db)
+    cache_delete_prefix("admin:reports:listings-by-city:")
     return jsonify(ok=True)
 
 
 @app.route("/api/listings/<int:listing_id>/verification", methods=["PATCH"])
 @require_auth
 def update_listing_verification(listing_id: int):
+    from app import _refresh_listing_city_summary, cache_delete_prefix
     db = get_db()
     listing = db.execute(
         """
@@ -2750,6 +3112,8 @@ def update_listing_verification(listing_id: int):
         )
 
     row = db.execute(LISTING_SELECT + " WHERE l.id = ?", (listing_id,)).fetchone()
+    _refresh_listing_city_summary(db)
+    cache_delete_prefix("admin:reports:listings-by-city:")
     return jsonify(listing=_row_to_listing(row))
 
 
@@ -3061,6 +3425,60 @@ def get_map_listings():
 
 # ─── Analytics (aggregate stats) ─────────────────────────────────────────────
 
+def _parse_json_payload() -> dict:
+    raw_body = (request.get_data(as_text=True) or "").strip()
+    data = request.get_json(silent=True) or {}
+    if data:
+        return data if isinstance(data, dict) else {}
+    if not raw_body:
+        return {}
+    try:
+        parsed = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _insert_observability_event(
+    db,
+    *,
+    event_type: str,
+    metric_name: str | None = None,
+    metric_value: float | None = None,
+    rating: str | None = None,
+    message: str | None = None,
+    stack: str | None = None,
+    source: str | None = None,
+    page_url: str | None = None,
+    session_id: str | None = None,
+    user_agent: str | None = None,
+    payload: dict | None = None,
+) -> None:
+    payload_json = None
+    if payload:
+        payload_json = json.dumps(payload, ensure_ascii=False)
+    db.execute(
+        """
+        INSERT INTO client_observability_events
+        (event_type, metric_name, metric_value, rating, message, stack, source, page_url, session_id, user_agent, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_type,
+            metric_name,
+            metric_value,
+            rating,
+            message,
+            stack,
+            source,
+            page_url,
+            session_id,
+            user_agent,
+            payload_json,
+        ),
+    )
+
+
 @app.route("/api/analytics/summary", methods=["GET"])
 def analytics_summary():
     db = get_db()
@@ -3083,16 +3501,7 @@ def analytics_summary():
 @app.route("/api/analytics/lead-funnel", methods=["POST"])
 def analytics_lead_funnel_event():
     db = get_db()
-    raw_body = (request.get_data(as_text=True) or "").strip()
-    data = request.get_json(silent=True) or {}
-    if not data:
-        if raw_body:
-            try:
-                parsed = json.loads(raw_body)
-                if isinstance(parsed, dict):
-                    data = parsed
-            except json.JSONDecodeError:
-                data = {}
+    data = _parse_json_payload()
 
     event = strip(data.get("event", ""), 64)
     intent = strip(data.get("intent", ""), 80)
@@ -3139,7 +3548,111 @@ def analytics_lead_funnel_event():
             session_id or None,
         ),
     )
+    created_at_dt = datetime.datetime.utcnow().replace(microsecond=0)
+    day = created_at_dt.strftime("%Y-%m-%d")
+    created_at = created_at_dt.isoformat(sep=" ")
+    _upsert_lead_funnel_summary(
+        db,
+        day=day,
+        source=source or "unknown",
+        listing_type=listing_type or "unknown",
+        event=event,
+        listing_id=listing_id,
+        created_at=created_at,
+        session_id=session_id or None,
+    )
     db.commit()
+    cache_delete_prefix("admin:reports:lead-funnel:")
+    return jsonify(ok=True), 201
+
+
+@app.route("/api/analytics/client-telemetry", methods=["POST"])
+def analytics_client_telemetry():
+    db = get_db()
+    data = _parse_json_payload()
+    if not data:
+        return jsonify(error="JSON payload is required"), 400
+
+    event_type = strip(data.get("event_type", ""), 40).lower().replace("-", "_")
+    if not event_type:
+        return jsonify(error="event_type is required"), 400
+
+    source = strip(data.get("source", ""), 255) or None
+    page_url = strip(data.get("page_url", ""), 1024) or None
+    session_id = strip(data.get("session_id", ""), 120) or None
+    message = strip(data.get("message", ""), 1200) or None
+    stack = strip(data.get("stack", ""), 8000) or None
+    user_agent = strip(request.headers.get("User-Agent", ""), 400) or None
+
+    payload = data.get("payload")
+    if payload is not None and not isinstance(payload, dict):
+        return jsonify(error="payload must be an object"), 400
+
+    _insert_observability_event(
+        db,
+        event_type=event_type,
+        message=message,
+        stack=stack,
+        source=source,
+        page_url=page_url,
+        session_id=session_id,
+        user_agent=user_agent,
+        payload=payload,
+    )
+    db.commit()
+    cache_delete_prefix("admin:reports:observability:")
+    return jsonify(ok=True), 201
+
+
+@app.route("/api/analytics/web-vitals", methods=["POST"])
+def analytics_web_vitals():
+    db = get_db()
+    data = _parse_json_payload()
+    if not data:
+        return jsonify(error="JSON payload is required"), 400
+
+    metric_name = strip(data.get("name", ""), 24).upper()
+    if not metric_name:
+        return jsonify(error="name is required"), 400
+    if metric_name not in {"FCP", "LCP", "CLS", "FID", "INP", "TTFB"}:
+        return jsonify(error="Unsupported web-vitals metric"), 400
+
+    value_raw = data.get("value")
+    try:
+        metric_value = float(value_raw)
+    except (TypeError, ValueError):
+        return jsonify(error="value must be a number"), 400
+    if metric_value < 0:
+        return jsonify(error="value must be non-negative"), 400
+
+    rating = strip(data.get("rating", ""), 24).lower() or None
+    if rating and rating not in {"good", "needs-improvement", "poor"}:
+        return jsonify(error="rating must be good, needs-improvement, or poor"), 400
+
+    source = strip(data.get("source", ""), 255) or None
+    page_url = strip(data.get("page_url", ""), 1024) or None
+    session_id = strip(data.get("session_id", ""), 120) or None
+    user_agent = strip(request.headers.get("User-Agent", ""), 400) or None
+
+    extra_payload = {}
+    for key in ("id", "navigation_type", "delta"):
+        if key in data:
+            extra_payload[key] = data[key]
+
+    _insert_observability_event(
+        db,
+        event_type="web_vital",
+        metric_name=metric_name,
+        metric_value=metric_value,
+        rating=rating,
+        source=source,
+        page_url=page_url,
+        session_id=session_id,
+        user_agent=user_agent,
+        payload=extra_payload or None,
+    )
+    db.commit()
+    cache_delete_prefix("admin:reports:observability:")
     return jsonify(ok=True), 201
 
 

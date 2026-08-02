@@ -6,6 +6,18 @@
     <title>UA-Dim — Admin Panel</title>
     <link href="https://cdn.tailwindcss.com" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link
+        rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin=""
+    >
+    <script
+        defer
+        src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""
+    ></script>
     <style>
         * { --clr: #1e40af; }
         .nav-active { @apply bg-blue-100 text-blue-900; }
@@ -202,24 +214,166 @@
                 <!-- New Listing Page -->
                 <div id="page-new-listing" class="p-6 hidden max-w-2xl">
                     <h2 class="text-2xl font-bold mb-6">Додати новий об'єкт</h2>
-                    <form onsubmit="saveNewListing(event)" class="bg-white p-6 rounded-lg shadow-sm space-y-4">
-                        <input type="text" placeholder="Назва об'єкта" id="form-title" required class="w-full p-2 border border-gray-300 rounded">
-                        <input type="text" placeholder="Місто" id="form-city" required class="w-full p-2 border border-gray-300 rounded">
-                        <input type="text" placeholder="Район" id="form-district" required class="w-full p-2 border border-gray-300 rounded">
-                        <input type="number" placeholder="Ціна (₴)" id="form-price" required class="w-full p-2 border border-gray-300 rounded">
-                        <input type="number" placeholder="Кімнат" id="form-rooms" required class="w-full p-2 border border-gray-300 rounded">
-                        <input type="number" placeholder="Площа (м²)" id="form-area" step="0.1" required class="w-full p-2 border border-gray-300 rounded">
-                        <textarea placeholder="Опис" id="form-description" class="w-full p-2 border border-gray-300 rounded" rows="4"></textarea>
-                        <input type="file" id="form-images" multiple accept="image/*" class="w-full p-2 border border-gray-300 rounded">
-                        <p class="text-sm text-gray-500">Можна завантажити кілька фото</p>
-                        <label class="flex items-center">
-                            <input type="checkbox" id="form-eoselya" class="mr-2">
-                            <span>Під програму єОселя</span>
-                        </label>
+                    <form onsubmit="saveNewListing(event)" class="bg-white p-6 rounded-lg shadow-sm space-y-5">
+                        <div class="flex items-center gap-3">
+                            <div class="flex-1">
+                                <div class="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                    <span>Крок <span id="new-listing-step-label">1</span> з 4</span>
+                                    <span id="new-listing-step-name">Базові дані</span>
+                                </div>
+                                <div class="mt-2 h-2 rounded-full bg-slate-100">
+                                    <div id="new-listing-progress" class="h-2 rounded-full bg-blue-600 transition-all" style="width: 25%"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-4 gap-2 text-xs font-semibold text-slate-500">
+                            <button type="button" data-step-jump="1" class="rounded-lg bg-slate-100 px-3 py-2 text-left">1. База</button>
+                            <button type="button" data-step-jump="2" class="rounded-lg bg-slate-100 px-3 py-2 text-left">2. Параметри</button>
+                            <button type="button" data-step-jump="3" class="rounded-lg bg-slate-100 px-3 py-2 text-left">3. Фото</button>
+                            <button type="button" data-step-jump="4" class="rounded-lg bg-slate-100 px-3 py-2 text-left">4. Перевірка</button>
+                        </div>
+
+                        <div data-new-listing-step="1" class="space-y-4">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <select id="form-listing-type" class="w-full p-2 border border-gray-300 rounded">
+                                    <option value="sale">Продаж</option>
+                                    <option value="rent">Оренда</option>
+                                </select>
+                                <select id="form-property-type" class="w-full p-2 border border-gray-300 rounded">
+                                    <option value="квартира">Квартира</option>
+                                    <option value="будинок">Будинок</option>
+                                    <option value="комерція">Комерція</option>
+                                    <option value="земля">Земля</option>
+                                </select>
+                            </div>
+                            <input type="text" placeholder="Назва об'єкта" id="form-title" required class="w-full p-2 border border-gray-300 rounded">
+                            <select id="form-region" class="w-full p-2 border border-gray-300 rounded">
+                                <option value="">Оберіть область або АР Крим</option>
+                            </select>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <input type="text" placeholder="Місто (обласний/районний центр)" id="form-city" list="form-city-options" required class="w-full p-2 border border-gray-300 rounded">
+                                <input type="text" placeholder="Район" id="form-district" list="form-district-options" required class="w-full p-2 border border-gray-300 rounded">
+                            </div>
+                            <datalist id="form-city-options"></datalist>
+                            <datalist id="form-district-options"></datalist>
+                            <input type="number" placeholder="Ціна (₴)" id="form-price" required class="w-full p-2 border border-gray-300 rounded">
+                        </div>
+
+                        <div data-new-listing-step="2" class="space-y-4 hidden">
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <input type="number" placeholder="Кімнат" id="form-rooms" required class="w-full p-2 border border-gray-300 rounded">
+                                <input type="number" placeholder="Площа (м²)" id="form-area" step="0.1" required class="w-full p-2 border border-gray-300 rounded">
+                                <select id="form-condition-type" class="w-full p-2 border border-gray-300 rounded">
+                                    <option value="вторинка">Вторинка</option>
+                                    <option value="нова будова">Нова будова</option>
+                                    <option value="після ремонту">Після ремонту</option>
+                                    <option value="без ремонту">Без ремонту</option>
+                                </select>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <input type="number" placeholder="Поверх" id="form-floor" class="w-full p-2 border border-gray-300 rounded">
+                                <input type="number" placeholder="Поверхів у будинку" id="form-total-floors" class="w-full p-2 border border-gray-300 rounded">
+                                <input type="number" placeholder="Рік будівництва" id="form-year-built" class="w-full p-2 border border-gray-300 rounded">
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <input type="number" step="0.000001" placeholder="Latitude" id="form-latitude" class="w-full p-2 border border-gray-300 rounded">
+                                <input type="number" step="0.000001" placeholder="Longitude" id="form-longitude" class="w-full p-2 border border-gray-300 rounded">
+                            </div>
+                            <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+                                <div class="flex items-center justify-between gap-2">
+                                    <div>
+                                        <div class="font-semibold text-slate-900">Онлайн карта України</div>
+                                        <div class="text-xs text-slate-500">Клікніть на карту, щоб заповнити Latitude/Longitude.</div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        id="form-map-reset"
+                                        class="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200"
+                                    >
+                                        Центр України
+                                    </button>
+                                </div>
+                                <div id="form-location-map" class="h-72 rounded-xl border border-slate-200"></div>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <select id="form-status" class="w-full p-2 border border-gray-300 rounded">
+                                    <option value="active">active</option>
+                                    <option value="sold">sold</option>
+                                    <option value="removed">removed</option>
+                                </select>
+                                <select id="form-source" class="w-full p-2 border border-gray-300 rounded">
+                                    <option value="owner">owner</option>
+                                    <option value="agency">agency</option>
+                                    <option value="agent">agent</option>
+                                    <option value="seed">seed</option>
+                                </select>
+                                <input type="text" placeholder="Agency slug (optional)" id="form-agency-slug" class="w-full p-2 border border-gray-300 rounded">
+                            </div>
+                        </div>
+
+                        <div data-new-listing-step="3" class="space-y-4 hidden">
+                            <textarea placeholder="Опис" id="form-description" class="w-full p-2 border border-gray-300 rounded" rows="4"></textarea>
+                            <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+                                <div class="flex items-center justify-between gap-2">
+                                    <div>
+                                        <div class="font-semibold text-slate-900">Фото об'єкта</div>
+                                        <div class="text-xs text-slate-500">Можна завантажити файли або вставити прямі URL фото.</div>
+                                    </div>
+                                    <span class="text-xs font-semibold text-blue-700 bg-blue-100 px-2 py-1 rounded-full">DIM.RIA style</span>
+                                </div>
+                                <div
+                                    id="form-photo-dropzone"
+                                    class="rounded-2xl border-2 border-dashed border-blue-300 bg-blue-50/50 p-5 text-center text-slate-600 transition hover:border-blue-500 hover:bg-blue-50"
+                                >
+                                    <div class="text-3xl mb-2">🖼️</div>
+                                    <div class="font-semibold text-slate-800">Перетягніть фото сюди</div>
+                                    <div class="text-sm">або виберіть файли нижче</div>
+                                </div>
+                                <input type="file" id="form-images" multiple accept="image/*" class="w-full p-2 border border-gray-300 rounded">
+                                <textarea id="form-image-urls" rows="3" class="w-full p-2 border border-gray-300 rounded" placeholder="Прямі URL фото, по одному на рядок"></textarea>
+                                <div class="grid grid-cols-2 md:grid-cols-3 gap-2" id="form-photo-preview"></div>
+                            </div>
+                        </div>
+
+                        <div data-new-listing-step="4" class="space-y-4 hidden">
+                            <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                <div class="font-semibold text-slate-900 mb-3">Перевірка оголошення</div>
+                                <div id="form-review-summary" class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm"></div>
+                            </div>
+                            <div class="space-y-3">
+                                <label class="flex items-center">
+                                    <input type="checkbox" id="form-eoselya" class="mr-2">
+                                    <span>Під програму єОселя</span>
+                                </label>
+                                <label class="flex items-center">
+                                    <input type="checkbox" id="form-owner-verification" class="mr-2">
+                                    <span>Запит верифікації власника</span>
+                                </label>
+                                <label class="flex items-center">
+                                    <input type="checkbox" id="form-phone-verification" class="mr-2">
+                                    <span>Запит верифікації телефону</span>
+                                </label>
+                                <label class="flex items-center">
+                                    <input type="checkbox" id="form-photo-tour" class="mr-2">
+                                    <span>Є фото-тур / 360°</span>
+                                </label>
+                                <label class="flex items-center">
+                                    <input type="checkbox" id="form-video-tour" class="mr-2">
+                                    <span>Є відеотур</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
+                            <button type="button" id="new-listing-back" class="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-slate-700 hover:bg-slate-50">Назад</button>
+                            <div class="flex items-center gap-3">
+                                <button type="button" id="new-listing-next" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700">Далі</button>
+                                <button type="submit" id="new-listing-submit" class="hidden rounded-lg bg-emerald-600 px-4 py-2 font-semibold text-white hover:bg-emerald-700">
+                                    Опублікувати оголошення
+                                </button>
+                            </div>
+                        </div>
                         <div id="form-message"></div>
-                        <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700">
-                            Зберегти об'єкт
-                        </button>
                     </form>
                 </div>
 
@@ -571,6 +725,66 @@
                             <p class="text-xs text-gray-500">Джерело: <code>/api/alerts/dispatch/health</code>. Для cron використовуйте <code>GET /api/alerts/dispatch?dry_run=0</code>.</p>
                         </div>
                         <div class="bg-white p-6 rounded-lg shadow-sm xl:col-span-2">
+                            <div class="flex items-center justify-between mb-4 gap-2">
+                                <h3 class="font-bold">Observability (errors + Core Web Vitals)</h3>
+                                <button onclick="loadReports()" class="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-200">Оновити</button>
+                            </div>
+                            <div class="mb-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">Events 24h</div>
+                                    <div id="obs-total-events" class="text-lg font-black text-slate-800">-</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">Runtime errors</div>
+                                    <div id="obs-runtime-errors" class="text-lg font-black text-rose-700">-</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">Unhandled rejections</div>
+                                    <div id="obs-unhandled-rejections" class="text-lg font-black text-amber-700">-</div>
+                                </div>
+                                <div class="rounded-lg border border-slate-200 p-3">
+                                    <div class="text-gray-500">Web Vitals samples</div>
+                                    <div id="obs-web-vitals" class="text-lg font-black text-emerald-700">-</div>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                                <div class="overflow-auto">
+                                    <h4 class="mb-2 text-sm font-semibold text-gray-700">CWV summary</h4>
+                                    <table class="w-full text-sm">
+                                        <thead>
+                                            <tr class="text-left text-gray-500 border-b">
+                                                <th class="py-2">Metric</th>
+                                                <th class="py-2">Avg</th>
+                                                <th class="py-2">Samples</th>
+                                                <th class="py-2">Good</th>
+                                                <th class="py-2">Needs</th>
+                                                <th class="py-2">Poor</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="obs-vitals-summary-table">
+                                            <tr><td colspan="6" class="py-3 text-gray-500">Завантаження...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div class="overflow-auto">
+                                    <h4 class="mb-2 text-sm font-semibold text-gray-700">Recent JS errors</h4>
+                                    <table class="w-full text-sm">
+                                        <thead>
+                                            <tr class="text-left text-gray-500 border-b">
+                                                <th class="py-2">Time</th>
+                                                <th class="py-2">Type</th>
+                                                <th class="py-2">Message</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="obs-recent-errors-table">
+                                            <tr><td colspan="3" class="py-3 text-gray-500">Завантаження...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <p class="mt-3 text-xs text-gray-500">Джерело: <code>/api/admin/reports/observability?hours=24</code>.</p>
+                        </div>
+                        <div class="bg-white p-6 rounded-lg shadow-sm xl:col-span-2">
                             <div class="flex items-center justify-between mb-4">
                                 <h3 class="font-bold">Benchmark mode (7/30/90)</h3>
                                 <span class="text-xs text-gray-500">CTR intent→submit + sparkline по source</span>
@@ -631,10 +845,15 @@
     </div>
 
     <script>
-        const API_HOST = window.location.protocol === 'file:' ? 'http://localhost:5050' : '';
-        const API_BASE = `${API_HOST}/api/admin`;
-        const PUBLIC_API_BASE = `${API_HOST}/api`;
-        const LOGIN_URL = window.location.protocol === 'file:' ? './login.html' : '/admin/login.html';
+        const BACKEND_ORIGIN = window.UA_HOMES_API || (window.location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(window.location.hostname)
+            ? 'http://localhost:5050'
+            : 'https://backend-production-51964.up.railway.app');
+        const ADMIN_BASE_PATH = window.location.protocol === 'file:'
+            ? '.'
+            : (window.location.pathname.startsWith('/admin/') ? '/admin' : '');
+        const API_BASE = `${BACKEND_ORIGIN}/api/admin`;
+        const PUBLIC_API_BASE = `${BACKEND_ORIGIN}/api`;
+        const LOGIN_URL = window.location.protocol === 'file:' ? './login.html' : `${ADMIN_BASE_PATH}/login.html`;
         let authToken = localStorage.getItem('admin_token');
         let alertsDispatchKey = localStorage.getItem('admin_alerts_dispatch_key') || '';
         let listingsCache = [];
@@ -642,11 +861,24 @@
         let selectedListingIds = new Set();
         let csvPreviewRows = [];
         let csvPreviewHeaders = [];
+        let formPhotoPreviewObjectUrls = [];
+        let newListingStep = 1;
+        const NEW_LISTING_STEP_TITLES = {
+            1: 'Базові дані',
+            2: 'Параметри',
+            3: 'Фото',
+            4: 'Перевірка',
+        };
         let leadFunnelDays = 30;
         let ctrDropThresholdPp = Number(localStorage.getItem('admin_lf_ctr_drop_threshold_pp') || 5);
         let leadFunnelBenchmarkReports = { report7: null, report30: null, report90: null };
         let routeSourceFilter = localStorage.getItem('admin_lf_route_source') || '__all__';
         let reportsHealthAutoRefreshTimer = null;
+        let uaCentersDataset = null;
+        let newListingMap = null;
+        let newListingMapMarker = null;
+        let newListingMapBound = false;
+        let refreshUaRegionSuggestions = null;
 
         // Check auth
         window.addEventListener('load', async () => {
@@ -682,6 +914,11 @@
                 loadDashboard();
             } else if (page === 'listings') {
                 loadListings();
+            } else if (page === 'new-listing') {
+                bindPhotoUploader();
+                bindNewListingWizard();
+                renderPhotoPreview();
+                renderNewListingReview();
             } else if (page === 'csv-import') {
                 document.getElementById('csv-message').innerHTML = '';
                 setupCsvDropzone();
@@ -740,6 +977,159 @@
                 'Authorization': `Bearer ${authToken}`,
                 ...extra
             };
+        }
+
+        function escapeAttr(value) {
+            return String(value || '')
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+
+        function getAdminAssetUrl(filename) {
+            if (window.location.protocol === 'file:') {
+                return `./${filename}`;
+            }
+            const normalized = ADMIN_BASE_PATH || '/admin';
+            const path = normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
+            return `${path}/${filename}`;
+        }
+
+        async function ensureUaCentersDataset() {
+            if (uaCentersDataset) return uaCentersDataset;
+            const fallback = {
+                regions: [],
+                regionData: {},
+                allCenters: ['Київ', 'Львів', 'Одеса', 'Дніпро', 'Харків']
+            };
+
+            try {
+                const res = await fetch(getAdminAssetUrl('ua-centers.json'));
+                if (!res.ok) {
+                    uaCentersDataset = fallback;
+                    return uaCentersDataset;
+                }
+                const data = await res.json();
+                if (!data || !Array.isArray(data.regions) || typeof data.regionData !== 'object') {
+                    uaCentersDataset = fallback;
+                    return uaCentersDataset;
+                }
+                uaCentersDataset = data;
+            } catch (_err) {
+                uaCentersDataset = fallback;
+            }
+            return uaCentersDataset;
+        }
+
+        function sortUaNames(values) {
+            return [...new Set((values || []).filter(Boolean))].sort((a, b) =>
+                String(a).localeCompare(String(b), 'uk', { sensitivity: 'base' })
+            );
+        }
+
+        function renderDatalistOptions(targetId, values) {
+            const target = document.getElementById(targetId);
+            if (!target) return;
+            target.innerHTML = sortUaNames(values || []).map((value) => `<option value="${escapeAttr(value)}"></option>`).join('');
+        }
+
+        function getRegionCenters(regionName) {
+            if (!uaCentersDataset) return [];
+            if (!regionName || !uaCentersDataset.regionData[regionName]) return sortUaNames(uaCentersDataset.allCenters || []);
+            return sortUaNames(uaCentersDataset.regionData[regionName].centers || []);
+        }
+
+        function getRegionDistricts(regionName) {
+            if (!uaCentersDataset) return [];
+            if (!regionName || !uaCentersDataset.regionData[regionName]) {
+                const all = new Set();
+                Object.values(uaCentersDataset.regionData || {}).forEach((item) => {
+                    (item.districts || []).forEach((district) => all.add(district));
+                });
+                return sortUaNames(Array.from(all));
+            }
+            return sortUaNames(uaCentersDataset.regionData[regionName].districts || []);
+        }
+
+        async function bindUaRegionDirectory() {
+            const regionSelect = document.getElementById('form-region');
+            const cityInput = document.getElementById('form-city');
+            const districtInput = document.getElementById('form-district');
+            if (!regionSelect || !cityInput || !districtInput) return;
+
+            const dataset = await ensureUaCentersDataset();
+            regionSelect.innerHTML = '<option value="">Оберіть область або АР Крим</option>' +
+                sortUaNames(dataset.regions || []).map((region) => `<option value="${escapeAttr(region)}">${escapeHtml(region)}</option>`).join('');
+
+            const applyRegionSuggestions = () => {
+                const region = regionSelect.value;
+                renderDatalistOptions('form-city-options', getRegionCenters(region));
+                renderDatalistOptions('form-district-options', getRegionDistricts(region));
+            };
+            refreshUaRegionSuggestions = applyRegionSuggestions;
+
+            regionSelect.addEventListener('change', () => {
+                applyRegionSuggestions();
+                renderNewListingReview();
+            });
+
+            applyRegionSuggestions();
+        }
+
+        function applyMapCoordinates(lat, lng) {
+            const latInput = document.getElementById('form-latitude');
+            const lngInput = document.getElementById('form-longitude');
+            if (!latInput || !lngInput) return;
+            latInput.value = Number(lat).toFixed(6);
+            lngInput.value = Number(lng).toFixed(6);
+            renderNewListingReview();
+        }
+
+        function syncMapMarkerFromInputs() {
+            if (!newListingMap || !newListingMapMarker) return;
+            const lat = Number(document.getElementById('form-latitude')?.value || 0);
+            const lng = Number(document.getElementById('form-longitude')?.value || 0);
+            if (!Number.isFinite(lat) || !Number.isFinite(lng) || !lat || !lng) return;
+            newListingMapMarker.setLatLng([lat, lng]);
+            newListingMap.setView([lat, lng], Math.max(newListingMap.getZoom(), 11));
+        }
+
+        function ensureNewListingMap() {
+            const mapContainer = document.getElementById('form-location-map');
+            if (!mapContainer || typeof window.L === 'undefined') return;
+            if (!newListingMap) {
+                newListingMap = L.map(mapContainer, { zoomControl: true }).setView([49.0, 31.3], 6);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; OpenStreetMap contributors',
+                    maxZoom: 18,
+                }).addTo(newListingMap);
+                newListingMapMarker = L.marker([49.0, 31.3], { draggable: true }).addTo(newListingMap);
+                newListingMap.on('click', (event) => {
+                    const { lat, lng } = event.latlng;
+                    newListingMapMarker.setLatLng([lat, lng]);
+                    applyMapCoordinates(lat, lng);
+                });
+                newListingMapMarker.on('dragend', () => {
+                    const point = newListingMapMarker.getLatLng();
+                    applyMapCoordinates(point.lat, point.lng);
+                });
+            }
+
+            if (!newListingMapBound) {
+                document.getElementById('form-latitude')?.addEventListener('change', syncMapMarkerFromInputs);
+                document.getElementById('form-longitude')?.addEventListener('change', syncMapMarkerFromInputs);
+                document.getElementById('form-map-reset')?.addEventListener('click', () => {
+                    const ukraine = [49.0, 31.3];
+                    newListingMap.setView(ukraine, 6);
+                    newListingMapMarker.setLatLng(ukraine);
+                    applyMapCoordinates(ukraine[0], ukraine[1]);
+                });
+                newListingMapBound = true;
+            }
+
+            setTimeout(() => newListingMap.invalidateSize(), 0);
+            syncMapMarkerFromInputs();
         }
 
         // Load dashboard
@@ -1051,9 +1441,261 @@
             }
         }
 
+        function renderPhotoPreview() {
+            const preview = document.getElementById('form-photo-preview');
+            if (!preview) return;
+
+            formPhotoPreviewObjectUrls.forEach(url => URL.revokeObjectURL(url));
+            formPhotoPreviewObjectUrls = [];
+
+            const files = Array.from(document.getElementById('form-images')?.files || []);
+            const urls = document.getElementById('form-image-urls')?.value
+                .split('\n')
+                .map(url => url.trim())
+                .filter(Boolean) || [];
+
+            const items = [
+                ...files.map(file => ({
+                    src: (() => {
+                        const objectUrl = URL.createObjectURL(file);
+                        formPhotoPreviewObjectUrls.push(objectUrl);
+                        return objectUrl;
+                    })(),
+                    label: file.name,
+                    note: 'Файл'
+                })),
+                ...urls.map(url => ({
+                    src: url,
+                    label: url,
+                    note: 'URL'
+                }))
+            ];
+
+            if (!items.length) {
+                preview.innerHTML = '<div class="col-span-full text-sm text-slate-500">Фото ще не додано</div>';
+                return;
+            }
+
+            preview.innerHTML = items.map((item, index) => `
+                <div class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                    <div class="aspect-[4/3] bg-slate-100">
+                        <img src="${escapeHtml(item.src)}" alt="${escapeHtml(item.label)}" class="h-full w-full object-cover">
+                    </div>
+                    <div class="p-2">
+                        <div class="truncate text-xs font-semibold text-slate-900">${escapeHtml(item.label)}</div>
+                        <div class="text-[11px] text-slate-500">${item.note} #${index + 1}</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function bindPhotoUploader() {
+            const filesInput = document.getElementById('form-images');
+            const urlsInput = document.getElementById('form-image-urls');
+            const dropzone = document.getElementById('form-photo-dropzone');
+            if (!filesInput || !urlsInput || !dropzone || dropzone.dataset.bound === '1') return;
+
+            filesInput.addEventListener('change', renderPhotoPreview);
+            urlsInput.addEventListener('input', renderPhotoPreview);
+
+            dropzone.addEventListener('click', () => filesInput.click());
+            dropzone.addEventListener('dragover', (event) => {
+                event.preventDefault();
+                dropzone.classList.add('border-blue-500', 'bg-blue-100');
+            });
+            dropzone.addEventListener('dragleave', () => {
+                dropzone.classList.remove('border-blue-500', 'bg-blue-100');
+            });
+            dropzone.addEventListener('drop', (event) => {
+                event.preventDefault();
+                dropzone.classList.remove('border-blue-500', 'bg-blue-100');
+                const droppedFiles = Array.from(event.dataTransfer.files || []).filter(file => file.type.startsWith('image/'));
+                if (!droppedFiles.length) return;
+                const dt = new DataTransfer();
+                Array.from(filesInput.files || []).forEach(file => dt.items.add(file));
+                droppedFiles.forEach(file => dt.items.add(file));
+                filesInput.files = dt.files;
+                renderPhotoPreview();
+            });
+
+            dropzone.dataset.bound = '1';
+            renderPhotoPreview();
+        }
+
+        function getNewListingStepContainer(step) {
+            return document.querySelector(`[data-new-listing-step="${step}"]`);
+        }
+
+        function getNewListingDraft() {
+            return {
+                title: document.getElementById('form-title').value.trim(),
+                region: document.getElementById('form-region').value.trim(),
+                city: document.getElementById('form-city').value.trim(),
+                district: document.getElementById('form-district').value.trim(),
+                price: document.getElementById('form-price').value.trim(),
+                rooms: document.getElementById('form-rooms').value.trim(),
+                area: document.getElementById('form-area').value.trim(),
+                floor: document.getElementById('form-floor').value.trim(),
+                totalFloors: document.getElementById('form-total-floors').value.trim(),
+                yearBuilt: document.getElementById('form-year-built').value.trim(),
+                description: document.getElementById('form-description').value.trim(),
+                images: Array.from(document.getElementById('form-images')?.files || []).length,
+                imageUrls: document.getElementById('form-image-urls').value.split('\n').map(v => v.trim()).filter(Boolean).length,
+                listingType: document.getElementById('form-listing-type').value,
+                propertyType: document.getElementById('form-property-type').value,
+                conditionType: document.getElementById('form-condition-type').value,
+                status: document.getElementById('form-status').value,
+                source: document.getElementById('form-source').value,
+                agencySlug: document.getElementById('form-agency-slug').value.trim(),
+                latitude: document.getElementById('form-latitude').value.trim(),
+                longitude: document.getElementById('form-longitude').value.trim(),
+                eOselya: document.getElementById('form-eoselya').checked,
+                ownerVerification: document.getElementById('form-owner-verification').checked,
+                phoneVerification: document.getElementById('form-phone-verification').checked,
+                photoTour: document.getElementById('form-photo-tour').checked,
+                videoTour: document.getElementById('form-video-tour').checked,
+            };
+        }
+
+        function renderNewListingReview() {
+            const target = document.getElementById('form-review-summary');
+            if (!target) return;
+            const draft = getNewListingDraft();
+            const chips = [];
+            if (draft.eOselya) chips.push('єОселя');
+            if (draft.ownerVerification) chips.push('Owner verification');
+            if (draft.phoneVerification) chips.push('Phone verification');
+            if (draft.photoTour) chips.push('Фото-тур');
+            if (draft.videoTour) chips.push('Відео');
+
+            target.innerHTML = `
+                <div class="rounded-xl bg-white p-3 border border-slate-200">
+                    <div class="text-xs text-slate-500 uppercase font-semibold">База</div>
+                    <div class="font-semibold text-slate-900">${escapeHtml(draft.listingType === 'rent' ? 'Оренда' : 'Продаж')} · ${escapeHtml(draft.propertyType)}</div>
+                    <div class="text-sm text-slate-600">${escapeHtml(draft.title || '—')}</div>
+                </div>
+                <div class="rounded-xl bg-white p-3 border border-slate-200">
+                    <div class="text-xs text-slate-500 uppercase font-semibold">Локація</div>
+                    <div class="font-semibold text-slate-900">${escapeHtml(draft.region || '—')} · ${escapeHtml(draft.city || '—')}</div>
+                    <div class="text-sm text-slate-600">${escapeHtml(draft.district || '—')}</div>
+                    <div class="text-sm text-slate-600">${escapeHtml(draft.latitude || '—')}, ${escapeHtml(draft.longitude || '—')}</div>
+                </div>
+                <div class="rounded-xl bg-white p-3 border border-slate-200">
+                    <div class="text-xs text-slate-500 uppercase font-semibold">Параметри</div>
+                    <div class="font-semibold text-slate-900">${escapeHtml(draft.price || '—')} ₴</div>
+                    <div class="text-sm text-slate-600">${escapeHtml(draft.rooms || '—')} кімн. · ${escapeHtml(draft.area || '—')} м² · ${escapeHtml(draft.conditionType)}</div>
+                </div>
+                <div class="rounded-xl bg-white p-3 border border-slate-200">
+                    <div class="text-xs text-slate-500 uppercase font-semibold">Медіа</div>
+                    <div class="font-semibold text-slate-900">${draft.images + draft.imageUrls} фото/URL</div>
+                    <div class="text-sm text-slate-600">${draft.description ? 'Опис додано' : 'Опис ще порожній'}</div>
+                </div>
+                <div class="rounded-xl bg-white p-3 border border-slate-200 md:col-span-2">
+                    <div class="text-xs text-slate-500 uppercase font-semibold">Тригери</div>
+                    <div class="mt-2 flex flex-wrap gap-2">
+                        ${chips.length ? chips.map(chip => `<span class="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">${escapeHtml(chip)}</span>`).join('') : '<span class="text-sm text-slate-500">Без додаткових тегів</span>'}
+                    </div>
+                </div>
+            `;
+        }
+
+        function validateNewListingStep(step) {
+            const checks = {
+                1: [
+                    ['form-title', 'Вкажіть назву'],
+                    ['form-city', 'Вкажіть місто'],
+                    ['form-district', 'Вкажіть район'],
+                    ['form-price', 'Вкажіть ціну'],
+                ],
+                2: [
+                    ['form-rooms', 'Вкажіть кількість кімнат'],
+                    ['form-area', 'Вкажіть площу'],
+                ],
+                3: [
+                    ['form-description', null],
+                ],
+            };
+
+            const fields = checks[step] || [];
+            for (const [fieldId, message] of fields) {
+                const field = document.getElementById(fieldId);
+                if (!field) continue;
+                const value = String(field.value || '').trim();
+                if (message && !value) {
+                    field.focus();
+                    alert(message);
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        function setNewListingStep(step) {
+            const nextStep = Math.max(1, Math.min(4, Number(step) || 1));
+            newListingStep = nextStep;
+
+            document.querySelectorAll('[data-new-listing-step]').forEach(section => {
+                const sectionStep = Number(section.getAttribute('data-new-listing-step'));
+                section.classList.toggle('hidden', sectionStep !== nextStep);
+            });
+
+            const progress = document.getElementById('new-listing-progress');
+            const label = document.getElementById('new-listing-step-label');
+            const name = document.getElementById('new-listing-step-name');
+            const back = document.getElementById('new-listing-back');
+            const next = document.getElementById('new-listing-next');
+            const submit = document.getElementById('new-listing-submit');
+
+            if (progress) progress.style.width = `${Math.round((nextStep / 4) * 100)}%`;
+            if (label) label.textContent = String(nextStep);
+            if (name) name.textContent = NEW_LISTING_STEP_TITLES[nextStep] || '';
+            if (back) back.disabled = nextStep === 1;
+            if (next) next.classList.toggle('hidden', nextStep === 4);
+            if (submit) submit.classList.toggle('hidden', nextStep !== 4);
+
+            renderNewListingReview();
+            if (nextStep === 2) ensureNewListingMap();
+            if (nextStep === 3) renderPhotoPreview();
+        }
+
+        function bindNewListingWizard() {
+            const page = document.getElementById('page-new-listing');
+            const form = page?.querySelector('form');
+            if (!page || !form || page.dataset.wizardBound === '1') return;
+
+            bindUaRegionDirectory();
+            form.addEventListener('input', () => renderNewListingReview());
+            form.addEventListener('change', () => renderNewListingReview());
+
+            document.getElementById('new-listing-next')?.addEventListener('click', () => {
+                if (!validateNewListingStep(newListingStep)) return;
+                setNewListingStep(newListingStep + 1);
+            });
+
+            document.getElementById('new-listing-back')?.addEventListener('click', () => {
+                setNewListingStep(newListingStep - 1);
+            });
+
+            document.querySelectorAll('[data-step-jump]').forEach(button => {
+                button.addEventListener('click', () => {
+                    const targetStep = Number(button.getAttribute('data-step-jump'));
+                    if (targetStep > newListingStep && !validateNewListingStep(newListingStep)) return;
+                    setNewListingStep(targetStep);
+                });
+            });
+
+            page.dataset.wizardBound = '1';
+            setNewListingStep(1);
+        }
+
         // Save new listing
         async function saveNewListing(e) {
             e.preventDefault();
+            if (newListingStep !== 4) {
+                if (!validateNewListingStep(newListingStep)) return;
+                setNewListingStep(newListingStep + 1);
+                return;
+            }
 
             const listing = {
                 title: document.getElementById('form-title').value,
@@ -1063,9 +1705,32 @@
                 rooms: parseInt(document.getElementById('form-rooms').value, 10),
                 area: parseFloat(document.getElementById('form-area').value),
                 description: document.getElementById('form-description').value,
-                e_oselya: document.getElementById('form-eoselya').checked,
+                listingType: document.getElementById('form-listing-type').value,
+                propertyType: document.getElementById('form-property-type').value,
+                conditionType: document.getElementById('form-condition-type').value,
+                floor: document.getElementById('form-floor').value ? parseInt(document.getElementById('form-floor').value, 10) : null,
+                totalFloors: document.getElementById('form-total-floors').value ? parseInt(document.getElementById('form-total-floors').value, 10) : null,
+                yearBuilt: document.getElementById('form-year-built').value ? parseInt(document.getElementById('form-year-built').value, 10) : null,
+                source: document.getElementById('form-source').value,
+                agencySlug: document.getElementById('form-agency-slug').value.trim() || null,
+                latitude: document.getElementById('form-latitude').value ? parseFloat(document.getElementById('form-latitude').value) : null,
+                longitude: document.getElementById('form-longitude').value ? parseFloat(document.getElementById('form-longitude').value) : null,
+                eOselya: document.getElementById('form-eoselya').checked,
+                requestOwnerVerification: document.getElementById('form-owner-verification').checked,
+                requestPhoneVerification: document.getElementById('form-phone-verification').checked,
+                hasPhotoTour: document.getElementById('form-photo-tour').checked,
+                hasVideoTour: document.getElementById('form-video-tour').checked,
+                listingStatus: document.getElementById('form-status').value,
                 status: 'published'
             };
+
+            const imageUrls = document.getElementById('form-image-urls').value
+                .split('\n')
+                .map(url => url.trim())
+                .filter(Boolean);
+            if (imageUrls.length) {
+                listing.images = imageUrls;
+            }
 
             try {
                 const res = await fetch(API_BASE + '/listings', {
@@ -1085,6 +1750,14 @@
                     }
                     document.getElementById('form-message').innerHTML = '<div class="success">✓ Об\'єкт збережено!</div>';
                     e.target.reset();
+                    if (typeof refreshUaRegionSuggestions === 'function') refreshUaRegionSuggestions();
+                    if (newListingMap && newListingMapMarker) {
+                        const ukraine = [49.0, 31.3];
+                        newListingMap.setView(ukraine, 6);
+                        newListingMapMarker.setLatLng(ukraine);
+                    }
+                    setNewListingStep(1);
+                    renderPhotoPreview();
                     setTimeout(() => loadListings(), 1000);
                 } else {
                     const err = await res.json();
@@ -1972,21 +2645,66 @@
             }
         }
 
+        function formatAdminDateTime(value) {
+            const date = new Date(value || '');
+            if (Number.isNaN(date.getTime())) return '—';
+            return date.toLocaleString('uk-UA', {
+                day: '2-digit',
+                month: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+            });
+        }
+
+        function renderObservabilityReport(report) {
+            const summary = report?.summary || {};
+            document.getElementById('obs-total-events').textContent = Number(summary.events_total || 0).toLocaleString('uk-UA');
+            document.getElementById('obs-runtime-errors').textContent = Number(summary.runtime_error || 0).toLocaleString('uk-UA');
+            document.getElementById('obs-unhandled-rejections').textContent = Number(summary.unhandled_rejection || 0).toLocaleString('uk-UA');
+            document.getElementById('obs-web-vitals').textContent = Number(summary.web_vital || 0).toLocaleString('uk-UA');
+
+            const vitalsRows = (report?.vitals_by_metric || []).map((row) => `
+                <tr class="border-b">
+                    <td class="py-2 font-semibold">${row.metric_name || '-'}</td>
+                    <td class="py-2">${Number(row.avg_value || 0).toFixed(2)}</td>
+                    <td class="py-2">${Number(row.samples || 0).toLocaleString('uk-UA')}</td>
+                    <td class="py-2 text-emerald-700 font-semibold">${Number(row.good_count || 0).toLocaleString('uk-UA')}</td>
+                    <td class="py-2 text-amber-700 font-semibold">${Number(row.needs_improvement_count || 0).toLocaleString('uk-UA')}</td>
+                    <td class="py-2 text-rose-700 font-semibold">${Number(row.poor_count || 0).toLocaleString('uk-UA')}</td>
+                </tr>
+            `).join('');
+            document.getElementById('obs-vitals-summary-table').innerHTML = vitalsRows || '<tr><td colspan="6" class="py-3 text-gray-500">Немає CWV подій</td></tr>';
+
+            const errorsRows = (report?.recent_errors || []).map((row) => `
+                <tr class="border-b align-top">
+                    <td class="py-2 text-xs text-gray-500 whitespace-nowrap">${formatAdminDateTime(row.created_at)}</td>
+                    <td class="py-2"><span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold">${row.event_type || '-'}</span></td>
+                    <td class="py-2">
+                        <div class="font-medium text-slate-800">${row.message || '-'}</div>
+                        <div class="text-[11px] text-gray-500 truncate">${row.source || 'unknown'} · ${row.page_url || '—'}</div>
+                    </td>
+                </tr>
+            `).join('');
+            document.getElementById('obs-recent-errors-table').innerHTML = errorsRows || '<tr><td colspan="3" class="py-3 text-gray-500">Немає JS помилок</td></tr>';
+        }
+
         // Load reports
         async function loadReports() {
             try {
-                const [cityRes, funnelRes, funnel7Res, funnel30Res, funnel90Res] = await Promise.all([
+                const [cityRes, funnelRes, funnel7Res, funnel30Res, funnel90Res, obsRes] = await Promise.all([
                     fetch(API_BASE + '/reports/listings-by-city', { headers: getAuthHeaders() }),
                     fetch(`${API_BASE}/reports/lead-funnel?days=${leadFunnelDays}`, { headers: getAuthHeaders() }),
                     fetch(`${API_BASE}/reports/lead-funnel?days=7`, { headers: getAuthHeaders() }),
                     fetch(`${API_BASE}/reports/lead-funnel?days=30`, { headers: getAuthHeaders() }),
                     fetch(`${API_BASE}/reports/lead-funnel?days=90`, { headers: getAuthHeaders() }),
+                    fetch(`${API_BASE}/reports/observability?hours=24`, { headers: getAuthHeaders() }),
                 ]);
                 const cityData = await cityRes.json();
                 const funnelData = await funnelRes.json();
                 const funnel7 = await funnel7Res.json();
                 const funnel30 = await funnel30Res.json();
                 const funnel90 = await funnel90Res.json();
+                const observabilityData = await obsRes.json();
 
                 const cityHtml = (cityData.data || []).map(c => `
                     <div class="flex justify-between py-2 border-b">
@@ -2054,6 +2772,7 @@
                 renderLeadTrendChart(funnelData.daily_trend || []);
                 renderCtrDropThresholdLabel();
                 renderSourceBenchmark(funnel7, funnel30, funnel90);
+                renderObservabilityReport(observabilityData);
                 await loadAlertsDispatchHealth();
             } catch (err) {
                 console.error('Failed to load reports:', err);

@@ -13,6 +13,7 @@ export const STORAGE_KEYS = [
   "re.sortBy",
   "re.showFavoritesOnly",
   "re.favoriteIds",
+  "re.keywordSearch",
 ];
 
 export function resolveSortByForEOselya(previousSort, onlyEOselya) {
@@ -34,7 +35,11 @@ export function filterAndSortProperties(properties, filters) {
     minArea = "",
     maxArea = "",
     sortBy = DEFAULT_SORT,
+    keywordSearch = "",
   } = filters;
+
+  const keyword = keywordSearch.trim().toLowerCase();
+  const keywordTerms = keyword ? keyword.split(/\s+/).filter(Boolean) : [];
 
   const filtered = properties.filter((item) => {
     const matchCity = cityFilter === "Всі" || item.city === cityFilter;
@@ -48,6 +53,9 @@ export function filterAndSortProperties(properties, filters) {
 
     const matchMinArea = minArea === "" || item.area >= Number(minArea);
     const matchMaxArea = maxArea === "" || item.area <= Number(maxArea);
+    const searchableText = `${item.title} ${item.city} ${item.district}`.toLowerCase();
+    const matchKeyword =
+      !keywordTerms.length || keywordTerms.every((term) => searchableText.includes(term));
 
     return (
       matchCity &&
@@ -57,12 +65,30 @@ export function filterAndSortProperties(properties, filters) {
       matchMinRooms &&
       matchMaxRooms &&
       matchMinArea &&
-      matchMaxArea
+      matchMaxArea &&
+      matchKeyword
     );
   });
 
   return filtered.sort((a, b) => {
-    if (sortBy === "relevance") return 0;
+    if (sortBy === "relevance") {
+      const score = (item) => {
+        if (!keywordTerms.length) return 0;
+        const text = `${item.title} ${item.city} ${item.district}`.toLowerCase();
+        let value = 0;
+        if (text.includes(keyword)) value += 10;
+        keywordTerms.forEach((term) => {
+          if (text.includes(term)) value += 3;
+          if (item.title.toLowerCase().includes(term)) value += 2;
+          if (item.district.toLowerCase().includes(term)) value += 1;
+          if (item.city.toLowerCase().includes(term)) value += 1;
+        });
+        return value;
+      };
+      const scoreDiff = score(b) - score(a);
+      if (scoreDiff !== 0) return scoreDiff;
+      return a.price - b.price;
+    }
     if (sortBy === "price-asc") return a.price - b.price;
     if (sortBy === "price-desc") return b.price - a.price;
     if (sortBy === "area-desc") return b.area - a.area;

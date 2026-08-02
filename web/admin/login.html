@@ -131,9 +131,14 @@
     </div>
 
     <script>
-        const API_HOST = window.location.protocol === 'file:' ? 'http://localhost:5050' : '';
-        const API_BASE = `${API_HOST}/api/admin`;
-        const DASHBOARD_URL = window.location.protocol === 'file:' ? './dashboard.html' : '/admin/dashboard.html';
+        const BACKEND_ORIGIN = window.UA_HOMES_API || (window.location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(window.location.hostname)
+            ? 'http://localhost:5050'
+            : 'https://backend-production-51964.up.railway.app');
+        const ADMIN_BASE_PATH = window.location.protocol === 'file:'
+            ? '.'
+            : (window.location.pathname.startsWith('/admin/') ? '/admin' : '');
+        const API_BASE = `${BACKEND_ORIGIN}/api/admin`;
+        const DASHBOARD_URL = window.location.protocol === 'file:' ? './dashboard.html' : `${ADMIN_BASE_PATH}/dashboard.html`;
 
         // Check if already logged in
         if (localStorage.getItem('admin_token')) {

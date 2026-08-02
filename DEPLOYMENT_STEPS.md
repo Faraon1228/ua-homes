@@ -57,6 +57,8 @@
 1. **Variables** → додайте:
    ```
    UA_HOMES_SECRET = ваш-секретний-ключ
+   DATABASE_URL   = postgres://...
+   REDIS_URL      = redis://...
    ```
 2. Railway автоматично спалює код при push до `agents/real-estate-filtering-feature`
 
@@ -68,20 +70,17 @@
 
 ---
 
-## 🔄 Крок 3: Налаштування бази даних (Radio Button)
+## 🔄 Крок 3: Налаштування бази даних і Redis
 
-Railway має вбудовану PostgreSQL або SQLite.
+Railway має вбудовану PostgreSQL і Redis.
 
-**Поточно використовується:** SQLite (локально в `backend/data.db`)
+**Поточно використовується:** SQLite локально, PostgreSQL у production.
 
 Щоб використовувати PostgreSQL на Railway:
 1. На панелі Railway: **Add service** → **PostgreSQL**
-2. Отримайте `DATABASE_URL` з Railroad
-3. Оновіть `backend/app.py`:
-   ```python
-   import os
-   DB_URL = os.getenv('DATABASE_URL', 'sqlite:///data.db')
-   ```
+2. Скопіюйте `DATABASE_URL` у Variables бекенд-сервісу
+3. Додайте Redis service і скопіюйте `REDIS_URL`
+4. Перезапустіть backend
 
 ---
 
@@ -92,6 +91,11 @@ Railway має вбудовану PostgreSQL або SQLite.
 
 ### Railway:
 - Settings → **Custom domain** → введіть домен
+
+### Split deploys:
+- public сайт публікуйте з [web/](/Users/vitalii/drive_community.worktrees/real-estate-filtering-feature/web)
+- admin сайт публікуйте з [web/admin/](/Users/vitalii/drive_community.worktrees/real-estate-filtering-feature/web/admin)
+- backend має окремий Railway service з `DATABASE_URL` і `REDIS_URL`
 
 ---
 
@@ -138,6 +142,7 @@ python3 app.py
 ### Railway сервіс не запускається:
 - Перевірте логи на Railway dashboard
 - Переконайтеся, що `backend/requirements.txt` має усі залежності
+- Переконайтеся, що `DATABASE_URL` і `REDIS_URL` задані для production
 
 ### Git push не тригерує деплой:
 - Railway webhook повинен бути налаштований автоматично
@@ -151,7 +156,7 @@ python3 app.py
 GitHub (Vitaliy-spd/ua-homes)
     ↓
 GitHub Actions Workflow
-    ├→ Netlify (фронтенд)
+    ├→ Netlify public + admin
     └→ Railway (бекенд)
 ```
 

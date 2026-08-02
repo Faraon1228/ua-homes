@@ -182,7 +182,7 @@ def build_listing_filters(args, allow_ids=False):
 @admin_bp.route("/auth/register", methods=["POST"])
 def admin_register():
     """Register new admin (first admin only, localhost only)"""
-    from app import get_db
+    from app import _refresh_user_growth_summary, cache_delete_prefix, get_db
     import bcrypt
     
     # Allow only localhost
@@ -225,7 +225,9 @@ def admin_register():
         "INSERT INTO users (name, email, password, password_hash, role, status) VALUES (?, ?, ?, ?, ?, ?)",
         (name, email, password, hashed, 'admin', 'active')
     )
+    _refresh_user_growth_summary(db)
     db.commit()
+    cache_delete_prefix("admin:reports:user-growth:")
     
     return jsonify(
         ok=True,
@@ -364,7 +366,7 @@ def admin_get_listings():
 @require_auth_admin
 def admin_create_listing():
     """Create new listing as admin"""
-    from app import get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
     
     db = get_db()
     data = request.get_json() or {}
@@ -380,12 +382,19 @@ def admin_create_listing():
     except (ValueError, TypeError):
         return jsonify(error="Price/rooms/area must be numbers"), 400
     
+    status = str(data.get('status') or 'draft').strip().lower()
+    if status not in {'draft', 'published', 'pending', 'rejected', 'archived'}:
+        status = 'draft'
+    listing_status = str(data.get('listing_status') or data.get('listingStatus') or 'active').strip().lower()
+    if listing_status not in {'active', 'sold', 'removed'}:
+        listing_status = 'active'
+
     db.execute("""
         INSERT INTO listings 
         (title, city, district, property_type, condition_type, price, rooms, area,
-         floor, total_floors, year_built, e_oselya, description, status, user_id,
-         latitude, longitude)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        floor, total_floors, year_built, e_oselya, description, status, listing_status, user_id,
+        latitude, longitude)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         data['title'],
         data['city'],
@@ -400,12 +409,15 @@ def admin_create_listing():
         data.get('year_built'),
         1 if data.get('e_oselya') else 0,
         data.get('description', ''),
-        data.get('status', 'draft'),
+        status,
+        listing_status,
         g.user_id,  # Admin as owner
         data.get('latitude'),
         data.get('longitude')
     ))
     db.commit()
+    _refresh_listing_city_summary(db)
+    cache_delete_prefix("admin:reports:listings-by-city:")
     
     listing_id = db.execute(
         "SELECT id FROM listings ORDER BY id DESC LIMIT 1"
@@ -424,6 +436,7 @@ def admin_get_listing(listing_id):
     listing = db.execute(
         """SELECT id, title, city, district, price, rooms, area, floor,
                   total_floors, year_built, e_oselya, description, status,
+                  listing_status,
                   property_type, condition_type, latitude, longitude, views,
                   created_at FROM listings WHERE id = ?""",
         (listing_id,)
@@ -448,7 +461,7 @@ def admin_get_listing(listing_id):
 @require_auth_admin
 def admin_update_listing(listing_id):
     """Update listing"""
-    from app import get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
     
     db = get_db()
     data = request.get_json() or {}
@@ -465,7 +478,7 @@ def admin_update_listing(listing_id):
         'title', 'city', 'district', 'price', 'rooms', 'area',
         'floor', 'total_floors', 'year_built', 'e_oselya',
         'description', 'property_type', 'condition_type',
-        'latitude', 'longitude', 'status'
+    'latitude', 'longitude', 'status', 'listing_status'
     ]
     
     for field in allowed_fields:
@@ -481,6 +494,8 @@ def admin_update_listing(listing_id):
     
     db.execute(query, params)
     db.commit()
+    _refresh_listing_city_summary(db)
+    cache_delete_prefix("admin:reports:listings-by-city:")
     
     return jsonify(ok=True, id=listing_id)
 
@@ -489,7 +504,7 @@ def admin_update_listing(listing_id):
 @require_auth_admin
 def admin_delete_listing(listing_id):
     """Delete listing"""
-    from app import get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
     
     db = get_db()
     
@@ -502,6 +517,8 @@ def admin_delete_listing(listing_id):
     # Delete listing
     db.execute("DELETE FROM listings WHERE id = ?", (listing_id,))
     db.commit()
+    _refresh_listing_city_summary(db)
+    cache_delete_prefix("admin:reports:listings-by-city:")
     
     return jsonify(ok=True)
 
@@ -509,7 +526,7 @@ def admin_delete_listing(listing_id):
 @admin_bp.route("/listings/<int:listing_id>/duplicate", methods=["POST"])
 @require_auth_admin
 def admin_duplicate_listing(listing_id):
-    from app import get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
     import os
     import shutil
 
@@ -590,6 +607,8 @@ def admin_duplicate_listing(listing_id):
         )
 
     db.commit()
+    _refresh_listing_city_summary(db)
+    cache_delete_prefix("admin:reports:listings-by-city:")
     return jsonify(ok=True, id=new_listing_id, title=title), 201
 
 
@@ -597,7 +616,7 @@ def admin_duplicate_listing(listing_id):
 @require_auth_admin
 def admin_publish_listing(listing_id):
     """Publish/unpublish listing"""
-    from app import get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
     
     db = get_db()
     data = request.get_json() or {}
@@ -618,6 +637,8 @@ def admin_publish_listing(listing_id):
     )
     log_moderation_action(db, listing_id, "publish" if published else "unpublish")
     db.commit()
+    _refresh_listing_city_summary(db)
+    cache_delete_prefix("admin:reports:listings-by-city:")
     
     return jsonify(ok=True, status=status)
 
@@ -625,7 +646,7 @@ def admin_publish_listing(listing_id):
 @admin_bp.route("/import/csv", methods=["POST"])
 @require_auth_admin
 def admin_import_csv():
-    from app import get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
 
     db = get_db()
     upload = request.files.get("file") or request.files.get("csv")
@@ -686,6 +707,8 @@ def admin_import_csv():
         return jsonify(error="CSV import failed", details=errors[:20]), 422
 
     db.commit()
+    _refresh_listing_city_summary(db)
+    cache_delete_prefix("admin:reports:listings-by-city:")
     return jsonify(ok=True, imported=len(imported), listing_ids=imported), 201
 
 
@@ -743,7 +766,7 @@ def admin_moderation_logs():
 @admin_bp.route("/listings/<int:listing_id>/moderate", methods=["POST"])
 @require_auth_admin
 def admin_moderate_listing(listing_id):
-    from app import get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
 
     db = get_db()
     data = request.get_json() or {}
@@ -804,6 +827,8 @@ def admin_moderate_listing(listing_id):
     )
     log_moderation_action(db, listing_id, action, reason)
     db.commit()
+    _refresh_listing_city_summary(db)
+    cache_delete_prefix("admin:reports:listings-by-city:")
 
     return jsonify(
         ok=True,
@@ -817,7 +842,7 @@ def admin_moderate_listing(listing_id):
 @admin_bp.route("/listings/bulk-moderate", methods=["POST"])
 @require_auth_admin
 def admin_bulk_moderate():
-    from app import get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
 
     db = get_db()
     data = request.get_json() or {}
@@ -863,13 +888,15 @@ def admin_bulk_moderate():
         log_moderation_action(db, listing_id, action, reason)
 
     db.commit()
+    _refresh_listing_city_summary(db)
+    cache_delete_prefix("admin:reports:listings-by-city:")
     return jsonify(ok=True, status=new_status, moderation_status=moderation_status, updated=len(ids))
 
 
 @admin_bp.route("/listings/bulk-delete", methods=["POST"])
 @require_auth_admin
 def admin_bulk_delete():
-    from app import get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
 
     db = get_db()
     data = request.get_json() or {}
@@ -897,6 +924,8 @@ def admin_bulk_delete():
         db.execute("DELETE FROM listings WHERE id = ?", (listing_id,))
 
     db.commit()
+    _refresh_listing_city_summary(db)
+    cache_delete_prefix("admin:reports:listings-by-city:")
     return jsonify(ok=True, deleted=len(ids))
 
 
@@ -1015,6 +1044,22 @@ def admin_upload_image(listing_id):
         "INSERT INTO listing_images (listing_id, image_url, 'order') VALUES (?, ?, ?)",
         (listing_id, image_url, 0)
     )
+    current_images_row = db.execute(
+        "SELECT images FROM listings WHERE id = ?",
+        (listing_id,)
+    ).fetchone()
+    current_images = []
+    try:
+        current_images = json.loads(current_images_row["images"] or "[]") if current_images_row else []
+        if not isinstance(current_images, list):
+            current_images = []
+    except json.JSONDecodeError:
+        current_images = []
+    current_images.append(image_url)
+    db.execute(
+        "UPDATE listings SET images = ? WHERE id = ?",
+        (json.dumps(current_images[:10]), listing_id)
+    )
     db.commit()
     
     image_id = db.execute(
@@ -1053,6 +1098,21 @@ def admin_delete_image(listing_id, image_id):
     
     # Delete DB record
     db.execute("DELETE FROM listing_images WHERE id = ?", (image_id,))
+    current_images_row = db.execute(
+        "SELECT images FROM listings WHERE id = ?",
+        (listing_id,)
+    ).fetchone()
+    if current_images_row:
+        try:
+            current_images = json.loads(current_images_row["images"] or "[]")
+        except json.JSONDecodeError:
+            current_images = []
+        if isinstance(current_images, list):
+            current_images = [url for url in current_images if url != image["image_url"]]
+            db.execute(
+                "UPDATE listings SET images = ? WHERE id = ?",
+                (json.dumps(current_images[:10]), listing_id)
+            )
     db.commit()
     
     return jsonify(ok=True)
@@ -1130,36 +1190,47 @@ def admin_update_user(user_id):
 @require_auth_admin
 def admin_report_listings_by_city():
     """Get listings count by city"""
-    from app import get_db
+    from app import cached_json_get, cached_json_set, get_db
+
+    cache_key = "admin:reports:listings-by-city:v1"
+    cached = cached_json_get(cache_key)
+    if cached is not None:
+        return jsonify(data=cached)
     
     db = get_db()
     
     rows = db.execute("""
-        SELECT city, COUNT(*) as count, ROUND(AVG(price)) as avg_price
-        FROM listings WHERE status = 'published'
-        GROUP BY city ORDER BY count DESC
+        SELECT city, published_count AS count, avg_price
+        FROM listing_city_summary
+        ORDER BY published_count DESC, city ASC
     """).fetchall()
-    
-    return jsonify(data=[dict(row) for row in rows])
+    data = [dict(row) for row in rows]
+    cached_json_set(cache_key, data, 60)
+    return jsonify(data=data)
 
 
 @admin_bp.route("/reports/user-growth", methods=["GET"])
 @require_auth_admin
 def admin_report_user_growth():
     """Get user growth over time"""
-    from app import get_db
+    from app import cached_json_get, cached_json_set, get_db
+
+    cache_key = "admin:reports:user-growth:v1"
+    cached = cached_json_get(cache_key)
+    if cached is not None:
+        return jsonify(data=cached)
     
     db = get_db()
     
     rows = db.execute("""
-        SELECT DATE(created_at) as date, COUNT(*) as count
-        FROM users
-        GROUP BY DATE(created_at)
-        ORDER BY date DESC
-        LIMIT 30
+        SELECT day AS date, user_count AS count
+        FROM user_growth_daily
+        WHERE day >= date('now', '-30 days')
+        ORDER BY day ASC
     """).fetchall()
-    
-    return jsonify(data=[dict(row) for row in rows])
+    data = [dict(row) for row in rows]
+    cached_json_set(cache_key, data, 300)
+    return jsonify(data=data)
 
 
 def _to_ctr(submits: int, intents: int) -> float:
@@ -1168,19 +1239,120 @@ def _to_ctr(submits: int, intents: int) -> float:
     return round((submits / intents) * 100, 2)
 
 
+def _build_observability_report(db, hours: int):
+    from app import cached_json_get, cached_json_set
+
+    hours = max(1, min(int(hours), 168))
+    cache_key = f"admin:reports:observability:{hours}:v1"
+    cached = cached_json_get(cache_key)
+    if cached is not None:
+        return cached
+
+    window_start = f"-{hours} hours"
+    summary_rows = db.execute(
+        """
+        SELECT event_type, COUNT(*) AS count
+        FROM client_observability_events
+        WHERE created_at >= datetime('now', ?)
+        GROUP BY event_type
+        """,
+        (window_start,),
+    ).fetchall()
+    summary_map = {row["event_type"]: int(row["count"] or 0) for row in summary_rows}
+
+    recent_error_rows = db.execute(
+        """
+        SELECT id, event_type, message, source, page_url, created_at
+        FROM client_observability_events
+        WHERE created_at >= datetime('now', ?)
+          AND event_type IN ('runtime_error', 'unhandled_rejection')
+        ORDER BY created_at DESC
+        LIMIT 12
+        """,
+        (window_start,),
+    ).fetchall()
+
+    vitals_rows = db.execute(
+        """
+        SELECT
+            metric_name,
+            COUNT(*) AS samples,
+            ROUND(AVG(metric_value), 2) AS avg_value,
+            SUM(CASE WHEN rating = 'good' THEN 1 ELSE 0 END) AS good_count,
+            SUM(CASE WHEN rating = 'needs-improvement' THEN 1 ELSE 0 END) AS needs_improvement_count,
+            SUM(CASE WHEN rating = 'poor' THEN 1 ELSE 0 END) AS poor_count
+        FROM client_observability_events
+        WHERE created_at >= datetime('now', ?)
+          AND event_type = 'web_vital'
+          AND metric_name IS NOT NULL
+        GROUP BY metric_name
+        ORDER BY metric_name ASC
+        """,
+        (window_start,),
+    ).fetchall()
+
+    recent_vitals_rows = db.execute(
+        """
+        SELECT metric_name, metric_value, rating, source, page_url, created_at
+        FROM client_observability_events
+        WHERE created_at >= datetime('now', ?)
+          AND event_type = 'web_vital'
+        ORDER BY created_at DESC
+        LIMIT 15
+        """,
+        (window_start,),
+    ).fetchall()
+
+    report = {
+        "window_hours": hours,
+        "summary": {
+            "events_total": int(sum(summary_map.values())),
+            "runtime_error": int(summary_map.get("runtime_error", 0)),
+            "unhandled_rejection": int(summary_map.get("unhandled_rejection", 0)),
+            "web_vital": int(summary_map.get("web_vital", 0)),
+        },
+        "recent_errors": [dict(row) for row in recent_error_rows],
+        "vitals_by_metric": [dict(row) for row in vitals_rows],
+        "recent_vitals": [dict(row) for row in recent_vitals_rows],
+    }
+    cached_json_set(cache_key, report, 60)
+    return report
+
+
+@admin_bp.route("/reports/observability", methods=["GET"])
+@require_auth_admin
+def admin_report_observability():
+    from app import get_db
+
+    db = get_db()
+    hours = request.args.get("hours", "24")
+    try:
+        hours_int = int(hours)
+    except ValueError:
+        return jsonify(error="hours must be integer"), 400
+    return jsonify(_build_observability_report(db, hours_int))
+
+
 def _build_lead_funnel_report(db, days_int: int):
+    from app import cached_json_get, cached_json_set
+
+    cache_key = f"admin:reports:lead-funnel:{days_int}:v3"
+    cached = cached_json_get(cache_key)
+    if cached is not None:
+        return cached
+
     window_start = f"-{days_int} days"
     prev_window_start = f"-{days_int * 2} days"
 
     source_rows = db.execute(
         """
         SELECT source,
-               SUM(CASE WHEN event = 'lead_intent' THEN 1 ELSE 0 END) AS intents,
-               SUM(CASE WHEN event = 'lead_submit' THEN 1 ELSE 0 END) AS submits,
-               SUM(CASE WHEN event = 'lead_redirect' THEN 1 ELSE 0 END) AS redirects,
-               SUM(CASE WHEN event = 'detail_view' THEN 1 ELSE 0 END) AS views
-        FROM lead_funnel_events
-        WHERE created_at >= datetime('now', ?)
+               SUM(CASE WHEN event = 'lead_intent' THEN event_count ELSE 0 END) AS intents,
+               SUM(CASE WHEN event = 'lead_submit' THEN event_count ELSE 0 END) AS submits,
+               SUM(CASE WHEN event = 'lead_redirect' THEN event_count ELSE 0 END) AS redirects,
+               SUM(CASE WHEN event = 'detail_view' THEN event_count ELSE 0 END) AS views
+        FROM lead_funnel_daily_metrics
+        WHERE day >= date('now', ?)
         GROUP BY source
         ORDER BY intents DESC, submits DESC
         """,
@@ -1189,14 +1361,14 @@ def _build_lead_funnel_report(db, days_int: int):
 
     listing_type_rows = db.execute(
         """
-        SELECT COALESCE(NULLIF(listing_type, ''), 'unknown') AS listing_type,
-               SUM(CASE WHEN event = 'lead_intent' THEN 1 ELSE 0 END) AS intents,
-               SUM(CASE WHEN event = 'lead_submit' THEN 1 ELSE 0 END) AS submits,
-               SUM(CASE WHEN event = 'lead_redirect' THEN 1 ELSE 0 END) AS redirects,
-               SUM(CASE WHEN event = 'detail_view' THEN 1 ELSE 0 END) AS views
-        FROM lead_funnel_events
-        WHERE created_at >= datetime('now', ?)
-        GROUP BY COALESCE(NULLIF(listing_type, ''), 'unknown')
+        SELECT listing_type,
+               SUM(CASE WHEN event = 'lead_intent' THEN event_count ELSE 0 END) AS intents,
+               SUM(CASE WHEN event = 'lead_submit' THEN event_count ELSE 0 END) AS submits,
+               SUM(CASE WHEN event = 'lead_redirect' THEN event_count ELSE 0 END) AS redirects,
+               SUM(CASE WHEN event = 'detail_view' THEN event_count ELSE 0 END) AS views
+        FROM lead_funnel_daily_metrics
+        WHERE day >= date('now', ?)
+        GROUP BY listing_type
         ORDER BY intents DESC, submits DESC
         """,
         (window_start,),
@@ -1204,54 +1376,27 @@ def _build_lead_funnel_report(db, days_int: int):
 
     popular_route_rows = db.execute(
         """
-        WITH route_sessions AS (
-            SELECT
-                source,
-                session_id,
-                MIN(created_at) AS first_route_at,
-                COUNT(*) AS route_applies
-            FROM lead_funnel_events
-            WHERE created_at >= datetime('now', ?)
-              AND event = 'route_apply'
-              AND source LIKE 'popular_route:%'
-              AND session_id IS NOT NULL
-            GROUP BY source, session_id
-        ),
-        route_with_submit AS (
-            SELECT
-                rs.source,
-                rs.session_id,
-                rs.route_applies,
-                EXISTS(
-                    SELECT 1
-                    FROM lead_funnel_events lfe
-                    WHERE lfe.session_id = rs.session_id
-                      AND lfe.event = 'lead_submit'
-                      AND lfe.created_at >= rs.first_route_at
-                      AND lfe.created_at >= datetime('now', ?)
-                ) AS has_submit_after_route
-            FROM route_sessions rs
-        )
         SELECT
             source,
             SUM(route_applies) AS route_applies,
             COUNT(*) AS sessions,
-            SUM(CASE WHEN has_submit_after_route THEN 1 ELSE 0 END) AS submit_sessions
-        FROM route_with_submit
+            SUM(CASE WHEN submit_at IS NOT NULL AND submit_at >= first_route_at THEN 1 ELSE 0 END) AS submit_sessions
+        FROM lead_funnel_session_rollups
+        WHERE first_route_at >= datetime('now', ?)
         GROUP BY source
         ORDER BY route_applies DESC, submit_sessions DESC, source ASC
         """,
-        (window_start, window_start),
+        (window_start,),
     ).fetchall()
 
     daily_rows = db.execute(
         """
-        SELECT DATE(created_at) AS day,
-               SUM(CASE WHEN event = 'lead_intent' THEN 1 ELSE 0 END) AS intents,
-               SUM(CASE WHEN event = 'lead_submit' THEN 1 ELSE 0 END) AS submits
-        FROM lead_funnel_events
-        WHERE created_at >= datetime('now', ?)
-        GROUP BY DATE(created_at)
+        SELECT day,
+               SUM(CASE WHEN event = 'lead_intent' THEN event_count ELSE 0 END) AS intents,
+               SUM(CASE WHEN event = 'lead_submit' THEN event_count ELSE 0 END) AS submits
+        FROM lead_funnel_daily_metrics
+        WHERE day >= date('now', ?)
+        GROUP BY day
         ORDER BY day ASC
         """,
         (window_start,),
@@ -1260,17 +1405,16 @@ def _build_lead_funnel_report(db, days_int: int):
     top_listing_rows = db.execute(
         """
         SELECT
-            lfe.listing_id,
-            COALESCE(l.title, 'Listing #' || lfe.listing_id) AS title,
-            SUM(CASE WHEN lfe.event = 'detail_view' THEN 1 ELSE 0 END) AS views,
-            SUM(CASE WHEN lfe.event = 'lead_intent' THEN 1 ELSE 0 END) AS intents,
-            SUM(CASE WHEN lfe.event = 'lead_submit' THEN 1 ELSE 0 END) AS submits,
-            SUM(CASE WHEN lfe.event = 'lead_redirect' THEN 1 ELSE 0 END) AS redirects
-        FROM lead_funnel_events lfe
-        LEFT JOIN listings l ON l.id = lfe.listing_id
-        WHERE lfe.created_at >= datetime('now', ?)
-          AND lfe.listing_id IS NOT NULL
-        GROUP BY lfe.listing_id
+            lfm.listing_id,
+            COALESCE(l.title, 'Listing #' || lfm.listing_id) AS title,
+            SUM(CASE WHEN lfm.event = 'detail_view' THEN lfm.event_count ELSE 0 END) AS views,
+            SUM(CASE WHEN lfm.event = 'lead_intent' THEN lfm.event_count ELSE 0 END) AS intents,
+            SUM(CASE WHEN lfm.event = 'lead_submit' THEN lfm.event_count ELSE 0 END) AS submits,
+            SUM(CASE WHEN lfm.event = 'lead_redirect' THEN lfm.event_count ELSE 0 END) AS redirects
+        FROM lead_funnel_listing_metrics lfm
+        LEFT JOIN listings l ON l.id = lfm.listing_id
+        WHERE lfm.day >= date('now', ?)
+        GROUP BY lfm.listing_id
         HAVING intents > 0 OR submits > 0 OR redirects > 0
         ORDER BY submits DESC, intents DESC, redirects DESC
         LIMIT 8
@@ -1281,12 +1425,12 @@ def _build_lead_funnel_report(db, days_int: int):
     current_row = db.execute(
         """
         SELECT
-            SUM(CASE WHEN event = 'detail_view' THEN 1 ELSE 0 END) AS views,
-            SUM(CASE WHEN event = 'lead_intent' THEN 1 ELSE 0 END) AS intents,
-            SUM(CASE WHEN event = 'lead_submit' THEN 1 ELSE 0 END) AS submits,
-            SUM(CASE WHEN event = 'lead_redirect' THEN 1 ELSE 0 END) AS redirects
-        FROM lead_funnel_events
-        WHERE created_at >= datetime('now', ?)
+            SUM(CASE WHEN event = 'detail_view' THEN event_count ELSE 0 END) AS views,
+            SUM(CASE WHEN event = 'lead_intent' THEN event_count ELSE 0 END) AS intents,
+            SUM(CASE WHEN event = 'lead_submit' THEN event_count ELSE 0 END) AS submits,
+            SUM(CASE WHEN event = 'lead_redirect' THEN event_count ELSE 0 END) AS redirects
+        FROM lead_funnel_daily_metrics
+        WHERE day >= date('now', ?)
         """,
         (window_start,),
     ).fetchone()
@@ -1294,13 +1438,13 @@ def _build_lead_funnel_report(db, days_int: int):
     previous_row = db.execute(
         """
         SELECT
-            SUM(CASE WHEN event = 'detail_view' THEN 1 ELSE 0 END) AS views,
-            SUM(CASE WHEN event = 'lead_intent' THEN 1 ELSE 0 END) AS intents,
-            SUM(CASE WHEN event = 'lead_submit' THEN 1 ELSE 0 END) AS submits,
-            SUM(CASE WHEN event = 'lead_redirect' THEN 1 ELSE 0 END) AS redirects
-        FROM lead_funnel_events
-        WHERE created_at >= datetime('now', ?)
-          AND created_at < datetime('now', ?)
+            SUM(CASE WHEN event = 'detail_view' THEN event_count ELSE 0 END) AS views,
+            SUM(CASE WHEN event = 'lead_intent' THEN event_count ELSE 0 END) AS intents,
+            SUM(CASE WHEN event = 'lead_submit' THEN event_count ELSE 0 END) AS submits,
+            SUM(CASE WHEN event = 'lead_redirect' THEN event_count ELSE 0 END) AS redirects
+        FROM lead_funnel_daily_metrics
+        WHERE day >= date('now', ?)
+          AND day < date('now', ?)
         """,
         (prev_window_start, window_start),
     ).fetchone()
@@ -1401,7 +1545,7 @@ def _build_lead_funnel_report(db, days_int: int):
             }
         )
 
-    return {
+    report = {
         "window_days": days_int,
         "totals": current_totals,
         "comparison": {
@@ -1424,6 +1568,8 @@ def _build_lead_funnel_report(db, days_int: int):
         "daily_trend": daily_trend,
         "top_listings": top_listings,
     }
+    cached_json_set(cache_key, report, 120)
+    return report
 
 
 @admin_bp.route("/reports/lead-funnel", methods=["GET"])

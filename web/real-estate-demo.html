@@ -32,15 +32,36 @@
   <title>UA-Dim.com — нерухомість в Україні</title>
   <link rel="preconnect" href="https://unpkg.com" crossorigin/>
   <link rel="preconnect" href="https://images.unsplash.com" crossorigin/>
+  <link rel="preconnect" href="https://backend-production-51964.up.railway.app" crossorigin/>
+  <link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin/>
   <link rel="dns-prefetch" href="https://unpkg.com"/>
   <link rel="dns-prefetch" href="https://images.unsplash.com"/>
-  <link rel="preload" as="style" href="ua-homes.css?v=e7ca5f2"/>
-  <link rel="preload" as="script" href="real-estate-app.js?v=e7ca5f2"/>
-  <link rel="preload" as="script" href="vendor/react.production.min.js?v=e7ca5f2"/>
-  <link rel="preload" as="script" href="vendor/react-dom.production.min.js?v=e7ca5f2"/>
-  <link rel="stylesheet" href="ua-homes.css?v=e7ca5f2"/>
-  <script defer src="vendor/react.production.min.js?v=e7ca5f2"></script>
-  <script defer src="vendor/react-dom.production.min.js?v=e7ca5f2"></script>
+  <link rel="dns-prefetch" href="https://backend-production-51964.up.railway.app"/>
+  <link rel="dns-prefetch" href="https://tile.openstreetmap.org"/>
+  <script>
+    (function () {
+      const configured = window.UA_HOMES_API || "__UA_HOMES_API__";
+      if (!configured || configured === "__UA_HOMES_API__") return;
+      try {
+        const origin = new URL(configured).origin;
+        const rels = ["preconnect", "dns-prefetch"];
+        rels.forEach((rel) => {
+          const link = document.createElement("link");
+          link.rel = rel;
+          link.href = origin;
+          if (rel === "preconnect") link.crossOrigin = "anonymous";
+          document.head.appendChild(link);
+        });
+      } catch (_err) {}
+    })();
+  </script>
+  <link rel="preload" as="style" href="ua-homes.css?v=e7ca5f4"/>
+  <link rel="preload" as="script" href="real-estate-app.js?v=e7ca5f4"/>
+  <link rel="preload" as="script" href="vendor/react.production.min.js?v=e7ca5f4"/>
+  <link rel="preload" as="script" href="vendor/react-dom.production.min.js?v=e7ca5f4"/>
+  <link rel="stylesheet" href="ua-homes.css?v=e7ca5f4"/>
+  <script defer src="vendor/react.production.min.js?v=e7ca5f4"></script>
+  <script defer src="vendor/react-dom.production.min.js?v=e7ca5f4"></script>
   <style>
     :root{color-scheme:light}
     html{-webkit-text-size-adjust:100%}
@@ -84,8 +105,198 @@
     localStorage.removeItem("re.listingTypeFilter");
   } catch (_err) {}
 </script>
-<script defer src="real-estate-app.js?v=e7ca5f2"></script>
-<script defer src="market-upgrade.js?v=e7ca5f2"></script>
+<script>
+  (function () {
+    const resolveApiBase = () => {
+      if (window.UA_HOMES_API) return window.UA_HOMES_API;
+      const configured = "__UA_HOMES_API__";
+      if (configured && configured !== "__UA_HOMES_API__") return configured;
+      const host = location.hostname;
+      if (!host || location.protocol === "file:") return "http://localhost:5050";
+      if (host === "localhost" || host === "127.0.0.1") return "http://localhost:5050";
+      return `${location.protocol}//${host.replace(/^www\./, "")}:5050`;
+    };
+
+    const API_BASE = resolveApiBase().replace(/\/+$/, "");
+    const OBS_SESSION_KEY = "uah.obs.session";
+    const sentVitals = new Set();
+    let clsValue = 0;
+    let lcpEntry = null;
+
+    const sessionId = (() => {
+      const existing = window.sessionStorage.getItem(OBS_SESSION_KEY);
+      if (existing) return existing;
+      const generated =
+        (window.crypto && typeof window.crypto.randomUUID === "function"
+          ? window.crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+      window.sessionStorage.setItem(OBS_SESSION_KEY, generated);
+      return generated;
+    })();
+
+    const postTelemetry = (path, payload) =>
+      fetch(`${API_BASE}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "omit",
+        keepalive: true,
+        body: JSON.stringify(payload),
+      }).catch(() => {});
+
+    const reportWebVital = (name, value, rating, extra) => {
+      if (!name || Number.isNaN(Number(value))) return;
+      const uniqueId = `${name}:${extra?.id || ""}`;
+      if (sentVitals.has(uniqueId)) return;
+      sentVitals.add(uniqueId);
+      void postTelemetry("/api/analytics/web-vitals", {
+        name,
+        value: Number(value),
+        rating: rating || null,
+        page_url: window.location.href,
+        source: "real-estate-demo-shell",
+        session_id: sessionId,
+        id: extra?.id || null,
+        navigation_type: extra?.navigationType || null,
+        delta: typeof extra?.delta === "number" ? extra.delta : null,
+      });
+    };
+
+    const reportClientError = (type, message, details) => {
+      void postTelemetry("/api/analytics/client-telemetry", {
+        event_type: type,
+        message: String(message || "").slice(0, 1200),
+        source: "real-estate-demo-shell",
+        page_url: window.location.href,
+        session_id: sessionId,
+        payload: details || null,
+      });
+    };
+
+    window.addEventListener("error", (event) => {
+      reportClientError("runtime_error", event.message || "Unknown runtime error", {
+        filename: event.filename || null,
+        lineno: event.lineno || null,
+        colno: event.colno || null,
+        stack: event.error && event.error.stack ? String(event.error.stack).slice(0, 8000) : null,
+      });
+    });
+
+    window.addEventListener("unhandledrejection", (event) => {
+      const reason =
+        typeof event.reason === "string"
+          ? event.reason
+          : event.reason && event.reason.message
+            ? event.reason.message
+            : "Unhandled promise rejection";
+      const stack =
+        event.reason && event.reason.stack ? String(event.reason.stack).slice(0, 8000) : null;
+      reportClientError("unhandled_rejection", reason, { stack });
+    });
+
+    if ("PerformanceObserver" in window) {
+      try {
+        const paintObserver = new PerformanceObserver((list) => {
+          list.getEntries().forEach((entry) => {
+            if (entry.name === "first-contentful-paint") {
+              reportWebVital("FCP", entry.startTime, entry.startTime <= 1800 ? "good" : entry.startTime <= 3000 ? "needs-improvement" : "poor", {
+                id: "fcp",
+              });
+            }
+          });
+        });
+        paintObserver.observe({ type: "paint", buffered: true });
+      } catch (_err) {}
+
+      try {
+        const lcpObserver = new PerformanceObserver((list) => {
+          const entries = list.getEntries();
+          lcpEntry = entries[entries.length - 1] || lcpEntry;
+        });
+        lcpObserver.observe({ type: "largest-contentful-paint", buffered: true });
+      } catch (_err) {}
+
+      try {
+        const clsObserver = new PerformanceObserver((list) => {
+          list.getEntries().forEach((entry) => {
+            if (!entry.hadRecentInput) clsValue += entry.value;
+          });
+        });
+        clsObserver.observe({ type: "layout-shift", buffered: true });
+      } catch (_err) {}
+
+      try {
+        const fidObserver = new PerformanceObserver((list) => {
+          const firstInput = list.getEntries()[0];
+          if (!firstInput) return;
+          reportWebVital(
+            "FID",
+            firstInput.processingStart - firstInput.startTime,
+            firstInput.processingStart - firstInput.startTime <= 100
+              ? "good"
+              : firstInput.processingStart - firstInput.startTime <= 300
+                ? "needs-improvement"
+                : "poor",
+            { id: firstInput.name || "fid" }
+          );
+        });
+        fidObserver.observe({ type: "first-input", buffered: true });
+      } catch (_err) {}
+    }
+
+    const flushFinalVitals = () => {
+      if (lcpEntry) {
+        reportWebVital("LCP", lcpEntry.startTime, lcpEntry.startTime <= 2500 ? "good" : lcpEntry.startTime <= 4000 ? "needs-improvement" : "poor", {
+          id: "lcp",
+        });
+      }
+      reportWebVital("CLS", clsValue, clsValue <= 0.1 ? "good" : clsValue <= 0.25 ? "needs-improvement" : "poor", {
+        id: "cls",
+      });
+    };
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") flushFinalVitals();
+    });
+    window.addEventListener("beforeunload", flushFinalVitals);
+  })();
+</script>
+<script defer src="real-estate-app.js?v=e7ca5f4"></script>
+<script>
+  (function () {
+    let loaded = false;
+    const loadUpgrade = () => {
+      if (loaded) return;
+      loaded = true;
+      const script = document.createElement('script');
+      script.src = 'market-upgrade.js?v=e7ca5f3';
+      script.defer = true;
+      script.crossOrigin = 'anonymous';
+      document.body.appendChild(script);
+    };
+
+    const scheduleIdleLoad = () => {
+      if ('requestIdleCallback' in window) {
+        requestIdleCallback(loadUpgrade, { timeout: 2500 });
+      } else {
+        setTimeout(loadUpgrade, 1400);
+      }
+    };
+
+    const onFirstIntent = () => {
+      loadUpgrade();
+      window.removeEventListener('pointerdown', onFirstIntent, { capture: true });
+      window.removeEventListener('keydown', onFirstIntent, { capture: true });
+      window.removeEventListener('touchstart', onFirstIntent, { capture: true });
+      window.removeEventListener('scroll', onFirstIntent, { capture: true });
+    };
+
+    window.addEventListener('pointerdown', onFirstIntent, { capture: true, passive: true });
+    window.addEventListener('keydown', onFirstIntent, { capture: true, passive: true });
+    window.addEventListener('touchstart', onFirstIntent, { capture: true, passive: true });
+    window.addEventListener('scroll', onFirstIntent, { capture: true, passive: true });
+    window.addEventListener('load', scheduleIdleLoad, { once: true });
+  })();
+</script>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {

@@ -69,14 +69,16 @@ python3 app.py
 
 **Бекенд:**
 - Flask (Python)
-- SQLite база даних
+- SQLite локально / PostgreSQL у production
 - JWT для автентифікації
 - bcrypt для хешування паролів
 - CORS для кросс-доменних запитів
+- Redis для shared rate-limit/cache state
 
 **Розгортання:**
 - GitHub Actions (CI/CD)
-- Netlify (фронтенд)
+- Netlify public site (`web/`)
+- Netlify admin site (`web/admin/`)
 - Railway (бекенд)
 
 ## 📦 Структура проекту
@@ -157,8 +159,11 @@ POST   /logout                # Вихід
 Див. [DEPLOYMENT_STEPS.md](./DEPLOYMENT_STEPS.md) для детальних інструкцій.
 
 **Швидко:**
-1. Netlify: `https://app.netlify.com` → GitHub integration → deploy
-2. Railway: `https://railway.app` → GitHub integration → deploy
+1. Netlify public site: publish `web/` як основний public deploy
+2. Netlify admin site: publish `web/admin/` як окремий admin deploy
+3. Railway: `https://railway.app` → GitHub integration → deploy
+
+Admin deploy config: [web/admin/netlify.toml](/Users/vitalii/drive_community.worktrees/real-estate-filtering-feature/web/admin/netlify.toml)
 
 ## 🔐 Безпека
 

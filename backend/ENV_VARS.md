@@ -51,6 +51,11 @@ Dispatch endpoints:
 Auth for both endpoints:
 - `X-Alerts-Dispatch-Key: <UA_HOMES_ALERTS_DISPATCH_KEY>` **or** admin bearer token.
 
+## Frontend observability endpoints
+
+- `POST /api/analytics/client-telemetry` — runtime JS errors and unhandled promise rejections (`event_type`, `message`, optional `payload`).
+- `POST /api/analytics/web-vitals` — Core Web Vitals ingestion (`name`, `value`, optional `rating`, `id`, `delta`, `navigation_type`).
+
 ## SMS (optional, for phone verification)
 
 | Variable | Description |

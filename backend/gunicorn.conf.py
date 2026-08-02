@@ -10,12 +10,12 @@ import multiprocessing
 import os
 
 # ── Workers ─────────────────────────────────────────────────────────────────
-# Default: 4 workers (good for 4-core VM). Override via GUNICORN_WORKERS.
-workers = int(os.environ.get("GUNICORN_WORKERS", 4))
+# Default: scale with CPU count, but keep a sensible floor for smaller plans.
+workers = int(os.environ.get("GUNICORN_WORKERS", max(4, multiprocessing.cpu_count() * 2)))
 
 # Gthread is best for I/O-bound Flask + SQLite/Postgres mix.
 worker_class = "gthread"
-threads = int(os.environ.get("GUNICORN_THREADS", 2))
+threads = int(os.environ.get("GUNICORN_THREADS", 4))
 
 # ── Binding ──────────────────────────────────────────────────────────────────
 # Railway (and most cloud platforms) inject $PORT. Fall back to 5050 for local dev.
