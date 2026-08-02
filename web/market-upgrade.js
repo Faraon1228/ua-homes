@@ -105,9 +105,49 @@
       .empty-state-cta{border:1px dashed #cbd5e1;border-radius:24px;background:linear-gradient(180deg,#fff,#f8fafc)}
       .ua-pressable{transition:transform .16s ease,box-shadow .2s ease}
       .ua-pressable:active{transform:scale(.98)}
+      .us-market-style{background:linear-gradient(180deg,#0b1220 0%,#101827 45%,#132238 100%)}
+      .us-market-style header.sticky{background:rgba(15,23,42,.9)!important;border-bottom:1px solid rgba(100,116,139,.35)!important;box-shadow:0 10px 28px rgba(2,6,23,.45)}
+      .us-market-style .us-hero-shell{background:linear-gradient(145deg,#111827 0%,#1f2937 52%,#1e3a5f 100%)!important;color:#e2e8f0!important;border:1px solid rgba(71,85,105,.65);box-shadow:0 30px 60px rgba(2,6,23,.45)}
+      .us-market-style .us-hero-shell h1,
+      .us-market-style .us-hero-shell h2,
+      .us-market-style .us-hero-shell h3{color:#f1f5f9!important}
+      .us-market-style .us-hero-shell p,
+      .us-market-style .us-hero-shell .text-white,
+      .us-market-style .us-hero-shell .text-slate-300,
+      .us-market-style .us-hero-shell .text-slate-200{color:#cbd5e1!important}
+      .us-market-style .us-hero-shell [class*="text-white"]{color:#e2e8f0!important}
+      .us-market-style .us-hero-shell a{color:#93c5fd!important}
+      .us-market-style .us-hero-shell .border-white\\/20{border-color:rgba(148,163,184,.4)!important}
+      .us-market-style .us-hero-shell .bg-white\\/10{background:rgba(148,163,184,.16)!important}
+      .us-market-style .us-hero-shell button,.us-market-style .us-hero-shell .inline-flex{background:rgba(30,41,59,.88)!important;border:1px solid rgba(100,116,139,.65)!important;color:#e2e8f0!important}
+      .us-market-style .us-hero-shell button:hover{background:rgba(37,99,235,.22)!important;border-color:rgba(59,130,246,.5)!important}
+      .us-market-style .us-filter-shell,.us-market-style .us-smart-shell,.us-market-style .us-map-shell,.us-market-style .us-results-shell{border:1px solid rgba(71,85,105,.55)!important;box-shadow:0 22px 46px rgba(2,6,23,.35)!important;border-radius:24px!important;background:linear-gradient(160deg,rgba(15,23,42,.88),rgba(17,24,39,.94))!important}
+      .us-market-style .us-filter-shell *,.us-market-style .us-smart-shell *,.us-market-style .us-map-shell *,.us-market-style .us-results-shell *{color:#e2e8f0}
+      .us-market-style .us-filter-shell select,.us-market-style .us-filter-shell input,.us-market-style .us-smart-shell select,.us-market-style .us-smart-shell input,.us-market-style .us-map-shell select{border-color:#475569!important;border-radius:12px!important;background:#0f172a!important;color:#e2e8f0!important}
+      .us-market-style .us-smart-shell [data-role="clear-all-filters"],.us-market-style .us-smart-shell [data-role="apply-keyword-search"],.us-market-style .us-smart-shell [data-role="save-current-search"],.us-market-style .us-smart-shell [data-role="save-alert"]{border-radius:12px!important}
+      .us-market-style .us-smart-shell [data-role="apply-keyword-search"],.us-market-style .us-smart-shell [data-role="save-current-search"]{background:#2563eb!important;color:#e0f2fe!important;border:1px solid rgba(59,130,246,.6)!important}
+      .us-market-style .us-smart-shell [data-role="save-alert"]{background:#15803d!important;color:#dcfce7!important;border:1px solid rgba(34,197,94,.65)!important}
+      .us-market-style .market-card{border-radius:22px!important;border:1px solid rgba(71,85,105,.58)!important;box-shadow:0 14px 30px rgba(2,6,23,.4)!important;background:linear-gradient(170deg,rgba(17,24,39,.96),rgba(30,41,59,.9))!important}
+      .us-market-style .market-card:hover{box-shadow:0 28px 58px rgba(2,6,23,.56)!important}
+      .us-market-style [data-role="map-first-mode"] .inline-flex{background:#1e293b!important;border-radius:12px!important}
+      .us-market-style [data-role="mode-list"],.us-market-style [data-role="mode-map"]{border-radius:10px!important}
       @keyframes uaShimmer{0%{background-position:100% 50%}100%{background-position:0 50%}}
     `;
     document.head.appendChild(style);
+  }
+
+  function applyUsMarketplaceSkin() {
+    document.body.classList.add("us-market-style");
+    const hero = document.querySelector("main > section:first-of-type");
+    const primaryFilters = document.querySelector("main > section:nth-of-type(2)");
+    const smartPanel = document.querySelector(".market-smart-panel > div");
+    const mapShell = document.querySelector('[data-role="map-first-mode"] > div');
+    const resultsShell = document.querySelector("main > div.grid");
+    if (hero) hero.classList.add("us-hero-shell");
+    if (primaryFilters) primaryFilters.classList.add("us-filter-shell");
+    if (smartPanel) smartPanel.classList.add("us-smart-shell");
+    if (mapShell) mapShell.classList.add("us-map-shell");
+    if (resultsShell) resultsShell.classList.add("us-results-shell");
   }
 
   function decorateListingCardsWithEffects() {
@@ -572,7 +612,7 @@
             <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
                 <p class="text-xs font-black uppercase tracking-wide text-slate-500">Активні фільтри</p>
-                <p class="mt-1 text-sm text-slate-600">Швидко вимикайте окремі умови або застосовуйте one-click chips.</p>
+                <p class="mt-1 text-sm text-slate-600">Швидко вимикайте окремі умови або застосовуйте швидкі фільтри.</p>
               </div>
               <button type="button" class="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-blue-700 transition" data-role="clear-all-filters">Скинути все</button>
             </div>
@@ -587,7 +627,7 @@
 
           <div class="p-3 rounded-xl bg-blue-50 border border-blue-100">
             <div class="flex items-center justify-between gap-3 mb-2">
-              <p class="text-xs font-bold uppercase tracking-wide text-blue-700">Full-text пошук</p>
+              <p class="text-xs font-bold uppercase tracking-wide text-blue-700">Пошук за ключовими словами</p>
               <button type="button" class="px-2.5 py-1.5 rounded-lg bg-white border border-blue-200 text-blue-700 text-xs font-semibold hover:bg-blue-100 transition" data-role="clear-keyword-search">Очистити</button>
             </div>
             <div class="flex flex-col sm:flex-row gap-2">
@@ -686,7 +726,7 @@
 
           <div>
             <div class="flex items-center justify-between gap-3 mb-2">
-              <p class="text-xs font-bold uppercase tracking-wide text-slate-500">Market insights</p>
+              <p class="text-xs font-bold uppercase tracking-wide text-slate-500">Огляди ринку</p>
               <a href="/insights" target="_blank" rel="noopener" class="text-xs font-semibold text-blue-700 hover:text-blue-800">Усі матеріали ↗</a>
             </div>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-3" data-role="content-discovery"></div>
@@ -1182,7 +1222,7 @@
         const fallback = [
           { title: "Ринок: топ-міста і середні ціни", href: "/insights/market-update-kyiv-leads" },
           { title: "єОселя watch та карти попиту", href: "/insights/eoselya-watch" },
-          { title: "Trust-лідери серед агентств", href: "/insights/verified-agencies-leadership" },
+          { title: "Лідери перевірки серед агентств", href: "/insights/verified-agencies-leadership" },
         ];
         contentDiscoveryWrap.innerHTML = fallback.map((item) => `
           <a href="${item.href}" target="_blank" rel="noopener" class="rounded-xl border border-blue-100 bg-blue-50 p-3 hover:bg-blue-100 transition">
@@ -1399,8 +1439,8 @@
       <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
         <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
           <div>
-            <p class="text-sm font-bold text-slate-900">Map-first режим</p>
-            <p class="text-xs text-slate-500">Перемикач список/карта з live-кластеризацією.</p>
+            <p class="text-sm font-bold text-slate-900">Режим карти</p>
+            <p class="text-xs text-slate-500">Перемикач між списком і картою.</p>
           </div>
           <div class="inline-flex bg-slate-100 rounded-lg p-1">
             <button type="button" data-role="mode-list" class="px-3 py-1.5 rounded-md text-sm font-semibold">Список</button>
@@ -1672,10 +1712,10 @@
             phone: "bg-sky-50 border-sky-200 text-sky-700",
           };
           const evidenceLevelLabel = {
-            strong: "Trust доказів: високий",
-            medium: "Trust доказів: середній",
-            basic: "Trust доказів: базовий",
-            none: "Trust доказів: мінімальний",
+            strong: "Рівень перевірки: високий",
+            medium: "Рівень перевірки: середній",
+            basic: "Рівень перевірки: базовий",
+            none: "Рівень перевірки: мінімальний",
           };
           const verificationProofs = Array.isArray(listing.verification_proofs) ? listing.verification_proofs : [];
           verificationProofs.slice(0, 4).forEach((proof) => {
@@ -1706,7 +1746,7 @@
               })
               .join("")}</div>
             <div class="flex flex-wrap gap-1.5">${trustChips
-              .map((chip) => `<span class="text-[10px] px-2 py-1 rounded-full bg-slate-100 border border-slate-300 text-slate-700 font-semibold glass-badge tooltip-chip" data-tooltip="Trust-індикатор по об'єкту">${chip}</span>`)
+              .map((chip) => `<span class="text-[10px] px-2 py-1 rounded-full bg-slate-100 border border-slate-300 text-slate-700 font-semibold glass-badge tooltip-chip" data-tooltip="Індикатор перевірки об'єкта">${chip}</span>`)
               .join("")}</div>
             <p class="mt-1 text-[11px] text-slate-500">Як перевірено: ${proofDetails} Дата перевірки: ${listing.trust_verified_at ? new Date(listing.trust_verified_at).toLocaleDateString("uk-UA") : "—"}.</p>
           `;
@@ -1728,9 +1768,11 @@
     installMapFirstMode(filters, panel);
     decorateListingCardsWithEffects();
     attachTrustBadgesToCards();
+    applyUsMarketplaceSkin();
     const listingObserver = new MutationObserver(() => {
       decorateListingCardsWithEffects();
       attachTrustBadgesToCards();
+      applyUsMarketplaceSkin();
     });
     listingObserver.observe(document.body, { childList: true, subtree: true });
     setTimeout(() => listingObserver.disconnect(), 20000);
