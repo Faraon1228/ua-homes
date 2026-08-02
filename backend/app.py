@@ -856,6 +856,18 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_agency_profiles_verified ON agency_profiles(is_verified);
         CREATE INDEX IF NOT EXISTS idx_agency_profiles_city ON agency_profiles(city);
+
+        CREATE TABLE IF NOT EXISTS premium_orders (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id   TEXT    NOT NULL UNIQUE,
+            plan_id    TEXT    NOT NULL,
+            amount     REAL,
+            currency   TEXT    NOT NULL DEFAULT 'UAH',
+            status     TEXT    NOT NULL DEFAULT 'pending',
+            user_id    INTEGER,
+            created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_premium_orders_status ON premium_orders(status);
     """)
 
     # Backward-compatible migration for existing databases.
@@ -4670,6 +4682,128 @@ def seo_audit():
 @app.route("/api/health")
 def health():
     return jsonify(status="ok", service="UA Homes API v2")
+
+
+# ─── Premium / LiqPay payment ─────────────────────────────────────────────────
+
+import hashlib
+
+
+def _liqpay_sign(private_key: str, data: str) -> str:
+    """Generate LiqPay signature: base64(sha1(private_key + data + private_key))"""
+    raw = private_key + data + private_key
+    sha = hashlib.sha1(raw.encode("utf-8")).digest()
+    return base64.b64encode(sha).decode("utf-8")
+
+
+def _liqpay_encode(payload: dict) -> tuple[str, str]:
+    """Encode LiqPay payload; return (data_b64, signature)."""
+    LIQPAY_PRIVATE = os.environ.get("LIQPAY_PRIVATE_KEY", "").strip()
+    data_b64 = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("utf-8")
+    signature = _liqpay_sign(LIQPAY_PRIVATE, data_b64) if LIQPAY_PRIVATE else ""
+    return data_b64, signature
+
+
+LIQPAY_PLANS = {
+    "standard": {"price": 299, "name": "Стандарт"},
+    "premium":  {"price": 699, "name": "Преміум"},
+    "agent":    {"price": 1499, "name": "Топ-агент"},
+}
+
+
+@app.route("/api/payment/liqpay/create", methods=["POST"])
+@limiter.limit("20 per hour")
+def payment_liqpay_create():
+    """Create LiqPay payment: return data + signature for checkout form."""
+    body = request.get_json(silent=True) or {}
+    plan_id = str(body.get("plan_id", "")).strip()
+
+    if plan_id not in LIQPAY_PLANS:
+        return jsonify(error="Unknown plan"), 400
+
+    plan = LIQPAY_PLANS[plan_id]
+    LIQPAY_PUBLIC  = os.environ.get("LIQPAY_PUBLIC_KEY", "").strip()
+    LIQPAY_PRIVATE = os.environ.get("LIQPAY_PRIVATE_KEY", "").strip()
+
+    # If keys not configured — return demo response so UI shows test success
+    if not LIQPAY_PUBLIC or not LIQPAY_PRIVATE:
+        return jsonify(demo=True, plan_id=plan_id, message="LiqPay keys not configured — demo mode")
+
+    public_url = os.environ.get("UA_HOMES_PUBLIC_URL", "https://ua-dim.com").rstrip("/")
+    order_id = f"uadim-{plan_id}-{int(time.time())}-{secrets.token_hex(4)}"
+
+    payload = {
+        "public_key":  LIQPAY_PUBLIC,
+        "version":     "3",
+        "action":      "pay",
+        "amount":      plan["price"],
+        "currency":    "UAH",
+        "description": f"UA-Dim {plan['name']} — {plan['price']} UAH/міс",
+        "order_id":    order_id,
+        "result_url":  body.get("result_url", f"{public_url}/real-estate-demo.html?payment=success&plan={plan_id}"),
+        "server_url":  body.get("server_url", f"{public_url}/api/payment/liqpay/callback"),
+        "language":    "uk",
+    }
+
+    data_b64, signature = _liqpay_encode(payload)
+    return jsonify(data=data_b64, signature=signature, order_id=order_id)
+
+
+@app.route("/api/payment/liqpay/callback", methods=["POST"])
+def payment_liqpay_callback():
+    """LiqPay server callback — verify signature and update order status."""
+    LIQPAY_PRIVATE = os.environ.get("LIQPAY_PRIVATE_KEY", "").strip()
+    data_b64   = request.form.get("data", "")
+    signature  = request.form.get("signature", "")
+
+    if not LIQPAY_PRIVATE:
+        app.logger.warning("LiqPay callback received but LIQPAY_PRIVATE_KEY not set")
+        return "ok", 200
+
+    expected_sig = _liqpay_sign(LIQPAY_PRIVATE, data_b64)
+    if not secrets.compare_digest(expected_sig, signature):
+        app.logger.error("LiqPay callback: invalid signature")
+        return "signature_mismatch", 400
+
+    try:
+        payload = json.loads(base64.b64decode(data_b64).decode("utf-8"))
+    except Exception:
+        return "decode_error", 400
+
+    status    = payload.get("status")
+    order_id  = payload.get("order_id", "")
+    amount    = payload.get("amount")
+    currency  = payload.get("currency")
+
+    app.logger.info(f"LiqPay callback: order={order_id} status={status} amount={amount} {currency}")
+
+    if status in ("success", "sandbox"):
+        # TODO: persist premium status to database per user
+        # For now: log confirmed payment
+        db = get_db()
+        try:
+            db.execute(
+                "INSERT OR IGNORE INTO premium_orders (order_id, plan_id, amount, currency, status, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (order_id,
+                 order_id.split("-")[1] if "-" in order_id else "unknown",
+                 amount, currency, status,
+                 datetime.datetime.utcnow().isoformat()),
+            )
+            db.commit()
+        except Exception as e:
+            app.logger.warning(f"LiqPay: DB write failed (table may not exist yet): {e}")
+
+    return "ok", 200
+
+
+@app.route("/api/payment/plans", methods=["GET"])
+def payment_plans():
+    """Public endpoint: return available plans."""
+    return jsonify([
+        {"id": k, "name": v["name"], "price": v["price"], "currency": "UAH"}
+        for k, v in LIQPAY_PLANS.items()
+    ])
 
 
 # ─── Register Blueprints ──────────────────────────────────────────────────
