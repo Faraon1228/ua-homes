@@ -74,9 +74,20 @@
     @keyframes fadeIn{from{opacity:0}to{opacity:1}}
     @keyframes slideUp{from{transform:translateY(28px);opacity:0}to{transform:translateY(0);opacity:1}}
     .gallery-img{transition:opacity .25s}
+    .gallery-img{filter:blur(8px);opacity:.88;transition:transform .25s ease,filter .35s ease,opacity .35s ease}
+    .gallery-img.is-loaded{filter:blur(0);opacity:1}
     .star-btn{background:none;border:none;padding:0;min-height:auto;cursor:pointer;line-height:1;font-size:1.5rem}
     .leaflet-container{border-radius:1.25rem}
     .compare-bar{animation:slideUp .2s ease}
+    .market-card{transition:transform .2s ease,box-shadow .2s ease}
+    .market-card:hover{transform:translateY(-4px)!important;box-shadow:0 18px 42px rgba(15,23,42,.14)!important}
+    .market-card:hover .gallery-img.is-loaded{transform:scale(1.03)}
+    .glass-badge{backdrop-filter:blur(8px);background:rgba(255,255,255,.72)!important;border:1px solid rgba(148,163,184,.35)!important}
+    .tooltip-chip{position:relative;cursor:help}
+    .tooltip-chip:hover::after{content:attr(data-tooltip);position:absolute;left:0;bottom:calc(100% + 6px);white-space:nowrap;background:rgba(15,23,42,.92);color:#fff;font-size:11px;line-height:1.2;padding:6px 8px;border-radius:8px;z-index:40}
+    button,.ua-pressable,a.ua-pressable{transition:transform .16s ease,box-shadow .2s ease}
+    button:active,.ua-pressable:active,a.ua-pressable:active{transform:scale(.98)}
+    .empty-state-cta{border:1px dashed #cbd5e1;border-radius:24px;background:linear-gradient(180deg,#fff,#f8fafc)}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
     .animate-pulse{animation:pulse 1.5s cubic-bezier(.4,0,.6,1) infinite}
     .app-shell-skeleton{max-width:80rem;margin:0 auto;padding:1.5rem 1rem 2rem}

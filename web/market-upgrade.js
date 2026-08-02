@@ -84,6 +84,57 @@
     );
   }
 
+  function injectMarketplaceEffectsStyles() {
+    if (document.getElementById("ua-marketplace-effects")) return;
+    const style = document.createElement("style");
+    style.id = "ua-marketplace-effects";
+    style.textContent = `
+      .market-card{transition:transform .2s ease,box-shadow .2s ease}
+      .market-card:hover{transform:translateY(-4px)!important;box-shadow:0 18px 42px rgba(15,23,42,.14)!important}
+      .market-card .gallery-img{transform:scale(1);transition:transform .25s ease,filter .35s ease,opacity .35s ease;filter:blur(8px);opacity:.86}
+      .market-card .gallery-img.is-loaded{filter:blur(0);opacity:1}
+      .market-card:hover .gallery-img.is-loaded{transform:scale(1.03)}
+      .market-smart-panel{position:sticky;top:12px;z-index:25}
+      .glass-badge{backdrop-filter:blur(8px);background:rgba(255,255,255,.72)!important;border:1px solid rgba(148,163,184,.35)!important}
+      .tooltip-chip{position:relative;cursor:help}
+      .tooltip-chip:hover::after{content:attr(data-tooltip);position:absolute;left:0;bottom:calc(100% + 6px);white-space:nowrap;background:rgba(15,23,42,.92);color:#fff;font-size:11px;line-height:1.2;padding:6px 8px;border-radius:8px;z-index:40}
+      .map-shell-fade{transition:opacity .2s ease}
+      .map-shell-fade.is-hidden{opacity:0;pointer-events:none}
+      .map-skeleton{position:absolute;inset:0;z-index:20;display:grid;place-items:center;background:rgba(248,250,252,.92);backdrop-filter:blur(3px)}
+      .map-skeleton .pulse{width:72%;max-width:360px;height:14px;border-radius:999px;background:linear-gradient(90deg,#e2e8f0 25%,#f8fafc 37%,#e2e8f0 63%);background-size:400% 100%;animation:uaShimmer 1.2s ease infinite}
+      .empty-state-cta{border:1px dashed #cbd5e1;border-radius:24px;background:linear-gradient(180deg,#fff,#f8fafc)}
+      .ua-pressable{transition:transform .16s ease,box-shadow .2s ease}
+      .ua-pressable:active{transform:scale(.98)}
+      @keyframes uaShimmer{0%{background-position:100% 50%}100%{background-position:0 50%}}
+    `;
+    document.head.appendChild(style);
+  }
+
+  function decorateListingCardsWithEffects() {
+    const cards = document.querySelectorAll("article.group, .listing-card, article[data-listing-id]");
+    cards.forEach((card) => {
+      card.classList.add("market-card");
+      card.querySelectorAll("img.gallery-img").forEach((img) => {
+        if (img.complete) {
+          img.classList.add("is-loaded");
+        } else if (!img.dataset.uahLoaded) {
+          img.dataset.uahLoaded = "1";
+          img.addEventListener("load", () => img.classList.add("is-loaded"), { once: true });
+        }
+      });
+      card.querySelectorAll("span").forEach((chip) => {
+        const text = (chip.textContent || "").trim();
+        if (!text) return;
+        if (text.includes("єОселя") || text.includes("Власник підтверджено") || text.includes("Телефон підтверджено") || text.includes("Документи перевірено")) {
+          chip.classList.add("glass-badge");
+        }
+        if (text.includes("TOP")) {
+          chip.classList.add("glass-badge");
+        }
+      });
+    });
+  }
+
   function appendMissingCityOptions(citySelect, cities) {
     if (!citySelect || !Array.isArray(cities) || !cities.length) return;
     const existing = new Set([...citySelect.options].map((option) => option.value));
@@ -505,7 +556,7 @@
 
     const panel = document.createElement("section");
     panel.setAttribute("data-ua-homes-market-upgrade", "1");
-    panel.className = "max-w-7xl mx-auto px-4 mt-4 mb-4";
+    panel.className = "max-w-7xl mx-auto px-4 mt-4 mb-4 market-smart-panel";
     panel.innerHTML = `
       <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
         <div class="flex flex-col gap-5">
@@ -1356,8 +1407,14 @@
             <button type="button" data-role="mode-map" class="px-3 py-1.5 rounded-md text-sm font-semibold">Карта</button>
           </div>
         </div>
-        <div class="relative hidden" data-role="map-shell">
+        <div class="relative hidden opacity-0 map-shell-fade is-hidden" data-role="map-shell">
           <div data-role="map-canvas" style="height:520px"></div>
+          <div class="map-skeleton" data-role="map-skeleton">
+            <div>
+              <div class="pulse"></div>
+              <p class="mt-3 text-xs font-semibold text-slate-500">Завантажуємо карту та кластери…</p>
+            </div>
+          </div>
           <div class="absolute top-3 left-3 right-3 md:right-auto md:w-[420px] bg-white/95 backdrop-blur border border-slate-200 rounded-xl p-3 shadow" data-role="map-overlay">
             <p class="text-xs font-bold uppercase tracking-wide text-slate-500 mb-2">Фільтри на мапі</p>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -1387,6 +1444,7 @@
     const mapType = section.querySelector('[data-role="map-type"]');
     const mapEoselya = section.querySelector('[data-role="map-eoselya"]');
     const mapApply = section.querySelector('[data-role="map-apply"]');
+    const mapSkeleton = section.querySelector('[data-role="map-skeleton"]');
     mapCity.innerHTML = filters.citySelect.innerHTML;
     mapType.innerHTML = filters.propertyTypeSelect?.innerHTML || '<option value="Всі типи">Всі типи</option>';
 
@@ -1453,6 +1511,7 @@
     async function refreshMapListings() {
       if (!state.map || state.refreshing) return;
       state.refreshing = true;
+      if (mapSkeleton) mapSkeleton.style.display = "grid";
       try {
         const res = await fetch(buildListingsApiUrl(filters, 200), { credentials: "omit" });
         const data = await res.json();
@@ -1461,6 +1520,7 @@
       } catch (_err) {
         mapCount.textContent = "Не вдалося завантажити об'єкти для мапи";
       } finally {
+        if (mapSkeleton) mapSkeleton.style.display = "none";
         state.refreshing = false;
       }
     }
@@ -1491,12 +1551,18 @@
       styleModeButtons(mode);
       if (mode === "map") {
         mapShell.classList.remove("hidden");
+        mapShell.classList.remove("is-hidden");
+        requestAnimationFrame(() => {
+          mapShell.style.opacity = "1";
+        });
         hiddenBlocks.forEach((block) => { block.style.display = "none"; });
         ensureMap().then(() => {
           setTimeout(() => state.map?.invalidateSize(), 80);
         });
       } else {
-        mapShell.classList.add("hidden");
+        mapShell.classList.add("is-hidden");
+        mapShell.style.opacity = "0";
+        setTimeout(() => mapShell.classList.add("hidden"), 210);
         hiddenBlocks.forEach((block) => { block.style.display = ""; });
       }
     }
@@ -1614,7 +1680,7 @@
           const verificationProofs = Array.isArray(listing.verification_proofs) ? listing.verification_proofs : [];
           verificationProofs.slice(0, 4).forEach((proof) => {
             const tone = proofToneMap[proof.code] || "bg-slate-100 border-slate-300 text-slate-800";
-            proofChips.push(`<span class="text-[10px] px-2 py-1 rounded-full border font-bold ${tone}">${proof.label}</span>`);
+            proofChips.push(`<span class="text-[10px] px-2 py-1 rounded-full border font-bold ${tone} glass-badge tooltip-chip" data-tooltip="${(proof.details || proof.label || "").replace(/"/g, "&quot;")}">${proof.label}</span>`);
           });
           qualitySignals.push(freshnessLabel);
           qualitySignals.push(verifiedLabel);
@@ -1632,15 +1698,15 @@
             ? verificationProofs.slice(0, 3).map((proof) => proof.details).filter(Boolean).join(" · ")
             : "Модерація профілю, контактів і документів.";
           wrap.innerHTML = `
-            <div class="flex flex-wrap gap-1.5 mb-1">${proofChips.join("") || '<span class="text-[10px] px-2 py-1 rounded-full border border-slate-300 bg-slate-100 text-slate-700 font-semibold">Докази перевірки оновлюються</span>'}</div>
+            <div class="flex flex-wrap gap-1.5 mb-1">${proofChips.join("") || '<span class="text-[10px] px-2 py-1 rounded-full border border-slate-300 bg-slate-100 text-slate-700 font-semibold glass-badge">Докази перевірки оновлюються</span>'}</div>
             <div class="flex flex-wrap gap-1.5 mb-1">${qualitySignals
               .map((chip, idx) => {
-                if (idx === 2) return `<span class="text-[10px] px-2 py-1 rounded-full border font-bold ${risk.tone}">${chip}</span>`;
-                return `<span class="text-[10px] px-2 py-1 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-bold">${chip}</span>`;
+                if (idx === 2) return `<span class="text-[10px] px-2 py-1 rounded-full border font-bold ${risk.tone} glass-badge tooltip-chip" data-tooltip="Оцінка дублювання за схожими параметрами">${chip}</span>`;
+                return `<span class="text-[10px] px-2 py-1 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-bold glass-badge">${chip}</span>`;
               })
               .join("")}</div>
             <div class="flex flex-wrap gap-1.5">${trustChips
-              .map((chip) => `<span class="text-[10px] px-2 py-1 rounded-full bg-slate-100 border border-slate-300 text-slate-700 font-semibold">${chip}</span>`)
+              .map((chip) => `<span class="text-[10px] px-2 py-1 rounded-full bg-slate-100 border border-slate-300 text-slate-700 font-semibold glass-badge tooltip-chip" data-tooltip="Trust-індикатор по об'єкту">${chip}</span>`)
               .join("")}</div>
             <p class="mt-1 text-[11px] text-slate-500">Як перевірено: ${proofDetails} Дата перевірки: ${listing.trust_verified_at ? new Date(listing.trust_verified_at).toLocaleDateString("uk-UA") : "—"}.</p>
           `;
@@ -1655,12 +1721,17 @@
   function init() {
     const filters = findFilters();
     if (!filters) return false;
+    injectMarketplaceEffectsStyles();
     installListingsSearchProxy();
     trackListingMode(filters);
     const panel = buildPanel(filters);
     installMapFirstMode(filters, panel);
+    decorateListingCardsWithEffects();
     attachTrustBadgesToCards();
-    const listingObserver = new MutationObserver(() => attachTrustBadgesToCards());
+    const listingObserver = new MutationObserver(() => {
+      decorateListingCardsWithEffects();
+      attachTrustBadgesToCards();
+    });
     listingObserver.observe(document.body, { childList: true, subtree: true });
     setTimeout(() => listingObserver.disconnect(), 20000);
     return true;
