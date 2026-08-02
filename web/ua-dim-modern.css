@@ -1,0 +1,149 @@
+:root {
+  --ua-primary: #2563eb;
+  --ua-primary-strong: #1d4ed8;
+  --ua-accent: #14b8a6;
+  --ua-ink: #0f172a;
+  --ua-muted: #475569;
+  --ua-border: rgba(148, 163, 184, 0.32);
+  --ua-surface: #ffffff;
+  --ua-surface-alt: #f8fafc;
+  --ua-shadow: 0 20px 48px rgba(15, 23, 42, 0.12);
+}
+
+body {
+  background:
+    radial-gradient(circle at top left, rgba(37, 99, 235, 0.12), transparent 30%),
+    linear-gradient(135deg, #f8fafc 0%, #eef4ff 48%, #f8fafc 100%);
+  color: var(--ua-ink);
+}
+
+#root {
+  min-height: 100%;
+}
+
+header.sticky {
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 10px 34px rgba(15, 23, 42, 0.06);
+}
+
+.us-hero-shell {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.16), transparent 34%),
+    linear-gradient(135deg, #0f172a 0%, #1d4ed8 48%, #0f766e 100%);
+  box-shadow: 0 30px 70px rgba(15, 23, 42, 0.24);
+}
+
+.us-hero-shell::before {
+  content: "";
+  position: absolute;
+  inset: -30% auto auto -10%;
+  width: 280px;
+  height: 280px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.12);
+  filter: blur(8px);
+  pointer-events: none;
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
+}
+
+button:hover,
+a:hover {
+  transform: translateY(-1px);
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.18);
+}
+
+.bg-white {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important;
+}
+
+.bg-slate-50,
+.bg-slate-100 {
+  background-color: #f8fafc !important;
+}
+
+.bg-blue-600,
+.bg-blue-700 {
+  background: linear-gradient(135deg, var(--ua-primary) 0%, #3b82f6 100%) !important;
+  box-shadow: 0 14px 35px rgba(37, 99, 235, 0.24) !important;
+}
+
+.bg-orange-500,
+.bg-orange-600 {
+  background: linear-gradient(135deg, #f97316 0%, #fb923c 100%) !important;
+  box-shadow: 0 14px 32px rgba(249, 115, 22, 0.22) !important;
+}
+
+.text-slate-900,
+.text-slate-800,
+.text-gray-900 {
+  color: var(--ua-ink) !important;
+}
+
+.text-slate-600,
+.text-slate-500,
+.text-gray-600,
+.text-gray-500 {
+  color: var(--ua-muted) !important;
+}
+
+.border-slate-200,
+.border-slate-300,
+.border-gray-200 {
+  border-color: var(--ua-border) !important;
+}
+
+.shadow-sm {
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06) !important;
+}
+
+.shadow-lg {
+  box-shadow: 0 16px 42px rgba(15, 23, 42, 0.08) !important;
+}
+
+.shadow-xl {
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.12) !important;
+}
+
+.rounded-2xl,
+.rounded-3xl,
+.rounded-\[24px\],
+.rounded-\[28px\],
+.rounded-\[32px\] {
+  border-radius: 1.25rem !important;
+}
+
+input,
+select,
+textarea {
+  background-color: #ffffff;
+  border: 1px solid var(--ua-border);
+  color: var(--ua-ink);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #94a3b8;
+}
+
+button.min-h-\[44px\],
+button.min-h-\[40px\] {
+  min-height: 44px;
+}
