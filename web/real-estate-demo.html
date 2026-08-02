@@ -114,7 +114,10 @@
       const host = location.hostname;
       if (!host || location.protocol === "file:") return "http://localhost:5050";
       if (host === "localhost" || host === "127.0.0.1") return "http://localhost:5050";
-      return `${location.protocol}//${host.replace(/^www\./, "")}:5050`;
+      if (!host.includes("192.168") && !/^\d+\.\d+/.test(host)) {
+        return `https://${host.replace(/^www\./, "")}`.replace(/\/$/, "") + "/api-backend";
+      }
+      return `http://${host}:5050`;
     };
 
     const API_BASE = resolveApiBase().replace(/\/+$/, "");
@@ -268,7 +271,7 @@
       if (loaded) return;
       loaded = true;
       const script = document.createElement('script');
-      script.src = 'market-upgrade.js?v=e7ca5f5';
+      script.src = 'market-upgrade.js?v=e7ca5f6';
       script.defer = true;
       script.crossOrigin = 'anonymous';
       document.body.appendChild(script);

@@ -104,7 +104,10 @@
     const host = window.location.hostname;
     if (!host || window.location.protocol === "file:") return "http://localhost:5050";
     if (host === "localhost" || host === "127.0.0.1") return "http://localhost:5050";
-    return "";
+    if (!host.includes("192.168") && !/^\d+\.\d+/.test(host)) {
+      return `https://${host.replace(/^www\./, "")}`.replace(/\/$/, "") + "/api-backend";
+    }
+    return `http://${host}:5050`;
   }
 
   function getLeadSessionId() {
