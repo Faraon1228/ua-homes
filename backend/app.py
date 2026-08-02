@@ -48,10 +48,8 @@ _REDIS_CACHE_DISABLED = False
 _REPORT_CACHE: dict[str, tuple[float, object]] = {}
 
 _DEFAULT_CORS_ORIGINS: list[str | re.Pattern[str]] = [
-    "http://localhost:8080",
-    "http://127.0.0.1:8080",
-    "http://localhost:5050",
-    "http://127.0.0.1:5050",
+    re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"),
+    re.compile(r"^https://(localhost|127\.0\.0\.1)(:\d+)?$"),
     "https://ua-homes.netlify.app",
     "https://ua-dim.netlify.app",
     "https://ua-dom.com",
@@ -395,6 +393,34 @@ def _cache_control_for_request() -> str | None:
     return None
 
 
+def _allow_cors_for_request(response: Response) -> Response:
+    origin = request.headers.get("Origin", "").strip()
+    if not origin:
+        return response
+
+    for allowed_origin in _cors_origins():
+        if isinstance(allowed_origin, re.Pattern):
+            if allowed_origin.match(origin):
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Allow-Credentials"] = "true"
+                response.headers.setdefault("Vary", "Origin")
+                if request.method == "OPTIONS":
+                    response.headers["Access-Control-Allow-Methods"] = "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT"
+                    requested_headers = request.headers.get("Access-Control-Request-Headers", "Content-Type, Authorization")
+                    response.headers["Access-Control-Allow-Headers"] = requested_headers
+                break
+        elif allowed_origin == origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers.setdefault("Vary", "Origin")
+            if request.method == "OPTIONS":
+                response.headers["Access-Control-Allow-Methods"] = "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT"
+                requested_headers = request.headers.get("Access-Control-Request-Headers", "Content-Type, Authorization")
+                response.headers["Access-Control-Allow-Headers"] = requested_headers
+            break
+    return response
+
+
 @app.after_request
 def apply_security_headers(response):
     for header, value in SECURITY_HEADERS.items():
@@ -412,7 +438,7 @@ def apply_security_headers(response):
         if request.headers.get("Authorization"):
             response.headers.setdefault("Vary", "Authorization")
 
-    return response
+    return _allow_cors_for_request(response)
 
 
 @app.get("/")
