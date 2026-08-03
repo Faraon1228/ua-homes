@@ -47,6 +47,19 @@
   to = "/admin/login.html"
   status = 302
 
+# SEO pages and ЖК detail pages → backend-rendered routes
+[[redirects]]
+  from = "/seo/*"
+  to = "https://backend-production-51964.up.railway.app/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/zhk/*"
+  to = "https://backend-production-51964.up.railway.app/:splat"
+  status = 200
+  force = true
+
 # Root → main app shell
 [[redirects]]
   from = "/"

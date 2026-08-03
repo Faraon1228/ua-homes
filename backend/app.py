@@ -505,6 +505,85 @@ def normalize_listing_images(raw_images) -> list[str]:
         normalized.append(fallback if "images.unsplash.com" in host else url)
     return normalized or [fallback]
 
+DEVELOPMENT_PROJECTS = [
+    {
+        "slug": "river-garden-residence",
+        "name": "River Garden Residence",
+        "city": "Київ",
+        "district": "Печерський",
+        "headline": "Преміальний ЖК біля Дніпра з готовими floor-plan сторінками",
+        "price_from": 7900,
+        "stage": "Черга 1 — введено, черга 2 — моноліт, черга 3 — продаж",
+        "delivery": "IV квартал 2026",
+        "floor_plans": [
+            "1-кімнатні: 38–46 м²",
+            "2-кімнатні: 58–74 м²",
+            "3-кімнатні: 84–102 м²",
+        ],
+        "highlights": [
+            "єОселя доступно",
+            "Закритий двір без авто",
+            "Підземний паркінг",
+            "Панорамні вікна",
+        ],
+    },
+    {
+        "slug": "skyline-park",
+        "name": "Skyline Park",
+        "city": "Львів",
+        "district": "Франківський",
+        "headline": "Сімейний квартал комфорт+ з конверсійною SEO-сторінкою",
+        "price_from": 6450,
+        "stage": "Будинок 2 — оздоблення, будинок 3 — фасадні роботи",
+        "delivery": "II квартал 2027",
+        "floor_plans": [
+            "1-кімнатні: 34–41 м²",
+            "2-кімнатні: 52–69 м²",
+            "3-кімнатні: 76–94 м²",
+        ],
+        "highlights": [
+            "ЄОселя доступно",
+            "Дитячі майданчики",
+            "Поруч парки та школи",
+            "Партнерські банки",
+        ],
+    },
+    {
+        "slug": "city-green-quarter",
+        "name": "City Green Quarter",
+        "city": "Одеса",
+        "district": "Приморський",
+        "headline": "Нова черга біля моря з окремими сторінками квартир і черг",
+        "price_from": 5300,
+        "stage": "Черга 4 — котлован, черга 5 — каркас",
+        "delivery": "I квартал 2028",
+        "floor_plans": [
+            "Студії: 28–34 м²",
+            "1-кімнатні: 39–47 м²",
+            "2-кімнатні: 56–73 м²",
+        ],
+        "highlights": [
+            "Тихий район",
+            "Море за 12 хвилин",
+            "Ландшафтний двір",
+            "Планування під інвестицію",
+        ],
+    },
+]
+
+
+def _development_project_by_slug(slug: str) -> dict | None:
+    target = strip(slug, 120).lower()
+    for project in DEVELOPMENT_PROJECTS:
+        if project["slug"].lower() == target:
+            return project
+    return None
+
+
+def _development_projects_for_city(city_name: str) -> list[dict]:
+    target = strip(city_name, 100).lower()
+    return [project for project in DEVELOPMENT_PROJECTS if project["city"].lower() == target]
+
 SEED_LISTINGS = [
     # (title, city, district, property_type, condition_type, price, rooms, area,
     #  floor, total_floors, year_built, e_oselya, images_json, description, lat, lng)
@@ -828,6 +907,32 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_lead_funnel_session_rollups_source ON lead_funnel_session_rollups(source);
         CREATE INDEX IF NOT EXISTS idx_lead_funnel_session_rollups_first_route ON lead_funnel_session_rollups(first_route_at);
+
+        CREATE TABLE IF NOT EXISTS lead_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_type TEXT NOT NULL,
+            source TEXT NOT NULL,
+            name TEXT NOT NULL,
+            phone TEXT,
+            email TEXT,
+            bank TEXT,
+            project_slug TEXT,
+            project_name TEXT,
+            city TEXT,
+            district TEXT,
+            amount INTEGER,
+            down_payment INTEGER,
+            years INTEGER,
+            e_oselya INTEGER NOT NULL DEFAULT 0,
+            message TEXT,
+            listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL,
+            session_id TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_lead_requests_created_at ON lead_requests(created_at);
+        CREATE INDEX IF NOT EXISTS idx_lead_requests_type_created ON lead_requests(lead_type, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_lead_requests_project_slug ON lead_requests(project_slug);
+        CREATE INDEX IF NOT EXISTS idx_lead_requests_session ON lead_requests(session_id);
 
         CREATE TABLE IF NOT EXISTS client_observability_events (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3604,6 +3709,147 @@ def analytics_lead_funnel_event():
     return jsonify(ok=True), 201
 
 
+@app.route("/api/leads", methods=["POST"])
+@limiter.limit("30 per minute")
+def create_lead_request():
+    db = get_db()
+    data = _parse_json_payload()
+
+    lead_type = strip(data.get("lead_type", ""), 32).lower()
+    source = strip(data.get("source", ""), 80)
+    name = strip(data.get("name", ""), 120)
+    phone = strip(data.get("phone", ""), 40)
+    email = strip(data.get("email", ""), 254).lower()
+    bank = strip(data.get("bank", ""), 120)
+    project_slug = strip(data.get("project_slug", ""), 120)
+    project_name = strip(data.get("project_name", ""), 180)
+    city = strip(data.get("city", ""), 100)
+    district = strip(data.get("district", ""), 100)
+    message = strip(data.get("message", ""), 1200)
+    session_id = strip(data.get("session_id", ""), 80)
+    e_oselya = 1 if truthy_flag(str(data.get("eOselya", data.get("e_oselya", False)))) else 0
+    listing_id_raw = data.get("listing_id")
+
+    if lead_type not in {"mortgage", "development"}:
+        return jsonify(error="lead_type must be mortgage or development"), 422
+    if not source:
+        return jsonify(error="source is required"), 422
+    if not name:
+        return jsonify(error="name is required"), 422
+    if not phone and not email:
+        return jsonify(error="phone or email is required"), 422
+    if email and not validate_email(email):
+        return jsonify(error="Invalid email format"), 422
+
+    listing_id = None
+    if listing_id_raw not in {None, ""}:
+        try:
+            listing_id = int(listing_id_raw)
+        except (TypeError, ValueError):
+            return jsonify(error="listing_id must be integer"), 422
+        if listing_id <= 0:
+            return jsonify(error="listing_id must be positive"), 422
+
+    project = None
+    if project_slug:
+        project = _development_project_by_slug(project_slug)
+        if not project:
+            return jsonify(error="Unknown project_slug"), 422
+        if not project_name:
+            project_name = project["name"]
+        if not city:
+            city = project["city"]
+        if not district:
+            district = project["district"]
+
+    amount = nonneg_int(data.get("amount"))
+    down_payment = nonneg_int(data.get("down_payment"))
+    years = nonneg_int(data.get("years"))
+    if lead_type == "mortgage":
+        if amount is None or amount <= 0:
+            return jsonify(error="amount is required for mortgage leads"), 422
+        if down_payment is None or down_payment < 0 or down_payment > 100:
+            return jsonify(error="down_payment must be between 0 and 100"), 422
+        if years is None or years <= 0:
+            return jsonify(error="years is required for mortgage leads"), 422
+
+    created_at_dt = datetime.datetime.utcnow().replace(microsecond=0)
+    created_at = created_at_dt.isoformat(sep=" ")
+    db.execute(
+        """
+        INSERT INTO lead_requests (
+            lead_type, source, name, phone, email, bank, project_slug, project_name,
+            city, district, amount, down_payment, years, e_oselya, message,
+            listing_id, session_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            lead_type,
+            source,
+            name,
+            phone or None,
+            email or None,
+            bank or None,
+            project_slug or None,
+            project_name or None,
+            city or None,
+            district or None,
+            amount,
+            down_payment,
+            years,
+            e_oselya,
+            message or None,
+            listing_id,
+            session_id or None,
+            created_at,
+        ),
+    )
+
+    intent = "mortgage_application" if lead_type == "mortgage" else "development_request"
+    listing_type = "sale" if lead_type == "mortgage" else "newbuild"
+    payload_source = source or "lead_form"
+    db.execute(
+        """
+        INSERT INTO lead_funnel_events (
+            listing_id, event, intent, source, listing_type, price, session_id, created_at
+        ) VALUES (?, 'lead_submit', ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            listing_id,
+            intent,
+            payload_source,
+            listing_type,
+            amount,
+            session_id or None,
+            created_at,
+        ),
+    )
+    _upsert_lead_funnel_summary(
+        db,
+        day=created_at_dt.strftime("%Y-%m-%d"),
+        source=payload_source,
+        listing_type=listing_type,
+        event="lead_submit",
+        listing_id=listing_id,
+        created_at=created_at,
+        session_id=session_id or None,
+    )
+    db.commit()
+    cache_delete_prefix("admin:reports:lead-funnel:")
+
+    return jsonify(
+        ok=True,
+        lead={
+            "lead_type": lead_type,
+            "source": source,
+            "project_slug": project_slug or None,
+            "project_name": project_name or None,
+            "city": city or None,
+            "district": district or None,
+        },
+    ), 201
+
+
 @app.route("/api/analytics/client-telemetry", methods=["POST"])
 def analytics_client_telemetry():
     db = get_db()
@@ -3692,6 +3938,261 @@ def analytics_web_vitals():
     db.commit()
     cache_delete_prefix("admin:reports:observability:")
     return jsonify(ok=True), 201
+
+
+@app.route("/zhk/<slug>", methods=["GET"])
+@app.route("/seo/zhk/<slug>", methods=["GET"])
+def development_project_page(slug: str):
+    return _render_development_project_page(slug)
+
+
+def _render_development_project_page(slug: str):
+    db = get_db()
+    project = _development_project_by_slug(slug)
+    if not project:
+        return jsonify(error="ЖК не знайдено"), 404
+
+    base = public_base_url()
+    canonical = f"{base}/zhk/{quote(project['slug'])}"
+    public_app = public_app_url()
+    host = (request.host or "").split(":")[0]
+    api_base = "" if host in {"localhost", "127.0.0.1"} else "/api-backend"
+
+    related_listings = db.execute(
+        """
+        SELECT id, title, district, price, area, rooms, created_at
+        FROM listings
+        WHERE status = 'published' AND city = ?
+        ORDER BY created_at DESC
+        LIMIT 6
+        """,
+        (project["city"],),
+    ).fetchall()
+
+    related_cards = "".join(
+        (
+            f'<a class="dev-listing-card" href="{base}/listing/{int(row["id"])}">'
+            f'<div class="dev-listing-card__title">{escape(row["title"])}</div>'
+            f'<div class="dev-listing-card__meta">{escape(row["district"])} · {int(row["rooms"])} кімн. · {int(row["area"])} м²</div>'
+            f'<div class="dev-listing-card__price">${int(row["price"]):,}</div>'
+            "</a>"
+        )
+        for row in related_listings
+    ) or "<div class='dev-empty'>Поки немає оголошень для цієї локації.</div>"
+
+    floor_plans = "".join(f"<li>{escape(item)}</li>" for item in project["floor_plans"])
+    highlights = "".join(f"<span>{escape(item)}</span>" for item in project["highlights"])
+    price_from = f"${int(project['price_from']):,}"
+    project_json_ld = {
+        "@context": "https://schema.org",
+        "@type": "ApartmentComplex",
+        "name": project["name"],
+        "url": canonical,
+        "address": {
+            "@type": "PostalAddress",
+            "addressLocality": project["city"],
+            "addressRegion": project["district"],
+            "addressCountry": "UA",
+        },
+        "description": project["headline"],
+        "amenityFeature": [{"@type": "LocationFeatureSpecification", "name": item} for item in project["highlights"]],
+    }
+    project_json = json.dumps(project_json_ld, ensure_ascii=False)
+    slug_json = json.dumps(project["slug"], ensure_ascii=False)
+    name_json = json.dumps(project["name"], ensure_ascii=False)
+    city_json = json.dumps(project["city"], ensure_ascii=False)
+    district_json = json.dumps(project["district"], ensure_ascii=False)
+
+    html = """<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>%s — новобудова в %s | UA Homes</title>
+  <meta name="description" content="%s. Ціна від %s/м², %s, %s." />
+  <link rel="canonical" href="%s" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="%s — новобудова в %s | UA Homes" />
+  <meta property="og:description" content="%s. Ціна від %s/м²." />
+  <meta property="og:url" content="%s" />
+  <meta property="og:image" content="%s/favicon.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <script type="application/ld+json">%s</script>
+  <style>
+    body{margin:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f8fafc;color:#0f172a}
+    .wrap{max-width:1180px;margin:0 auto;padding:24px 16px 48px}
+    .hero{background:linear-gradient(135deg,#0f172a,#1d4ed8);color:#fff;border-radius:28px;padding:28px;box-shadow:0 20px 60px rgba(15,23,42,.24)}
+    .hero h1{margin:0;font-size:clamp(30px,4vw,48px);line-height:1.05}
+    .hero p{margin:12px 0 0;max-width:760px;color:#dbeafe;line-height:1.6}
+    .chips{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+    .chips span,.chips a{display:inline-flex;align-items:center;border-radius:999px;padding:9px 13px;font-size:13px;font-weight:700;text-decoration:none}
+    .chips span{background:rgba(255,255,255,.12);color:#fff}
+    .chips a{background:#fff;color:#1d4ed8}
+    .grid{display:grid;grid-template-columns:1.2fr .8fr;gap:20px;margin-top:22px}
+    .card{background:#fff;border:1px solid #e2e8f0;border-radius:24px;padding:22px;box-shadow:0 12px 36px rgba(15,23,42,.08)}
+    .card h2{margin:0 0 10px;font-size:24px}
+    .muted{color:#64748b}
+    .plans,.highlights{display:flex;flex-wrap:wrap;gap:10px;padding:0;list-style:none}
+    .plans li,.highlights span{background:#eff6ff;color:#1d4ed8;border:1px solid #dbeafe;border-radius:999px;padding:9px 12px;font-weight:700}
+    .dev-listing-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .dev-listing-card{display:block;text-decoration:none;color:#0f172a;border:1px solid #e2e8f0;border-radius:18px;padding:14px;background:linear-gradient(180deg,#fff,#f8fafc)}
+    .dev-listing-card__title{font-weight:800;margin-bottom:6px}
+    .dev-listing-card__meta{font-size:13px;color:#64748b}
+    .dev-listing-card__price{margin-top:8px;font-weight:800;color:#2563eb}
+    .lead-form{display:grid;gap:12px}
+    .lead-form input,.lead-form textarea{width:100%%;border:1px solid #cbd5e1;border-radius:14px;padding:12px 14px;font:inherit}
+    .lead-form textarea{min-height:110px;resize:vertical}
+    .lead-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .lead-actions button{border:0;border-radius:999px;padding:12px 18px;font-weight:800;background:#2563eb;color:#fff;cursor:pointer}
+    .lead-status{font-size:14px;font-weight:700;color:#0f766e}
+    @media (max-width: 900px){.grid,.dev-listing-grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>%s</h1>
+      <p>%s</p>
+      <div class="chips">
+        <span>%s, %s</span>
+        <span>Від %s/м²</span>
+        <span>%s</span>
+        <a href="%s">Повернутися до пошуку</a>
+      </div>
+    </section>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Плани поверхів</h2>
+        <p class="muted">Окремі сторінки з floor-plan блоками допомагають SEO та підвищують конверсію у заявку.</p>
+        <ul class="plans">%s</ul>
+
+        <h2 style="margin-top:22px">Переваги</h2>
+        <div class="highlights">%s</div>
+
+        <h2 style="margin-top:22px">Стадія будівництва</h2>
+        <p class="muted">%s</p>
+      </div>
+
+      <div class="card">
+        <h2>Залишити заявку</h2>
+        <p class="muted">Ми передамо заявку в реальний backend API та зв'яжемося з вами.</p>
+        <form id="development-lead-form" class="lead-form">
+          <input name="name" placeholder="Ваше ім'я" required />
+          <input name="phone" placeholder="+380..." />
+          <input name="email" type="email" placeholder="Email" />
+          <textarea name="message" placeholder="Що важливо: поверх, площа, єОселя, розтермінування"></textarea>
+          <div class="lead-actions">
+            <button type="submit">Надіслати заявку</button>
+            <span id="lead-status" class="lead-status" aria-live="polite"></span>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <h2>Подібні об'єкти у місті</h2>
+      <div class="dev-listing-grid">%s</div>
+    </div>
+  </div>
+
+  <script>
+  (function() {
+    const form = document.getElementById('development-lead-form');
+    const status = document.getElementById('lead-status');
+    const apiBase = %s;
+    const nameInput = form.elements.namedItem('name');
+    const phoneInput = form.elements.namedItem('phone');
+    const emailInput = form.elements.namedItem('email');
+    const messageInput = form.elements.namedItem('message');
+    const sessionKey = 'uah.session';
+    const sessionId = (() => {
+      try {
+        const existing = window.sessionStorage.getItem(sessionKey);
+        if (existing) return existing;
+        const generated = (window.crypto && typeof window.crypto.randomUUID === 'function')
+          ? window.crypto.randomUUID()
+          : Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+        window.sessionStorage.setItem(sessionKey, generated);
+        return generated;
+      } catch (_) {
+        return Date.now().toString(36);
+      }
+    })();
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      status.textContent = 'Надсилаємо...';
+      const payload = {
+        lead_type: 'development',
+        source: 'development-seo-page',
+        name: nameInput.value.trim(),
+        phone: phoneInput.value.trim(),
+        email: emailInput.value.trim(),
+        project_slug: %s,
+        project_name: %s,
+        city: %s,
+        district: %s,
+        message: messageInput.value.trim(),
+        session_id: sessionId,
+      };
+      try {
+        const response = await fetch(`${apiBase}/api/leads`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || 'Не вдалося відправити заявку');
+        }
+        form.reset();
+        status.textContent = "Заявку відправлено — ми зв'яжемося найближчим часом.";
+        if (window.dataLayer) {
+          window.dataLayer.push({ event: 'development_lead_submit', project_slug: %s });
+        }
+      } catch (error) {
+        status.textContent = error.message || 'Помилка відправки';
+      }
+    });
+  })();
+  </script>
+</body>
+</html>
+""" % (
+        escape(project["name"]),        # 1 title
+        escape(project["city"]),        # 2 title city
+        escape(project["headline"]),     # 3 description
+        price_from,                      # 4 description price
+        escape(project["city"]),        # 5 description city
+        escape(project["district"]),    # 6 description district
+        canonical,                      # 7 canonical
+        escape(project["name"]),        # 8 og title
+        escape(project["city"]),        # 9 og title city
+        escape(project["headline"]),     # 10 og description
+        price_from,                      # 11 og description price
+        canonical,                      # 12 og url
+        base,                            # 13 og image base
+        project_json,                    # 14 ld json
+        escape(project["name"]),        # 15 hero h1
+        escape(project["headline"]),     # 16 hero paragraph
+        escape(project["city"]),        # 17 chips city
+        escape(project["district"]),    # 18 chips district
+        price_from,                      # 19 chips price
+        escape(project["delivery"]),     # 20 chips delivery
+        public_app,                      # 21 back to search
+        floor_plans,                     # 22 floor plans
+        highlights,                      # 23 highlights
+        escape(project["stage"]),        # 24 stage
+        related_cards,                   # 25 related listings
+        json.dumps(api_base, ensure_ascii=False),  # 26 api base
+        slug_json,                       # 27 payload slug
+        name_json,                       # 28 payload name
+        city_json,                       # 29 payload city
+        district_json,                   # 30 payload district
+        slug_json,                       # 31 analytics slug
+    )
+    return Response(html, mimetype="text/html; charset=utf-8")
 
 
 @app.route("/seo/<city>", methods=["GET"])
@@ -3814,6 +4315,11 @@ def _render_seo_page(city: str, district: str | None):
         f'<li><a href="{base}/seo/{quote(row["city"])}/{quote(row["district"])}">{escape(row["city"])}, {escape(row["district"])}</a> ({row["cnt"]})</li>'
         for row in top_districts
     ) or "<li>Немає даних по районах.</li>"
+    related_projects = _development_projects_for_city(city_name)
+    project_links = "".join(
+        f'<li><a href="{base}/zhk/{quote(project["slug"])}">{escape(project["name"])}</a> · від ${int(project["price_from"]):,}/м²</li>'
+        for project in related_projects
+    ) or "<li>Наразі немає підготовлених ЖК у цій локації.</li>"
 
     alternate_links = [
         f'<link rel="alternate" hreflang="uk-UA" href="{canonical}" />',
@@ -4020,6 +4526,8 @@ def _render_seo_page(city: str, district: str | None):
   <ul>{top_city_links}</ul>
   <h2>Топ-райони</h2>
   <ul>{top_district_links}</ul>
+  <h2>Новобудови та ЖК</h2>
+  <ul>{project_links}</ul>
   <h2>FAQ</h2>
   {faq_html}
 </body>
@@ -4519,6 +5027,12 @@ def sitemap_xml():
             )
         items.append(
             f"<url><loc>{base}/seo/{quote(city)}/{quote(district)}</loc><lastmod>{updated}</lastmod></url>"
+        )
+
+    project_updated = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+    for project in DEVELOPMENT_PROJECTS:
+        items.append(
+            f"<url><loc>{base}/zhk/{quote(project['slug'])}</loc><lastmod>{project_updated}</lastmod><changefreq>weekly</changefreq></url>"
         )
 
     # Individual listing pages
