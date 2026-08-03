@@ -766,6 +766,8 @@ def init_db():
             listing_status TEXT    NOT NULL DEFAULT 'active',
             has_photo_tour INTEGER NOT NULL DEFAULT 0,
             has_video_tour INTEGER NOT NULL DEFAULT 0,
+            listing_highlights TEXT NOT NULL DEFAULT '[]',
+            capture_mode   TEXT    NOT NULL DEFAULT 'off_site',
             verified_owner INTEGER NOT NULL DEFAULT 0,
             verified_phone INTEGER NOT NULL DEFAULT 0,
             verified_docs  INTEGER NOT NULL DEFAULT 0,
@@ -1035,6 +1037,10 @@ def init_db():
         db.execute("ALTER TABLE listings ADD COLUMN has_photo_tour INTEGER NOT NULL DEFAULT 0")
     if "has_video_tour" not in listing_columns:
         db.execute("ALTER TABLE listings ADD COLUMN has_video_tour INTEGER NOT NULL DEFAULT 0")
+    if "listing_highlights" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN listing_highlights TEXT NOT NULL DEFAULT '[]'")
+    if "capture_mode" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN capture_mode TEXT NOT NULL DEFAULT 'off_site'")
     db.execute("CREATE INDEX IF NOT EXISTS idx_listings_agency_slug ON listings(agency_slug)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_listings_status_created_at ON listings(status, created_at DESC)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_listings_status_city ON listings(status, city)")

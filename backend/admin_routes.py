@@ -5,6 +5,7 @@ Endpoints for admin panel property/user management
 
 from flask import Blueprint, g, jsonify, request, Response
 from functools import wraps
+import datetime
 import csv
 import io
 import json
@@ -336,7 +337,8 @@ def admin_get_listings():
     
     query = """
         SELECT id, title, city, district, price, rooms, area, status, 
-               created_at, views, e_oselya
+               created_at, views, e_oselya, images, listing_highlights, capture_mode,
+               property_type, condition_type, listing_status, source, has_photo_tour, has_video_tour
         FROM listings WHERE 1=1
     """
     clauses, params = build_listing_filters(args)
@@ -388,13 +390,14 @@ def admin_create_listing():
     listing_status = str(data.get('listing_status') or data.get('listingStatus') or 'active').strip().lower()
     if listing_status not in {'active', 'sold', 'removed'}:
         listing_status = 'active'
+    now = datetime.datetime.utcnow().isoformat(timespec='seconds')
 
     db.execute("""
         INSERT INTO listings 
         (title, city, district, property_type, condition_type, price, rooms, area,
-        floor, total_floors, year_built, e_oselya, description, status, listing_status, user_id,
-        latitude, longitude)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        floor, total_floors, year_built, e_oselya, description, status, listing_status, moderation_status, moderation_updated_at, published_at, user_id,
+        latitude, longitude, source, has_photo_tour, has_video_tour, listing_highlights, capture_mode)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         data['title'],
         data['city'],
@@ -411,9 +414,17 @@ def admin_create_listing():
         data.get('description', ''),
         status,
         listing_status,
+        'approved' if status == 'published' else 'pending_review',
+        now if status == 'published' else None,
+        now if status == 'published' else None,
         g.user_id,  # Admin as owner
         data.get('latitude'),
-        data.get('longitude')
+        data.get('longitude'),
+        str(data.get('source') or 'owner').strip().lower(),
+        1 if data.get('hasPhotoTour') else 0,
+        1 if data.get('hasVideoTour') else 0,
+        json.dumps(data.get('highlights') or [], ensure_ascii=False),
+        str(data.get('captureMode') or 'off_site').strip().lower(),
     ))
     db.commit()
     _refresh_listing_city_summary(db)
@@ -438,6 +449,7 @@ def admin_get_listing(listing_id):
                   total_floors, year_built, e_oselya, description, status,
                   listing_status,
                   property_type, condition_type, latitude, longitude, views,
+                  source, has_photo_tour, has_video_tour, listing_highlights, capture_mode,
                   created_at FROM listings WHERE id = ?""",
         (listing_id,)
     ).fetchone()
@@ -465,6 +477,7 @@ def admin_update_listing(listing_id):
     
     db = get_db()
     data = request.get_json() or {}
+    now = datetime.datetime.utcnow().isoformat(timespec='seconds')
     
     # Check listing exists
     if not db.execute("SELECT id FROM listings WHERE id = ?", (listing_id,)).fetchone():
@@ -478,13 +491,31 @@ def admin_update_listing(listing_id):
         'title', 'city', 'district', 'price', 'rooms', 'area',
         'floor', 'total_floors', 'year_built', 'e_oselya',
         'description', 'property_type', 'condition_type',
-    'latitude', 'longitude', 'status', 'listing_status'
+    'latitude', 'longitude', 'status', 'listing_status',
+    'source', 'has_photo_tour', 'has_video_tour', 'listing_highlights', 'capture_mode'
     ]
     
     for field in allowed_fields:
         if field in data:
+            value = data[field]
+            if field in {'has_photo_tour', 'has_video_tour', 'e_oselya'}:
+                value = 1 if bool(value) else 0
+            elif field == 'listing_highlights' and isinstance(value, list):
+                value = json.dumps(value, ensure_ascii=False)
+            elif field in {'capture_mode', 'source', 'status', 'listing_status', 'property_type', 'condition_type'} and value is not None:
+                value = str(value).strip()
             updates.append(f"{field} = ?")
-            params.append(data[field])
+            params.append(value)
+
+    if 'status' in data:
+        status = str(data.get('status') or '').strip().lower()
+        moderation_status = 'approved' if status == 'published' else 'pending_review' if status in {'draft', 'pending'} else 'rejected' if status == 'rejected' else 'pending_review'
+        updates.extend([
+            "moderation_status = ?",
+            "moderation_updated_at = ?",
+            "published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, ?) ELSE published_at END",
+        ])
+        params.extend([moderation_status, now, status, now])
     
     if not updates:
         return jsonify(error="No fields to update"), 400

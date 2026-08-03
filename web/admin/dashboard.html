@@ -42,6 +42,9 @@
                 <button onclick="showPage('listings')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
                     <i class="fas fa-building mr-2"></i> Нерухомість
                 </button>
+                <button onclick="showPage('drafts')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
+                    <i class="fas fa-clipboard-list mr-2"></i> Чернетки
+                </button>
                 <button onclick="showPage('new-listing')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
                     <i class="fas fa-plus-circle mr-2"></i> Додати об'єкт
                 </button>
@@ -211,6 +214,75 @@
                     </div>
                 </div>
 
+                <!-- Drafts Page -->
+                <div id="page-drafts" class="p-6 hidden">
+                    <div class="mb-6 flex items-center justify-between gap-3">
+                        <div>
+                            <h2 class="text-2xl font-bold">Чернетки</h2>
+                            <p class="text-sm text-gray-500">Продовжуйте або публікуйте незавершені оголошення в стилі DIM.RIA.</p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button type="button" onclick="loadDrafts()" class="rounded-lg bg-slate-100 px-4 py-2 font-semibold text-slate-700 hover:bg-slate-200">Оновити</button>
+                            <button type="button" onclick="showPage('new-listing')" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700">Створити чернетку</button>
+                        </div>
+                    </div>
+                    <div class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                        <div class="flex flex-wrap gap-2">
+                            <button type="button" data-draft-filter="all" onclick="setDraftFilter('all')" class="rounded-full bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white">Всі</button>
+                            <button type="button" data-draft-filter="ready" onclick="setDraftFilter('ready')" class="rounded-full bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200">Готові</button>
+                            <button type="button" data-draft-filter="needs_photo" onclick="setDraftFilter('needs_photo')" class="rounded-full bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200">Неготові</button>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2 text-sm">
+                            <span id="drafts-visible-count" class="rounded-full bg-slate-100 px-3 py-1.5 font-semibold text-slate-700">0 видимих</span>
+                            <button type="button" onclick="selectVisibleDraftState('ready')" class="rounded-lg border border-emerald-200 bg-white px-3 py-1.5 font-semibold text-emerald-700 hover:bg-emerald-50">Вибрати готові</button>
+                            <button type="button" onclick="selectVisibleDraftState('needs_photo')" class="rounded-lg border border-amber-200 bg-white px-3 py-1.5 font-semibold text-amber-700 hover:bg-amber-50">Вибрати неготові</button>
+                            <button type="button" onclick="selectAllVisibleDrafts()" class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-50">Вибрати видимі</button>
+                            <button type="button" onclick="clearDraftSelection()" class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-50">Очистити</button>
+                        </div>
+                    </div>
+                    <div id="drafts-bulk-bar" class="mb-4 hidden items-center justify-between gap-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3">
+                        <div class="text-sm font-semibold text-blue-900">
+                            Вибрано <span id="drafts-selected-count">0</span> чернеток
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                            <button type="button" onclick="bulkPublishDrafts()" class="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700">Опублікувати вибрані</button>
+                            <button type="button" onclick="bulkDeleteDrafts()" class="rounded-lg bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-700">Видалити вибрані</button>
+                        </div>
+                    </div>
+                    <div id="drafts-summary" class="mb-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+                        <div class="rounded-2xl bg-white p-4 shadow-sm border border-slate-200">
+                            <div class="text-xs uppercase tracking-wide text-slate-400 font-bold">Чернеток</div>
+                            <div id="drafts-count" class="mt-1 text-3xl font-black text-slate-900">-</div>
+                        </div>
+                        <div class="rounded-2xl bg-white p-4 shadow-sm border border-slate-200">
+                            <div class="text-xs uppercase tracking-wide text-slate-400 font-bold">Готові до публікації</div>
+                            <div id="drafts-ready-count" class="mt-1 text-3xl font-black text-emerald-600">-</div>
+                        </div>
+                        <div class="rounded-2xl bg-white p-4 shadow-sm border border-slate-200">
+                            <div class="text-xs uppercase tracking-wide text-slate-400 font-bold">Потребують фото</div>
+                            <div id="drafts-needs-photo-count" class="mt-1 text-3xl font-black text-amber-600">-</div>
+                        </div>
+                    </div>
+                    <div id="drafts-grid" class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                        <div class="rounded-2xl border border-dashed border-slate-200 bg-white p-8 text-center text-slate-500">Завантаження...</div>
+                    </div>
+                </div>
+
+                <!-- Review Page -->
+                <div id="page-review" class="p-6 hidden">
+                    <div class="mb-6 flex items-center justify-between gap-3">
+                        <div>
+                            <h2 class="text-2xl font-bold">Огляд чернетки</h2>
+                            <p class="text-sm text-gray-500">Структурований review-екран у стилі DIM.RIA перед публікацією.</p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button type="button" onclick="showPage('drafts')" class="rounded-lg bg-slate-100 px-4 py-2 font-semibold text-slate-700 hover:bg-slate-200">До чернеток</button>
+                            <button type="button" onclick="continueCurrentDraftReview()" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700">Продовжити</button>
+                        </div>
+                    </div>
+                    <div id="review-screen" class="grid grid-cols-1 gap-6 lg:grid-cols-[1.3fr_0.7fr]"></div>
+                </div>
+
                 <!-- New Listing Page -->
                 <div id="page-new-listing" class="p-6 hidden max-w-2xl">
                     <h2 class="text-2xl font-bold mb-6">Додати новий об'єкт</h2>
@@ -226,11 +298,26 @@
                                 </div>
                             </div>
                         </div>
+                        <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                            <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                                <div>
+                                    <div class="text-sm font-bold text-slate-900">Ви зараз на об'єкті?</div>
+                                    <div class="text-xs text-slate-500">Це допомагає швидше підказати фото, локацію і перевірку об'єкта.</div>
+                                </div>
+                                <div class="flex flex-wrap gap-2">
+                                    <button type="button" data-capture-mode="on_site" class="rounded-full border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-blue-400 hover:text-blue-700">Я на об'єкті</button>
+                                    <button type="button" data-capture-mode="off_site" class="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-slate-400 hover:text-slate-900">Я не на об'єкті</button>
+                                </div>
+                            </div>
+                            <div id="new-listing-capture-mode-hint" class="mt-3 rounded-xl bg-white px-3 py-2 text-xs text-slate-600 border border-slate-200">
+                                Порада: якщо ви на місці, додайте фото-тур, точку на мапі й підсильте довіру верифікацією.
+                            </div>
+                        </div>
                         <div class="grid grid-cols-4 gap-2 text-xs font-semibold text-slate-500">
                             <button type="button" data-step-jump="1" class="rounded-lg bg-slate-100 px-3 py-2 text-left">1. База</button>
                             <button type="button" data-step-jump="2" class="rounded-lg bg-slate-100 px-3 py-2 text-left">2. Параметри</button>
                             <button type="button" data-step-jump="3" class="rounded-lg bg-slate-100 px-3 py-2 text-left">3. Фото</button>
-                            <button type="button" data-step-jump="4" class="rounded-lg bg-slate-100 px-3 py-2 text-left">4. Перевірка</button>
+                            <button type="button" data-step-jump="4" class="rounded-lg bg-slate-100 px-3 py-2 text-left">4. Чернетка / публікація</button>
                         </div>
 
                         <div data-new-listing-step="1" class="space-y-4">
@@ -340,6 +427,18 @@
                                 <div class="font-semibold text-slate-900 mb-3">Перевірка оголошення</div>
                                 <div id="form-review-summary" class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm"></div>
                             </div>
+                            <div id="form-review-warning" class="hidden rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"></div>
+                            <button type="button" onclick="openCurrentDraftReview()" class="w-full rounded-2xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-50">Відкрити окремий review-екран</button>
+                            <div class="rounded-2xl border border-slate-200 bg-white p-4">
+                                <div class="flex items-center justify-between gap-3">
+                                    <div>
+                                        <div class="font-semibold text-slate-900">Унікальні переваги</div>
+                                        <div class="text-xs text-slate-500">Оберіть до 3 переваг, щоб виділити оголошення в пошуку.</div>
+                                    </div>
+                                    <span id="new-listing-highlights-count" class="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">0 / 3</span>
+                                </div>
+                                <div class="mt-3 flex flex-wrap gap-2" id="new-listing-highlights"></div>
+                            </div>
                             <div class="space-y-3">
                                 <label class="flex items-center">
                                     <input type="checkbox" id="form-eoselya" class="mr-2">
@@ -368,8 +467,11 @@
                             <button type="button" id="new-listing-back" class="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-slate-700 hover:bg-slate-50">Назад</button>
                             <div class="flex items-center gap-3">
                                 <button type="button" id="new-listing-next" class="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700">Далі</button>
-                                <button type="submit" id="new-listing-submit" class="hidden rounded-lg bg-emerald-600 px-4 py-2 font-semibold text-white hover:bg-emerald-700">
-                                    Опублікувати оголошення
+                                <button type="submit" data-submit-mode="draft" id="new-listing-save-draft" class="hidden rounded-lg border border-slate-300 px-4 py-2 font-semibold text-slate-700 hover:bg-slate-50">
+                                    Зберегти чернетку
+                                </button>
+                                <button type="submit" data-submit-mode="publish" id="new-listing-submit" class="hidden rounded-lg bg-emerald-600 px-4 py-2 font-semibold text-white hover:bg-emerald-700">
+                                    Опублікувати
                                 </button>
                             </div>
                         </div>
@@ -863,12 +965,45 @@
         let csvPreviewHeaders = [];
         let formPhotoPreviewObjectUrls = [];
         let newListingStep = 1;
+        let wizardListingId = null;
+        let newListingCaptureMode = 'off_site';
+        let newListingHighlights = new Set();
+        let draftListingsCache = [];
+        let draftFilterMode = 'all';
+        let selectedDraftIds = new Set();
+        let currentDraftReview = null;
         const NEW_LISTING_STEP_TITLES = {
             1: 'Базові дані',
             2: 'Параметри',
             3: 'Фото',
-            4: 'Перевірка',
+            4: 'Чернетка / публікація',
         };
+        const NEW_LISTING_CAPTURE_MODES = {
+            on_site: {
+                label: 'Я на об\'єкті',
+                hint: 'Підсилимo локацію, фото-тур і верифікацію власника.',
+            },
+            off_site: {
+                label: 'Я не на об\'єкті',
+                hint: 'Залишимо стандартний сценарій з ручним заповненням без підказок по візиту.',
+            },
+        };
+        const NEW_LISTING_HIGHLIGHTS = [
+            'Укриття в будинку',
+            'Ще ніхто не проживав',
+            'Закріплене паркомісце',
+            'У центрі',
+            'Спокійний район',
+            'Тихий двір',
+            'Гарний краєвид',
+            'Поруч з парком',
+            'Престижний район',
+            'Світло 24/7',
+            'Терміново',
+            'Торг можливий',
+            'Оперативний показ',
+            'Вигідна ціна',
+        ];
         let leadFunnelDays = 30;
         let ctrDropThresholdPp = Number(localStorage.getItem('admin_lf_ctr_drop_threshold_pp') || 5);
         let leadFunnelBenchmarkReports = { report7: null, report30: null, report90: null };
@@ -886,10 +1021,559 @@
                 window.location.href = LOGIN_URL;
                 return;
             }
+
+            function parseListingHighlights(value) {
+                if (Array.isArray(value)) return value.filter(Boolean).map(String).slice(0, 3);
+                if (!value) return [];
+                try {
+                    const parsed = JSON.parse(value);
+                    return Array.isArray(parsed) ? parsed.filter(Boolean).map(String).slice(0, 3) : [];
+                } catch (_err) {
+                    return String(value)
+                        .split(',')
+                        .map(item => item.trim())
+                        .filter(Boolean)
+                        .slice(0, 3);
+                }
+            }
+
+            function applyListingToWizard(listing) {
+                wizardListingId = listing?.id || null;
+                document.getElementById('form-listing-type').value = listing?.listing_type || 'sale';
+                document.getElementById('form-property-type').value = listing?.property_type || 'квартира';
+                document.getElementById('form-title').value = listing?.title || '';
+                document.getElementById('form-region').value = listing?.region || '';
+                document.getElementById('form-city').value = listing?.city || '';
+                document.getElementById('form-district').value = listing?.district || '';
+                document.getElementById('form-price').value = listing?.price ?? '';
+                document.getElementById('form-rooms').value = listing?.rooms ?? '';
+                document.getElementById('form-area').value = listing?.area ?? '';
+                document.getElementById('form-condition-type').value = listing?.condition_type || 'вторинка';
+                document.getElementById('form-floor').value = listing?.floor ?? '';
+                document.getElementById('form-total-floors').value = listing?.total_floors ?? '';
+                document.getElementById('form-year-built').value = listing?.year_built ?? '';
+                document.getElementById('form-latitude').value = listing?.latitude ?? '';
+                document.getElementById('form-longitude').value = listing?.longitude ?? '';
+                document.getElementById('form-status').value = listing?.status || 'draft';
+                document.getElementById('form-source').value = listing?.source || 'owner';
+                document.getElementById('form-agency-slug').value = listing?.agency_slug || '';
+                document.getElementById('form-description').value = listing?.description || '';
+                document.getElementById('form-eoselya').checked = Boolean(listing?.e_oselya);
+                document.getElementById('form-owner-verification').checked = listing?.owner_verification_status === 'pending' || Boolean(listing?.verified_owner);
+                document.getElementById('form-phone-verification').checked = listing?.phone_verification_status === 'pending' || Boolean(listing?.verified_phone);
+                document.getElementById('form-photo-tour').checked = Boolean(listing?.has_photo_tour);
+                document.getElementById('form-video-tour').checked = Boolean(listing?.has_video_tour);
+                newListingCaptureMode = String(listing?.capture_mode || 'off_site').toLowerCase();
+                newListingHighlights = new Set(parseListingHighlights(listing?.listing_highlights));
+
+                const urls = Array.isArray(listing?.images)
+                    ? listing.images.map((image) => image.image_url || image.url || image).filter(Boolean)
+                    : [];
+                document.getElementById('form-image-urls').value = urls.join('\n');
+
+                renderCaptureModeHint();
+                renderHighlightButtons();
+                renderPhotoPreview();
+                renderNewListingReview();
+                setNewListingStep(1);
+                showPage('new-listing');
+            }
+
+            async function openWizardListing(id) {
+                try {
+                    const res = await fetch(`${API_BASE}/listings/${id}`, { headers: getAuthHeaders() });
+                    if (!res.ok) {
+                        const err = await res.json();
+                        alert(err.error || 'Не вдалося завантажити чернетку');
+                        return;
+                    }
+                    const data = await res.json();
+                    applyListingToWizard(data.listing);
+                } catch (err) {
+                    alert('Помилка завантаження чернетки');
+                }
+            }
+
+            function normalizeDraftListing(listing) {
+                const toImageUrl = (image) => image && (image.image_url || image.url || image);
+                const images = (() => {
+                    if (Array.isArray(listing.images)) return listing.images.map(toImageUrl).filter(Boolean);
+                    if (!listing.images) return [];
+                    try {
+                        const parsed = JSON.parse(listing.images);
+                        return Array.isArray(parsed) ? parsed.map(toImageUrl).filter(Boolean) : [];
+                    } catch (_err) {
+                        return String(listing.images).split(',').map(v => v.trim()).filter(Boolean);
+                    }
+                })();
+                return {
+                    ...listing,
+                    images,
+                    listing_highlights: parseListingHighlights(listing.listing_highlights),
+                };
+            }
+
+            function getNormalizedDraftState(listing) {
+                const images = Array.isArray(listing.images)
+                    ? listing.images.map((image) => image && (image.image_url || image.url || image)).filter(Boolean)
+                    : [];
+                const photoCount = images.length;
+                return {
+                    ...listing,
+                    images,
+                    photoCount,
+                    canPublish: photoCount >= 5,
+                };
+            }
+
+            function getVisibleDraftListings() {
+                if (draftFilterMode === 'ready') {
+                    return draftListingsCache.filter(item => item.canPublish);
+                }
+                if (draftFilterMode === 'needs_photo') {
+                    return draftListingsCache.filter(item => !item.canPublish);
+                }
+                return draftListingsCache;
+            }
+
+            function updateDraftFilterButtons() {
+                document.querySelectorAll('[data-draft-filter]').forEach((button) => {
+                    const active = (button.getAttribute('data-draft-filter') || 'all') === draftFilterMode;
+                    button.classList.toggle('bg-blue-600', active);
+                    button.classList.toggle('text-white', active);
+                    button.classList.toggle('bg-slate-100', !active);
+                    button.classList.toggle('text-slate-700', !active);
+                    button.classList.toggle('hover:bg-slate-200', !active);
+                });
+            }
+
+            function syncDraftSelection() {
+                selectedDraftIds = new Set(
+                    Array.from(document.querySelectorAll('.draft-select-checkbox:checked')).map(cb => Number(cb.value))
+                );
+                const visible = document.querySelectorAll('.draft-select-checkbox').length;
+                const selected = selectedDraftIds.size;
+                const selectAll = document.getElementById('drafts-select-all');
+                if (selectAll) {
+                    selectAll.checked = visible > 0 && selected === visible;
+                    selectAll.indeterminate = selected > 0 && selected < visible;
+                }
+                const bar = document.getElementById('drafts-bulk-bar');
+                const count = document.getElementById('drafts-selected-count');
+                if (bar) {
+                    bar.classList.toggle('hidden', selected === 0);
+                    bar.classList.toggle('flex', selected > 0);
+                }
+                if (count) count.textContent = String(selected);
+            }
+
+            function selectAllVisibleDrafts() {
+                const visible = getVisibleDraftListings().map(item => item.id);
+                selectedDraftIds = new Set(visible);
+                renderDraftCards(draftListingsCache);
+            }
+
+            function selectVisibleDraftState(state) {
+                const visible = getVisibleDraftListings().filter(item => {
+                    if (state === 'ready') return item.canPublish;
+                    if (state === 'needs_photo') return !item.canPublish;
+                    return true;
+                }).map(item => item.id);
+                selectedDraftIds = new Set(visible);
+                renderDraftCards(draftListingsCache);
+            }
+
+            function clearDraftSelection() {
+                selectedDraftIds.clear();
+                renderDraftCards(draftListingsCache);
+            }
+
+            function setDraftFilter(mode) {
+                draftFilterMode = mode || 'all';
+                renderDraftCards(draftListingsCache);
+            }
+
+            function renderDraftReview(listing) {
+                const target = document.getElementById('review-screen');
+                if (!target || !listing) return;
+
+                const photos = listing.images || [];
+                const cover = photos[0] || '';
+                const chips = [
+                    listing.e_oselya ? 'єОселя' : null,
+                    listing.capture_mode === 'on_site' ? 'На об\'єкті' : 'Не на об\'єкті',
+                    listing.has_photo_tour ? 'Фото-тур' : null,
+                    listing.has_video_tour ? 'Відео' : null,
+                    listing.source ? String(listing.source) : null,
+                ].filter(Boolean);
+                const ready = listing.canPublish;
+                const publishAction = listing.id ? `publishListing(${listing.id}, true)` : "showPage('new-listing')";
+                const continueAction = listing.id ? `openWizardListing(${listing.id})` : "showPage('new-listing')";
+                const deleteAction = listing.id ? `<button type="button" onclick="deleteListing(${listing.id})" class="rounded-xl border border-rose-200 bg-white px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-50">Видалити</button>` : '';
+
+                target.innerHTML = `
+                    <div class="space-y-6">
+                        <div class="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+                            <div class="relative h-72 bg-slate-100">
+                                ${cover ? `<img src="${escapeAttr(cover)}" alt="${escapeAttr(listing.title || '')}" class="h-full w-full object-cover">` : `<div class="flex h-full items-center justify-center text-6xl text-slate-300">🏠</div>`}
+                                <div class="absolute left-4 top-4 flex flex-wrap gap-2">
+                                    <span class="rounded-full bg-white/95 px-3 py-1.5 text-xs font-black uppercase tracking-wide text-slate-700 shadow">Чернетка</span>
+                                    <span class="rounded-full ${ready ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'} px-3 py-1.5 text-xs font-black uppercase tracking-wide shadow">
+                                        ${ready ? 'Готово до публікації' : 'Потрібні фото'}
+                                    </span>
+                                </div>
+                                <div class="absolute bottom-4 right-4 rounded-2xl bg-black/60 px-3 py-2 text-right text-white backdrop-blur">
+                                    <div class="text-xs uppercase tracking-wide text-white/70">Ціна</div>
+                                    <div class="text-2xl font-black">₴${Number(listing.price || 0).toLocaleString('uk-UA')}</div>
+                                </div>
+                            </div>
+                            <div class="p-6">
+                                <div class="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                                    <div>
+                                        <h3 class="text-2xl font-black text-slate-900">${escapeHtml(listing.title || 'Без назви')}</h3>
+                                        <p class="mt-1 text-sm text-slate-500">${escapeHtml(listing.city || '—')} · ${escapeHtml(listing.district || '—')} · ${escapeHtml(listing.property_type || 'квартира')}</p>
+                                    </div>
+                                    <div class="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                                        <div class="text-xs font-bold uppercase tracking-wide text-slate-400">Параметри</div>
+                                        <div class="mt-1 font-semibold">${escapeHtml(listing.rooms || '—')} кімн. · ${escapeHtml(listing.area || '—')} м²</div>
+                                    </div>
+                                </div>
+                                <div class="mt-5 grid grid-cols-1 gap-3 md:grid-cols-3">
+                                    <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                        <div class="text-xs font-bold uppercase tracking-wide text-slate-400">Фото</div>
+                                        <div class="mt-1 text-lg font-black text-slate-900">${photos.length}</div>
+                                        <div class="text-sm text-slate-500">${ready ? 'Достатньо для публікації' : 'Додайте ще фото'}</div>
+                                    </div>
+                                    <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                        <div class="text-xs font-bold uppercase tracking-wide text-slate-400">Capture</div>
+                                        <div class="mt-1 text-lg font-black text-slate-900">${escapeHtml(NEW_LISTING_CAPTURE_MODES[listing.capture_mode]?.label || 'Я не на об\'єкті')}</div>
+                                        <div class="text-sm text-slate-500">${escapeHtml(listing.capture_mode === 'on_site' ? 'Сценарій із підсиленням довіри' : 'Стандартний сценарій')}</div>
+                                    </div>
+                                    <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                        <div class="text-xs font-bold uppercase tracking-wide text-slate-400">Статус</div>
+                                        <div class="mt-1 text-lg font-black text-slate-900">${escapeHtml(listing.status || 'draft')}</div>
+                                        <div class="text-sm text-slate-500">${escapeHtml(listing.created_at || '')}</div>
+                                    </div>
+                                </div>
+                                <div class="mt-5 space-y-3">
+                                    <div class="text-sm font-bold uppercase tracking-wide text-slate-400">Опис</div>
+                                    <p class="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">${escapeHtml(listing.description || 'Опис ще не додано')}</p>
+                                </div>
+                                <div class="mt-5 flex flex-wrap gap-2">
+                                    ${chips.map(chip => `<span class="rounded-full bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700">${escapeHtml(chip)}</span>`).join('')}
+                                </div>
+                                <div class="mt-5 grid grid-cols-2 gap-2 md:grid-cols-4">
+                                    ${photos.map((src, index) => `
+                                        <div class="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+                                            <img src="${escapeAttr(src)}" alt="${escapeAttr(listing.title || '')} ${index + 1}" class="h-28 w-full object-cover">
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <aside class="space-y-4 lg:sticky lg:top-6">
+                        <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                            <div class="text-xs font-bold uppercase tracking-wide text-slate-400">Готовність</div>
+                            <div class="mt-2 text-2xl font-black ${ready ? 'text-emerald-600' : 'text-amber-600'}">${ready ? 'Готово' : 'Неготово'}</div>
+                            <p class="mt-2 text-sm text-slate-600">${ready ? 'Можна публікувати прямо зараз.' : 'Для публікації бракує фото, але чернетку можна доопрацювати.'}</p>
+                            <div class="mt-4 flex flex-col gap-2">
+                                <button type="button" onclick="${publishAction}" class="rounded-xl ${ready && listing.id ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-slate-200 text-slate-500 cursor-not-allowed'} px-4 py-3 text-sm font-semibold text-white" ${ready && listing.id ? '' : 'disabled'}>Опублікувати</button>
+                                <button type="button" onclick="${continueAction}" class="rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-50">Продовжити редагування</button>
+                                ${deleteAction}
+                            </div>
+                        </div>
+                        <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                            <div class="text-xs font-bold uppercase tracking-wide text-slate-400">Службова інформація</div>
+                            <div class="mt-3 space-y-2 text-sm text-slate-700">
+                                <div class="flex justify-between gap-4"><span>Місто</span><span class="font-semibold">${escapeHtml(listing.city || '—')}</span></div>
+                                <div class="flex justify-between gap-4"><span>Район</span><span class="font-semibold">${escapeHtml(listing.district || '—')}</span></div>
+                                <div class="flex justify-between gap-4"><span>Поверх</span><span class="font-semibold">${escapeHtml(listing.floor || '—')}</span></div>
+                                <div class="flex justify-between gap-4"><span>Поверхів</span><span class="font-semibold">${escapeHtml(listing.total_floors || '—')}</span></div>
+                                <div class="flex justify-between gap-4"><span>єОселя</span><span class="font-semibold">${listing.e_oselya ? 'Так' : 'Ні'}</span></div>
+                            </div>
+                        </div>
+                    </aside>
+                `;
+            }
+
+            function renderDraftCards(listings) {
+                const grid = document.getElementById('drafts-grid');
+                const total = document.getElementById('drafts-count');
+                const ready = document.getElementById('drafts-ready-count');
+                const needsPhoto = document.getElementById('drafts-needs-photo-count');
+                const visibleCount = document.getElementById('drafts-visible-count');
+                if (!grid) return;
+
+                draftListingsCache = (listings || []).map(normalizeDraftListing).map(getNormalizedDraftState);
+                const visibleListings = getVisibleDraftListings();
+                const normalized = draftListingsCache;
+                if (total) total.textContent = String(normalized.length);
+                if (ready) ready.textContent = String(normalized.filter(item => item.status === 'draft' && item.images.length >= 5).length);
+                if (needsPhoto) needsPhoto.textContent = String(normalized.filter(item => item.status === 'draft' && item.images.length < 5).length);
+                if (visibleCount) visibleCount.textContent = `${visibleListings.length} видимих`;
+                updateDraftFilterButtons();
+
+                if (!normalized.length) {
+                    grid.innerHTML = `
+                        <div class="md:col-span-3 rounded-2xl border border-dashed border-slate-200 bg-white p-8 text-center">
+                            <div class="text-lg font-bold text-slate-900">Чернеток немає</div>
+                            <div class="mt-1 text-sm text-slate-500">Створіть нове оголошення або збережіть чернетку з поточного review.</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                const visibleIds = new Set(visibleListings.map(item => item.id));
+                const renderItems = visibleListings;
+                grid.innerHTML = renderItems.map((listing) => {
+                    const photos = listing.images.length;
+                    const canPublish = photos >= 5;
+                    const cover = listing.images[0] || '';
+                    const tags = (listing.listing_highlights || []).slice(0, 3);
+                    return `
+                        <article class="overflow-hidden rounded-3xl border ${selectedDraftIds.has(listing.id) ? 'border-blue-400 ring-2 ring-blue-100' : 'border-slate-200'} bg-white shadow-sm transition hover:shadow-lg">
+                            <div class="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+                                <label class="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                                    <input type="checkbox" class="draft-select-checkbox" value="${listing.id}" ${selectedDraftIds.has(listing.id) ? 'checked' : ''} onchange="syncDraftSelection()">
+                                    Обрати
+                                </label>
+                                <span class="rounded-full ${canPublish ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'} px-2.5 py-1 text-xs font-semibold">${canPublish ? 'Готово' : 'Потрібні фото'}</span>
+                            </div>
+                            <div class="relative h-44 bg-slate-100">
+                                ${cover ? `<img src="${escapeAttr(cover)}" alt="${escapeAttr(listing.title)}" class="h-full w-full object-cover">` : `<div class="flex h-full items-center justify-center text-5xl text-slate-300">🏠</div>`}
+                                <div class="absolute left-3 top-3 rounded-full bg-white/90 px-2.5 py-1 text-xs font-bold text-slate-700 shadow">
+                                    Чернетка
+                                </div>
+                                <div class="absolute bottom-3 right-3 rounded-full bg-slate-900/70 px-2.5 py-1 text-xs font-semibold text-white backdrop-blur">
+                                    ${escapeHtml(listing.city || '—')}
+                                </div>
+                            </div>
+                            <div class="p-4">
+                                <div class="flex items-start justify-between gap-3">
+                                    <div>
+                                        <h3 class="text-lg font-bold text-slate-900 line-clamp-2">${escapeHtml(listing.title || 'Без назви')}</h3>
+                                        <p class="mt-1 text-sm text-slate-500">${escapeHtml(listing.district || '—')} · ${escapeHtml(listing.property_type || 'квартира')}</p>
+                                    </div>
+                                    <div class="rounded-xl bg-blue-50 px-3 py-2 text-right">
+                                        <div class="text-[11px] uppercase tracking-wide text-blue-500 font-bold">Ціна</div>
+                                        <div class="text-base font-black text-blue-700">₴${Number(listing.price || 0).toLocaleString('uk-UA')}</div>
+                                    </div>
+                                </div>
+                                <div class="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
+                                    <span class="rounded-full bg-slate-100 px-2.5 py-1 text-slate-700">${escapeHtml(listing.rooms || '—')} кімн.</span>
+                                    <span class="rounded-full bg-slate-100 px-2.5 py-1 text-slate-700">${escapeHtml(listing.area || '—')} м²</span>
+                                    <span class="rounded-full ${canPublish ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'} px-2.5 py-1">${photos} фото</span>
+                                </div>
+                                <div class="mt-3 flex flex-wrap gap-2">
+                                    ${(tags.length ? tags : ['Без переваг']).map(tag => `<span class="rounded-full bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-600">${escapeHtml(tag)}</span>`).join('')}
+                                </div>
+                                <div class="mt-4 rounded-2xl border border-slate-100 bg-slate-50 p-3">
+                                    <div class="text-xs font-bold uppercase tracking-wide text-slate-400">Статус</div>
+                                    <div class="mt-1 text-sm text-slate-700">${canPublish ? 'Готово до публікації' : 'Потрібно додати фото'}</div>
+                                </div>
+                                <div class="mt-4 flex gap-2">
+                                    <button type="button" onclick="openWizardListing(${listing.id})" class="flex-1 rounded-xl border border-blue-200 bg-white px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50">Продовжити</button>
+                                    <button type="button" onclick="openDraftReview(${listing.id})" class="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Review</button>
+                                    <button type="button" onclick="publishListing(${listing.id}, true)" class="flex-1 rounded-xl ${canPublish ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-emerald-300 cursor-not-allowed'} px-3 py-2 text-sm font-semibold text-white" ${canPublish ? '' : 'disabled'}>Опублікувати</button>
+                                    <button type="button" onclick="deleteListing(${listing.id})" class="rounded-xl border border-rose-200 bg-white px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50">Видалити</button>
+                                </div>
+                            </div>
+                        </article>
+                    `;
+                }).join('');
+                if (!renderItems.length) {
+                    grid.innerHTML = `
+                        <div class="md:col-span-3 rounded-2xl border border-dashed border-slate-200 bg-white p-8 text-center">
+                            <div class="text-lg font-bold text-slate-900">Нічого не знайдено</div>
+                            <div class="mt-1 text-sm text-slate-500">Змініть фільтр або очистіть вибір чернеток.</div>
+                        </div>
+                    `;
+                }
+                syncDraftSelection();
+            }
+
+            async function loadDrafts() {
+                const grid = document.getElementById('drafts-grid');
+                if (grid) {
+                    grid.innerHTML = '<div class="md:col-span-3 rounded-2xl border border-dashed border-slate-200 bg-white p-8 text-center text-slate-500">Завантаження...</div>';
+                }
+                try {
+                    const res = await fetch(`${API_BASE}/listings?status=draft&limit=100`, {
+                        headers: getAuthHeaders()
+                    });
+                    const data = await res.json();
+                    renderDraftCards(data.listings || []);
+                } catch (err) {
+                    if (grid) {
+                        grid.innerHTML = '<div class="md:col-span-3 rounded-2xl border border-rose-200 bg-rose-50 p-8 text-center text-rose-700">Не вдалося завантажити чернетки</div>';
+                    }
+                }
+            }
+
+            async function openDraftReview(id) {
+                try {
+                    const res = await fetch(`${API_BASE}/listings/${id}`, { headers: getAuthHeaders() });
+                    if (!res.ok) {
+                        const err = await res.json();
+                        alert(err.error || 'Не вдалося відкрити review');
+                        return;
+                    }
+                    const data = await res.json();
+                    currentDraftReview = getNormalizedDraftState(normalizeDraftListing(data.listing));
+                    renderDraftReview(currentDraftReview);
+                    showPage('review');
+                } catch (err) {
+                    alert('Помилка відкриття review');
+                }
+            }
+
+            function openCurrentDraftReview() {
+                const draft = getNewListingDraft();
+                currentDraftReview = getNormalizedDraftState(normalizeDraftListing({
+                    id: wizardListingId,
+                    title: draft.title,
+                    city: draft.city,
+                    district: draft.district,
+                    price: draft.price,
+                    rooms: draft.rooms,
+                    area: draft.area,
+                    description: draft.description,
+                    property_type: draft.propertyType,
+                    condition_type: draft.conditionType,
+                    floor: draft.floor,
+                    total_floors: draft.totalFloors,
+                    year_built: draft.yearBuilt,
+                    capture_mode: draft.captureMode,
+                    e_oselya: draft.eOselya,
+                    has_photo_tour: draft.photoTour,
+                    has_video_tour: draft.videoTour,
+                    source: draft.source,
+                    status: 'draft',
+                    images: [],
+                    listing_highlights: Array.from(newListingHighlights),
+                }));
+                renderDraftReview(currentDraftReview);
+                showPage('review');
+            }
+
+            function continueCurrentDraftReview() {
+                if (currentDraftReview && currentDraftReview.id) {
+                    openWizardListing(currentDraftReview.id);
+                    return;
+                }
+                showPage('new-listing');
+            }
+
+            async function bulkPublishDrafts() {
+                const listingIds = Array.from(selectedDraftIds);
+                if (!listingIds.length) {
+                    alert('Оберіть хоча б одну чернетку');
+                    return;
+                }
+                try {
+                    const res = await fetch(`${API_BASE}/listings/bulk-moderate`, {
+                        method: 'POST',
+                        headers: {
+                            ...getAuthHeaders(),
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ listing_ids: listingIds, action: 'approve' })
+                    });
+                    if (!res.ok) {
+                        const err = await res.json();
+                        alert(err.error || 'Не вдалося опублікувати чернетки');
+                        return;
+                    }
+                    clearDraftSelection();
+                    await loadDrafts();
+                    loadDashboard();
+                    loadModeration();
+                } catch (err) {
+                    alert('Помилка масової публікації');
+                }
+            }
+
+            async function bulkDeleteDrafts() {
+                const listingIds = Array.from(selectedDraftIds);
+                if (!listingIds.length) {
+                    alert('Оберіть хоча б одну чернетку');
+                    return;
+                }
+                if (!confirm(`Видалити ${listingIds.length} чернеток?`)) return;
+                try {
+                    const res = await fetch(`${API_BASE}/listings/bulk-delete`, {
+                        method: 'POST',
+                        headers: {
+                            ...getAuthHeaders(),
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ listing_ids: listingIds })
+                    });
+                    if (!res.ok) {
+                        const err = await res.json();
+                        alert(err.error || 'Не вдалося видалити чернетки');
+                        return;
+                    }
+                    clearDraftSelection();
+                    await loadDrafts();
+                    loadDashboard();
+                } catch (err) {
+                    alert('Помилка масового видалення');
+                }
+            }
+
+            window.loadDashboard = loadDashboard;
+            window.loadListings = loadListings;
+            window.loadDrafts = loadDrafts;
+            window.setDraftFilter = setDraftFilter;
+            window.selectAllVisibleDrafts = selectAllVisibleDrafts;
+            window.selectVisibleDraftState = selectVisibleDraftState;
+            window.clearDraftSelection = clearDraftSelection;
+            window.syncDraftSelection = syncDraftSelection;
+            window.openDraftReview = openDraftReview;
+            window.openCurrentDraftReview = openCurrentDraftReview;
+            window.continueCurrentDraftReview = continueCurrentDraftReview;
+            window.bulkPublishDrafts = bulkPublishDrafts;
+            window.bulkDeleteDrafts = bulkDeleteDrafts;
+            window.loadUsers = loadUsers;
+            window.loadModeration = loadModeration;
+            window.loadReports = loadReports;
+            window.openWizardListing = openWizardListing;
+            window.publishListing = publishListing;
+            window.deleteListing = deleteListing;
+
+            async function publishListing(id, published = true) {
+                try {
+                    const res = await fetch(`${API_BASE}/listings/${id}/publish`, {
+                        method: 'POST',
+                        headers: {
+                            ...getAuthHeaders(),
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ published })
+                    });
+                    if (!res.ok) {
+                        const err = await res.json();
+                        alert(err.error || 'Не вдалося змінити статус');
+                        return;
+                    }
+                    await loadListings();
+                    loadDashboard();
+                    loadModeration();
+                    if (currentDraftReview && Number(currentDraftReview.id) === Number(id)) {
+                        currentDraftReview = null;
+                        await loadDrafts();
+                        showPage('drafts');
+                    }
+                } catch (err) {
+                    alert('Помилка зміни статусу');
+                }
+            }
             
             try {
                 const res = await fetch(API_BASE + '/dashboard/stats', {
-                    headers: { 'Authorization': `Bearer ${authToken}` }
+                    headers: getAuthHeaders()
                 });
                 if (res.status === 401) {
                     window.location.href = LOGIN_URL;
@@ -905,16 +1589,37 @@
         function showPage(page) {
             document.querySelectorAll('[id^="page-"]').forEach(el => el.classList.add('hidden'));
             document.getElementById(`page-${page}`).classList.remove('hidden');
+            const pageTitles = {
+                dashboard: 'Dashboard',
+                listings: 'Нерухомість',
+                drafts: 'Чернетки',
+                review: 'Огляд чернетки',
+                'new-listing': "Додати об'єкт",
+                'csv-import': 'CSV Імпорт',
+                users: 'Користувачі',
+                moderation: 'Модерація',
+                reports: 'Звіти',
+            };
+            document.getElementById('pageTitle').textContent = pageTitles[page] || 'Dashboard';
 
             if (page !== 'reports') {
-                stopReportsHealthAutoRefresh();
+                window.stopReportsHealthAutoRefresh?.();
             }
             
             if (page === 'dashboard') {
-                loadDashboard();
+                window.loadDashboard?.();
             } else if (page === 'listings') {
-                loadListings();
+                window.loadListings?.();
+            } else if (page === 'drafts') {
+                window.loadDrafts?.();
+            } else if (page === 'review') {
+                if (currentDraftReview) renderDraftReview(currentDraftReview);
             } else if (page === 'new-listing') {
+                if (!wizardListingId) {
+                    document.querySelector('form[onsubmit="saveNewListing(event)"]')?.reset?.();
+                    newListingCaptureMode = 'off_site';
+                    newListingHighlights = new Set();
+                }
                 bindPhotoUploader();
                 bindNewListingWizard();
                 renderPhotoPreview();
@@ -924,14 +1629,16 @@
                 setupCsvDropzone();
                 setupCsvPreview();
             } else if (page === 'users') {
-                loadUsers();
+                window.loadUsers?.();
             } else if (page === 'moderation') {
-                loadModeration();
+                window.loadModeration?.();
             } else if (page === 'reports') {
-                loadReports();
-                startReportsHealthAutoRefresh();
+                window.loadReports?.();
+                window.startReportsHealthAutoRefresh?.();
             }
         }
+
+        window.showPage = showPage;
 
         async function selectAllFilteredListings() {
             try {
@@ -1203,6 +1910,8 @@
                             </span>
                         </td>
                         <td class="px-6 py-4 space-x-2">
+                            ${l.status === 'draft' ? `<button onclick="openWizardListing(${l.id})" class="text-blue-600 hover:underline text-sm">Продовжити</button>` : ''}
+                            ${l.status === 'draft' ? `<button onclick="publishListing(${l.id}, true)" class="text-emerald-600 hover:underline text-sm">Опублікувати</button>` : ''}
                             <button onclick="openEditModalFromId(${l.id})" class="text-blue-600 hover:underline text-sm">Редагувати</button>
                             <button onclick="duplicateListing(${l.id})" class="text-slate-600 hover:underline text-sm">Дублювати</button>
                             <button onclick="deleteListing(${l.id})" class="text-red-600 hover:underline text-sm">Видалити</button>
@@ -1329,6 +2038,11 @@
                 });
                 if (res.ok) {
                     loadListings();
+                    if (currentDraftReview && Number(currentDraftReview.id) === Number(id)) {
+                        currentDraftReview = null;
+                        await loadDrafts();
+                        showPage('drafts');
+                    }
                 }
             } catch (err) {
                 console.error('Delete failed', err);
@@ -1528,6 +2242,8 @@
 
         function getNewListingDraft() {
             return {
+                captureMode: newListingCaptureMode,
+                highlights: Array.from(newListingHighlights),
                 title: document.getElementById('form-title').value.trim(),
                 region: document.getElementById('form-region').value.trim(),
                 city: document.getElementById('form-city').value.trim(),
@@ -1557,8 +2273,63 @@
             };
         }
 
+        function getNewListingPhotoCount() {
+            return Array.from(document.getElementById('form-images')?.files || []).length
+                + document.getElementById('form-image-urls').value.split('\n').map(v => v.trim()).filter(Boolean).length;
+        }
+
+        function renderCaptureModeHint() {
+            const hint = document.getElementById('new-listing-capture-mode-hint');
+            if (!hint) return;
+            const config = NEW_LISTING_CAPTURE_MODES[newListingCaptureMode] || NEW_LISTING_CAPTURE_MODES.off_site;
+            hint.textContent = config.hint;
+            document.querySelectorAll('[data-capture-mode]').forEach((button) => {
+                const mode = button.getAttribute('data-capture-mode');
+                const active = mode === newListingCaptureMode;
+                button.classList.toggle('border-blue-500', active);
+                button.classList.toggle('text-blue-700', active);
+                button.classList.toggle('bg-blue-50', active);
+                button.classList.toggle('border-slate-200', !active);
+                button.classList.toggle('text-slate-700', !active);
+                button.classList.toggle('bg-white', !active);
+            });
+        }
+
+        function renderHighlightButtons() {
+            const target = document.getElementById('new-listing-highlights');
+            const count = document.getElementById('new-listing-highlights-count');
+            if (!target) return;
+
+            if (!newListingHighlights.size && count) count.textContent = '0 / 3';
+            if (!target.dataset.bound) {
+                target.innerHTML = NEW_LISTING_HIGHLIGHTS.map((label) => `
+                    <button
+                        type="button"
+                        data-highlight-chip="${escapeAttr(label)}"
+                        class="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-blue-400 hover:bg-blue-50 hover:text-blue-700"
+                    >
+                        ${escapeHtml(label)}
+                    </button>
+                `).join('');
+                target.dataset.bound = '1';
+            }
+
+            target.querySelectorAll('[data-highlight-chip]').forEach((button) => {
+                const label = button.getAttribute('data-highlight-chip') || '';
+                const active = newListingHighlights.has(label);
+                button.classList.toggle('border-blue-500', active);
+                button.classList.toggle('bg-blue-600', active);
+                button.classList.toggle('text-white', active);
+                button.classList.toggle('bg-slate-50', !active);
+                button.classList.toggle('text-slate-700', !active);
+            });
+
+            if (count) count.textContent = `${newListingHighlights.size} / 3`;
+        }
+
         function renderNewListingReview() {
             const target = document.getElementById('form-review-summary');
+            const warning = document.getElementById('form-review-warning');
             if (!target) return;
             const draft = getNewListingDraft();
             const chips = [];
@@ -1573,6 +2344,7 @@
                     <div class="text-xs text-slate-500 uppercase font-semibold">База</div>
                     <div class="font-semibold text-slate-900">${escapeHtml(draft.listingType === 'rent' ? 'Оренда' : 'Продаж')} · ${escapeHtml(draft.propertyType)}</div>
                     <div class="text-sm text-slate-600">${escapeHtml(draft.title || '—')}</div>
+                    <div class="mt-2 text-xs text-slate-500">${escapeHtml(NEW_LISTING_CAPTURE_MODES[draft.captureMode]?.label || 'Я не на об\'єкті')}</div>
                 </div>
                 <div class="rounded-xl bg-white p-3 border border-slate-200">
                     <div class="text-xs text-slate-500 uppercase font-semibold">Локація</div>
@@ -1596,7 +2368,22 @@
                         ${chips.length ? chips.map(chip => `<span class="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">${escapeHtml(chip)}</span>`).join('') : '<span class="text-sm text-slate-500">Без додаткових тегів</span>'}
                     </div>
                 </div>
+                <div class="rounded-xl bg-white p-3 border border-slate-200 md:col-span-2">
+                    <div class="text-xs text-slate-500 uppercase font-semibold">Переваги</div>
+                    <div class="mt-2 flex flex-wrap gap-2">
+                        ${draft.highlights.length ? draft.highlights.map((item) => `<span class="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">${escapeHtml(item)}</span>`).join('') : '<span class="text-sm text-slate-500">Поки без переваг</span>'}
+                    </div>
+                </div>
             `;
+
+            if (warning) {
+                const photos = draft.images + draft.imageUrls;
+                const needsPhotos = photos < 5;
+                warning.classList.toggle('hidden', !needsPhotos);
+                warning.textContent = needsPhotos
+                    ? `Для публікації потрібно щонайменше 5 фото. Зараз додано ${photos}. Чернетку можна зберегти вже зараз.`
+                    : '';
+            }
         }
 
         function validateNewListingStep(step) {
@@ -1645,6 +2432,8 @@
             const back = document.getElementById('new-listing-back');
             const next = document.getElementById('new-listing-next');
             const submit = document.getElementById('new-listing-submit');
+            const saveDraft = document.getElementById('new-listing-save-draft');
+            const publishReady = getNewListingPhotoCount() >= 5;
 
             if (progress) progress.style.width = `${Math.round((nextStep / 4) * 100)}%`;
             if (label) label.textContent = String(nextStep);
@@ -1652,7 +2441,12 @@
             if (back) back.disabled = nextStep === 1;
             if (next) next.classList.toggle('hidden', nextStep === 4);
             if (submit) submit.classList.toggle('hidden', nextStep !== 4);
+            if (saveDraft) saveDraft.classList.toggle('hidden', nextStep !== 4);
+            if (submit) submit.disabled = nextStep === 4 && !publishReady;
+            if (submit) submit.title = publishReady ? '' : 'Потрібно щонайменше 5 фото для публікації';
 
+            renderCaptureModeHint();
+            renderHighlightButtons();
             renderNewListingReview();
             if (nextStep === 2) ensureNewListingMap();
             if (nextStep === 3) renderPhotoPreview();
@@ -1666,6 +2460,29 @@
             bindUaRegionDirectory();
             form.addEventListener('input', () => renderNewListingReview());
             form.addEventListener('change', () => renderNewListingReview());
+            document.querySelectorAll('[data-capture-mode]').forEach((button) => {
+                button.addEventListener('click', () => {
+                    newListingCaptureMode = button.getAttribute('data-capture-mode') || 'off_site';
+                    renderCaptureModeHint();
+                    renderNewListingReview();
+                });
+            });
+            document.getElementById('new-listing-highlights')?.addEventListener('click', (event) => {
+                const button = event.target.closest('[data-highlight-chip]');
+                if (!button) return;
+                const label = button.getAttribute('data-highlight-chip') || '';
+                if (!label) return;
+                if (newListingHighlights.has(label)) {
+                    newListingHighlights.delete(label);
+                } else if (newListingHighlights.size < 3) {
+                    newListingHighlights.add(label);
+                } else {
+                    alert('Оберіть максимум 3 переваги');
+                    return;
+                }
+                renderHighlightButtons();
+                renderNewListingReview();
+            });
 
             document.getElementById('new-listing-next')?.addEventListener('click', () => {
                 if (!validateNewListingStep(newListingStep)) return;
@@ -1697,6 +2514,13 @@
                 return;
             }
 
+            const submitMode = e.submitter?.dataset?.submitMode || 'publish';
+            const shouldPublish = submitMode === 'publish';
+            if (shouldPublish && getNewListingPhotoCount() < 5) {
+                alert('Для публікації потрібно щонайменше 5 фото або URL фото');
+                return;
+            }
+
             const listing = {
                 title: document.getElementById('form-title').value,
                 city: document.getElementById('form-city').value,
@@ -1721,7 +2545,15 @@
                 hasPhotoTour: document.getElementById('form-photo-tour').checked,
                 hasVideoTour: document.getElementById('form-video-tour').checked,
                 listingStatus: document.getElementById('form-status').value,
-                status: 'published'
+                listing_status: document.getElementById('form-status').value,
+                captureMode: newListingCaptureMode,
+                capture_mode: newListingCaptureMode,
+                highlights: Array.from(newListingHighlights),
+                listing_highlights: Array.from(newListingHighlights),
+                source: document.getElementById('form-source').value,
+                has_photo_tour: document.getElementById('form-photo-tour').checked,
+                has_video_tour: document.getElementById('form-video-tour').checked,
+                status: shouldPublish ? 'published' : 'draft'
             };
 
             const imageUrls = document.getElementById('form-image-urls').value
@@ -1733,8 +2565,10 @@
             }
 
             try {
-                const res = await fetch(API_BASE + '/listings', {
-                    method: 'POST',
+                const method = wizardListingId ? 'PUT' : 'POST';
+                const endpoint = wizardListingId ? `${API_BASE}/listings/${wizardListingId}` : `${API_BASE}/listings`;
+                const res = await fetch(endpoint, {
+                    method,
                     headers: {
                         ...getAuthHeaders(),
                         'Content-Type': 'application/json'
@@ -1748,8 +2582,13 @@
                     if (files.length) {
                         await uploadListingImages(data.id, files);
                     }
-                    document.getElementById('form-message').innerHTML = '<div class="success">✓ Об\'єкт збережено!</div>';
+                    document.getElementById('form-message').innerHTML = shouldPublish
+                        ? '<div class="success">✓ Об\'єкт опубліковано!</div>'
+                        : '<div class="success">✓ Чернетку збережено!</div>';
                     e.target.reset();
+                    wizardListingId = null;
+                    newListingCaptureMode = 'off_site';
+                    newListingHighlights.clear();
                     if (typeof refreshUaRegionSuggestions === 'function') refreshUaRegionSuggestions();
                     if (newListingMap && newListingMapMarker) {
                         const ukraine = [49.0, 31.3];
@@ -1757,6 +2596,8 @@
                         newListingMapMarker.setLatLng(ukraine);
                     }
                     setNewListingStep(1);
+                    renderCaptureModeHint();
+                    renderHighlightButtons();
                     renderPhotoPreview();
                     setTimeout(() => loadListings(), 1000);
                 } else {
