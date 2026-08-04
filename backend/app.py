@@ -2998,7 +2998,39 @@ def add_review(lid: int):
 @limiter.limit("30 per hour")
 def create_listing():
     from app import _refresh_listing_city_summary, cache_delete_prefix
-    data = request.get_json(silent=True) or {}
+
+    data: dict = {}
+    if request.files:
+        payload_json = request.form.get("payload", "")
+        if payload_json:
+            try:
+                data = json.loads(payload_json)
+            except json.JSONDecodeError:
+                data = {}
+        image_urls_json = request.form.get("image_urls", "[]")
+        try:
+            image_urls = json.loads(image_urls_json)
+        except (TypeError, ValueError):
+            image_urls = []
+        if not isinstance(image_urls, list):
+            image_urls = []
+    else:
+        data = request.get_json(silent=True) or {}
+        image_urls = []
+
+    uploaded_images: list[str] = []
+    if request.files:
+        for upload in request.files.getlist("images"):
+            if not getattr(upload, "filename", None):
+                continue
+            if not (upload.mimetype or "").startswith("image/"):
+                continue
+            image_bytes = upload.read()
+            if not image_bytes:
+                continue
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            uploaded_images.append(f"data:{upload.mimetype};base64,{encoded}")
+
     db = get_db()
     actor = db.execute("SELECT role FROM users WHERE id = ?", (g.user_id,)).fetchone()
     is_admin = bool(actor and actor["role"] == "admin")
@@ -3026,7 +3058,13 @@ def create_listing():
     phone_verification_requested = bool(data.get("verifiedPhone", False) or data.get("requestPhoneVerification", False))
     verified_docs  = bool(data.get("verifiedDocs", False))
     images_raw    = data.get("images", [])
-    images        = json.dumps([str(u).strip() for u in (images_raw if isinstance(images_raw, list) else [])][:10])
+    image_values: list[str] = []
+    if isinstance(images_raw, list):
+        image_values.extend(str(u).strip() for u in images_raw if str(u).strip())
+    if isinstance(image_urls, list):
+        image_values.extend(str(u).strip() for u in image_urls if str(u).strip())
+    image_values = list(dict.fromkeys([*uploaded_images, *image_values]))
+    images        = json.dumps(image_values[:10])
     lat           = data.get("latitude")
     lng           = data.get("longitude")
 

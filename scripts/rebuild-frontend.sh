@@ -35,22 +35,10 @@ if [ ! -x "$TAILWIND" ]; then
   echo "   ✅ tailwindcss ready"
 fi
 
-# ── extract JSX and compile ──
+# ── compile source JSX ──
 echo "🔨 Compiling JSX → real-estate-app.js ..."
-python3 - <<'PYEOF'
-import re
-with open('web/real-estate-demo.html') as f: html = f.read()
-m = re.search(r'<script type="text/babel">(.*?)</script>', html, re.DOTALL)
-if m:
-    open('/tmp/ua-homes-app.jsx','w').write(m.group(1))
-    print(f"   Extracted {len(m.group(1))} chars of JSX")
-else:
-    # Already using external JS file — nothing to extract
-    print("   HTML uses external real-estate-app.js; nothing to extract")
-PYEOF
-
-"$ESBUILD" /tmp/ua-homes-app.jsx 2>/dev/null \
-  --bundle=false --jsx=transform --jsx-factory=React.createElement \
+"$ESBUILD" "$WEB_DIR/RealEstateApp.jsx" 2>/dev/null \
+  --bundle --format=iife --jsx=transform --jsx-factory=React.createElement \
   --jsx-fragment=React.Fragment --target=es2020 --minify-whitespace \
   --charset=utf8 --outfile="$WEB_DIR/real-estate-app.js" && echo "   ✅ real-estate-app.js compiled ($(wc -c < "$WEB_DIR/real-estate-app.js" | tr -d ' ') bytes)"
 
@@ -67,6 +55,7 @@ module.exports = {
   content: [
     '${WEB_DIR}/real-estate-demo.html',
     '${WEB_DIR}/real-estate-app.js',
+    '${WEB_DIR}/RealEstateApp.jsx',
     '${WEB_DIR}/admin/dashboard.html',
   ],
   theme: { extend: {} },

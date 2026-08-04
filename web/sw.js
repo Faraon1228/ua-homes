@@ -26,7 +26,7 @@ self.addEventListener('activate', e => {
 // Fetch strategy: network first, fall back to cache
 self.addEventListener('fetch', e => {
   // Don't intercept API calls — always go to network
-  if (e.request.url.includes('/api/')) return;
+  if (e.request.url.includes('/api/') || e.request.url.includes('/api-backend/')) return;
 
   e.respondWith(
     fetch(e.request)
