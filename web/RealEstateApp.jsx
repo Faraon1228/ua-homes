@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "./react-shim";
 import {
   DEFAULT_SORT,
   STORAGE_KEYS,
@@ -91,6 +91,26 @@ const KEYWORD_SUGGESTIONS = [
   "новобудова",
 ];
 
+const SMART_SEARCH_PATH = "smart-search.html";
+
+const INITIAL_LISTING_FORM = {
+  title: "",
+  city: "Київ",
+  district: "",
+  propertyType: "квартира",
+  conditionType: "вторинка",
+  listingType: "sale",
+  price: "",
+  rooms: "",
+  area: "",
+  floor: "1",
+  totalFloors: "1",
+  yearBuilt: "",
+  eOselya: false,
+  description: "",
+  images: ["", "", ""],
+};
+
 function normalizeImageSrc(src) {
   if (!src) return "";
   return src.includes("images.unsplash.com") ? FALLBACK_IMAGE : src;
@@ -111,6 +131,30 @@ function safeParseJSON(value, fallback) {
   }
 }
 
+function getStoredJSON(key, fallback) {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const value = window.localStorage.getItem(key);
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function getApiBaseUrl() {
+  if (typeof window === "undefined") return "/api-backend";
+  const hostname = window.location.hostname || "";
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0") {
+    return "http://127.0.0.1:5050/api";
+  }
+  return "/api-backend";
+}
+
+function getApiUrl(path) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${getApiBaseUrl()}${normalizedPath}`;
+}
+
 function describeSearchState(filters, keywordSearch) {
   const parts = [];
   if (filters.cityFilter && filters.cityFilter !== "Всі") parts.push(filters.cityFilter);
@@ -126,6 +170,223 @@ function describeSearchState(filters, keywordSearch) {
   }
   if (keywordSearch.trim()) parts.push(`"${keywordSearch.trim()}"`);
   return parts.length ? parts.join(" · ") : "Спробуйте швидкий сценарій або ключове слово.";
+}
+
+function SmartSearchPage({
+  keywordInputRef,
+  keywordDraft,
+  setKeywordDraft,
+  applyKeywordSearch,
+  clearKeywordSearch,
+  searchSummary,
+  oneClickChips,
+  activeFilters,
+  clearActiveFilter,
+  visibleProperties,
+  filteredProperties,
+  favoriteIds,
+  toggleFavorite,
+  showFavoritesOnly,
+  setShowFavoritesOnly,
+  saveCurrentSearch,
+  resetFilters,
+}) {
+  const previewProperties = visibleProperties.slice(0, 6);
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900">
+      <header className="sticky top-0 z-50 border-b border-slate-200 bg-white/95 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-4">
+          <a
+            href="real-estate-demo.html"
+            className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-100"
+          >
+            ← Повернутися
+          </a>
+          <div className="text-center">
+            <div className="text-lg font-black tracking-tight text-slate-900">UA-DIM</div>
+            <div className="text-xs font-medium text-slate-500">Розумний пошук</div>
+          </div>
+          <a
+            href="real-estate-demo.html"
+            className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
+          >
+            Повний каталог
+          </a>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-7xl px-4 py-8">
+        <div className="grid gap-6 lg:grid-cols-12">
+          <section className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm lg:col-span-8">
+            <p className="text-xs font-black uppercase tracking-[0.28em] text-blue-600">РОЗУМНИЙ ПОШУК</p>
+            <h1 className="mt-3 text-4xl font-black tracking-tight text-slate-900 sm:text-5xl">UA-DIM</h1>
+            <p className="mt-4 max-w-2xl text-base leading-relaxed text-slate-600">
+              Швидкий пошук по тексту, району, ЖК чи метро. Зберігайте запити, перемикайте сценарії та одразу
+              дивіться релевантні результати.
+            </p>
+            <div className="mt-6 rounded-[28px] border border-blue-100 bg-blue-50 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <input
+                  ref={keywordInputRef}
+                  type="text"
+                  value={keywordDraft}
+                  onChange={(e) => setKeywordDraft(e.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      applyKeywordSearch();
+                    }
+                  }}
+                  placeholder="ЖК, метро, район, ремонт..."
+                  className="flex-1 rounded-2xl border border-blue-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                />
+                <button
+                  type="button"
+                  onClick={applyKeywordSearch}
+                  className="rounded-2xl bg-blue-600 px-5 py-3 text-sm font-bold text-white transition hover:bg-blue-700"
+                >
+                  Шукати
+                </button>
+              </div>
+              <p className="mt-3 text-sm text-slate-700">{searchSummary}</p>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {oneClickChips.slice(0, 6).map((chip) => (
+                <button
+                  key={chip.label}
+                  type="button"
+                  onClick={chip.action}
+                  className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={saveCurrentSearch}
+                className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
+              >
+                Зберегти запит
+              </button>
+              <button
+                type="button"
+                onClick={resetFilters}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50"
+              >
+                Скинути
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowFavoritesOnly((current) => !current)}
+                className={`rounded-2xl px-4 py-2 text-sm font-bold transition ${
+                  showFavoritesOnly
+                    ? "bg-rose-600 text-white hover:bg-rose-700"
+                    : "border border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
+                }`}
+              >
+                {showFavoritesOnly ? "Лише обрані" : "Показати обрані"}
+              </button>
+              <button
+                type="button"
+                onClick={clearKeywordSearch}
+                className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700 transition hover:bg-blue-100"
+              >
+                Очистити текст
+              </button>
+            </div>
+          </section>
+
+          <aside className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm lg:col-span-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">Поточний стан</p>
+                <p className="mt-1 text-2xl font-black text-slate-900">Пошук</p>
+              </div>
+              <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700">
+                {filteredProperties.length} знайдено
+              </span>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs font-black uppercase tracking-wide text-slate-500">Фільтри</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {activeFilters.length ? (
+                  activeFilters.map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => clearActiveFilter(item.key)}
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-blue-200 hover:bg-blue-50"
+                    >
+                      {item.label}
+                    </button>
+                  ))
+                ) : (
+                  <p className="text-sm text-slate-500">Активних фільтрів немає.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4">
+              <p className="text-xs font-black uppercase tracking-wide text-rose-600">Обрані</p>
+              <p className="mt-1 text-sm text-slate-600">
+                {favoriteIds.length ? `Збережено ${favoriteIds.length} об'єктів.` : "Додайте об'єкти в обране."}
+              </p>
+            </div>
+          </aside>
+        </div>
+
+        <div className="mt-8 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-black uppercase tracking-wide text-slate-500">Релевантні результати</p>
+            <h2 className="mt-1 text-2xl font-black text-slate-900">
+              {visibleProperties.length ? `Показано ${previewProperties.length} з ${visibleProperties.length}` : "Нічого не знайдено"}
+            </h2>
+          </div>
+          <a
+            href="real-estate-demo.html"
+            className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
+          >
+            Відкрити повний каталог
+          </a>
+        </div>
+
+        <div className="mt-5 grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+          {previewProperties.map((property) => (
+            <div key={property.id} className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
+              <PhotoGallery images={property.images} title={property.title} />
+              <div className="p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="line-clamp-2 text-lg font-bold text-slate-900">{property.title}</h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {property.city} • {property.district}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => toggleFavorite(property)}
+                    className="rounded-full bg-slate-100 px-3 py-1 text-sm font-bold text-slate-700"
+                  >
+                    {favoriteIds.includes(property.id) ? "❤️" : "🤍"}
+                  </button>
+                </div>
+                <div className="mt-4 flex items-center justify-between gap-3">
+                  <div className="text-sm text-slate-600">
+                    {property.rooms} кімн. • {property.area} м²
+                  </div>
+                  <div className="text-xl font-black text-blue-600">${property.price.toLocaleString("uk-UA")}</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </main>
+    </div>
+  );
 }
 
 function PhotoGallery({ images, title }) {
@@ -151,8 +412,8 @@ function PhotoGallery({ images, title }) {
   };
 
   return (
-    <div className="relative h-56 overflow-hidden bg-gray-200">
-      <img src={items[index]} alt={title} className="h-full w-full object-cover" />
+    <div className="relative h-60 overflow-hidden bg-slate-200">
+      <img src={items[index]} alt={title} loading="lazy" decoding="async" className="h-full w-full object-cover" />
       {items.length > 1 && (
         <>
           <button
@@ -205,6 +466,20 @@ export default function RealEstateApp() {
       return [];
     }
   });
+  const [authToken, setAuthToken] = useState(() => getStored("uaDim.authToken", ""));
+  const [currentUser, setCurrentUser] = useState(() => getStoredJSON("uaDim.currentUser", null));
+  const [authMode, setAuthMode] = useState("login");
+  const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [authSuccess, setAuthSuccess] = useState("");
+  const [showCreateListingModal, setShowCreateListingModal] = useState(false);
+  const [listingForm, setListingForm] = useState(INITIAL_LISTING_FORM);
+  const [listingSubmitting, setListingSubmitting] = useState(false);
+  const [listingMessage, setListingMessage] = useState("");
+  const [myListings, setMyListings] = useState([]);
+  const [myListingsLoading, setMyListingsLoading] = useState(false);
+  const [selectedListingFiles, setSelectedListingFiles] = useState([]);
 
   const cities = useMemo(
     () => ["Всі", ...Array.from(new Set(MOCK_PROPERTIES.map((p) => p.city)))],
@@ -247,6 +522,51 @@ export default function RealEstateApp() {
     favoriteIds,
     savedSearches,
   ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (authToken) {
+      window.localStorage.setItem("uaDim.authToken", authToken);
+    } else {
+      window.localStorage.removeItem("uaDim.authToken");
+    }
+    if (currentUser) {
+      window.localStorage.setItem("uaDim.currentUser", JSON.stringify(currentUser));
+    } else {
+      window.localStorage.removeItem("uaDim.currentUser");
+    }
+  }, [authToken, currentUser]);
+
+  const loadMyListings = async () => {
+    if (!authToken) {
+      setMyListings([]);
+      return;
+    }
+    setMyListingsLoading(true);
+    setListingMessage("");
+    try {
+      const response = await fetch(getApiUrl("/listings?status=all&limit=20"), {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!response.ok) throw new Error("Не вдалося завантажити оголошення");
+      const data = await response.json();
+      const rows = Array.isArray(data.listings) ? data.listings : [];
+      const mine = rows.filter((item) => String(item.user_id) === String(currentUser?.id));
+      setMyListings(mine);
+    } catch (error) {
+      setListingMessage(error.message || "Не вдалося завантажити оголошення");
+    } finally {
+      setMyListingsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!authToken) {
+      setMyListings([]);
+      return;
+    }
+    loadMyListings();
+  }, [authToken, currentUser?.id]);
 
   const searchFilters = useMemo(
     () => ({
@@ -306,6 +626,12 @@ export default function RealEstateApp() {
     () => describeSearchState(searchFilters, keywordSearch),
     [searchFilters, keywordSearch]
   );
+  const eOselyaCount = useMemo(
+    () => filteredProperties.filter((property) => property.eOselya).length,
+    [filteredProperties]
+  );
+  const smartSearchMode =
+    typeof window !== "undefined" && window.location.pathname.endsWith(SMART_SEARCH_PATH);
   const activeFilters = useMemo(() => {
     const items = [];
     if (cityFilter !== "Всі") items.push({ key: "cityFilter", label: `Місто: ${cityFilter}` });
@@ -450,6 +776,171 @@ export default function RealEstateApp() {
     }
   };
 
+  const updateAuthForm = (field, value) => {
+    setAuthForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const handleAuthSubmit = async (event) => {
+    event.preventDefault();
+    setAuthLoading(true);
+    setAuthError("");
+    setAuthSuccess("");
+    try {
+      const response = await fetch(getApiUrl(authMode === "login" ? "/auth/login" : "/auth/register"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          authMode === "login"
+            ? {
+                email: authForm.email.trim(),
+                password: authForm.password,
+              }
+            : {
+                name: authForm.name.trim(),
+                email: authForm.email.trim(),
+                password: authForm.password,
+              }
+        ),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || "Не вдалося виконати дію");
+      }
+      setAuthToken(result.token || "");
+      setCurrentUser(result.user || null);
+      setAuthSuccess(authMode === "login" ? "Увійшли в профіль" : "Обліковий запис створено");
+      setAuthForm({ name: "", email: "", password: "" });
+    } catch (error) {
+      setAuthError(error.message || "Не вдалося виконати дію");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const logoutProfile = () => {
+    setAuthToken("");
+    setCurrentUser(null);
+    setAuthSuccess("Ви вийшли з профілю");
+    setMyListings([]);
+    setListingMessage("");
+  };
+
+  const updateListingField = (field, value) => {
+    setListingForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const updateListingImage = (index, value) => {
+    setListingForm((current) => {
+      const images = [...current.images];
+      images[index] = value;
+      return { ...current, images };
+    });
+  };
+
+  const addListingImageField = () => {
+    setListingForm((current) => ({ ...current, images: [...current.images, ""] }));
+  };
+
+  const removeListingImageField = (index) => {
+    setListingForm((current) => ({
+      ...current,
+      images: current.images.filter((_, itemIndex) => itemIndex !== index),
+    }));
+  };
+
+  const handleListingFileSelection = (event) => {
+    const files = Array.from(event.target.files || []).filter((file) => file.type.startsWith("image/"));
+    setSelectedListingFiles(files);
+  };
+
+  const readListingFileAsDataUrl = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error(`Не вдалося прочитати файл ${file.name}`));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleCreateListing = async (event) => {
+    event.preventDefault();
+    if (!authToken) {
+      setListingMessage("Спочатку увійдіть у профіль");
+      return;
+    }
+    setListingSubmitting(true);
+    setListingMessage("");
+    try {
+      const imageUrls = listingForm.images.filter(Boolean).slice(0, 8);
+      const uploadedImageDataUrls = selectedListingFiles.length
+        ? await Promise.all(selectedListingFiles.map((file) => readListingFileAsDataUrl(file)))
+        : [];
+      const payload = {
+        title: listingForm.title.trim(),
+        city: listingForm.city.trim(),
+        district: listingForm.district.trim(),
+        propertyType: listingForm.propertyType,
+        conditionType: listingForm.conditionType,
+        listingType: listingForm.listingType,
+        price: Number(listingForm.price),
+        rooms: Number(listingForm.rooms),
+        area: Number(listingForm.area),
+        floor: Number(listingForm.floor) || 1,
+        totalFloors: Number(listingForm.totalFloors) || 1,
+        yearBuilt: listingForm.yearBuilt ? Number(listingForm.yearBuilt) : undefined,
+        eOselya: Boolean(listingForm.eOselya),
+        description: listingForm.description.trim(),
+        listingStatus: "active",
+        source: "owner",
+        images: [...uploadedImageDataUrls, ...imageUrls].slice(0, 8),
+      };
+
+      const response = await fetch(getApiUrl("/listings"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || "Не вдалося створити оголошення");
+      }
+      setListingMessage(`Оголошення створено${result.listing?.status === "published" ? " і вже опубліковане" : " і надіслане на модерацію"}.`);
+      setListingForm(INITIAL_LISTING_FORM);
+      setSelectedListingFiles([]);
+      setShowCreateListingModal(false);
+      await loadMyListings();
+    } catch (error) {
+      setListingMessage(error.message || "Не вдалося створити оголошення");
+    } finally {
+      setListingSubmitting(false);
+    }
+  };
+
+  if (smartSearchMode) {
+    return React.createElement(SmartSearchPage, {
+      keywordInputRef,
+      keywordDraft,
+      setKeywordDraft,
+      applyKeywordSearch,
+      clearKeywordSearch,
+      searchSummary,
+      oneClickChips,
+      activeFilters,
+      clearActiveFilter,
+      visibleProperties,
+      filteredProperties,
+      favoriteIds,
+      toggleFavorite,
+      showFavoritesOnly,
+      setShowFavoritesOnly,
+      saveCurrentSearch,
+      resetFilters,
+    });
+  }
+
   useEffect(() => {
     const onKeyDown = (event) => {
       if (event.key !== "/") return;
@@ -470,476 +961,1080 @@ export default function RealEstateApp() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-900 font-sans">
-      <section className="max-w-7xl mx-auto px-4 mt-8">
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-          <h1 className="text-2xl font-bold mb-4">Пошук нерухомості в Україні</h1>
-          <div className="mb-4 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3">
-            <p className="text-[11px] font-bold uppercase tracking-wide text-blue-700">Активний запит</p>
-            <p className="mt-1 text-sm text-slate-700">{searchSummary}</p>
+    <div className="min-h-screen bg-slate-50 text-slate-900">
+      <header className="sticky top-0 z-50 border-b border-slate-200 bg-white/95 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-blue-700 text-sm font-black text-white shadow-lg shadow-slate-900/20">
+              UA
+            </div>
+            <div>
+              <div className="text-lg font-black tracking-tight text-slate-900">UA-Dim</div>
+              <div className="text-xs font-medium text-slate-500">Пошук нерухомості</div>
+            </div>
           </div>
 
-          <div className="mb-5 sticky top-4 z-20 rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-sm backdrop-blur">
-            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              <div>
-                <p className="text-xs font-black uppercase tracking-wide text-slate-500">Активні фільтри</p>
-                <p className="mt-1 text-sm text-slate-600">Швидко вимикайте окремі умови або застосовуйте one-click chips.</p>
-              </div>
-              <button
-                type="button"
-                onClick={resetFilters}
-                className="min-h-[44px] rounded-2xl bg-slate-900 px-4 text-sm font-bold text-white hover:bg-blue-700 transition"
+          <nav className="hidden items-center gap-2 lg:flex">
+            {["Купити", "Орендувати", "Новобудови", "єОселя"].map((item) => (
+              <span
+                key={item}
+                className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm font-semibold text-slate-700"
               >
-                Скинути все
-              </button>
+                {item}
+              </span>
+            ))}
+          </nav>
+
+          <div className="flex items-center gap-2">
+            <a
+              href={SMART_SEARCH_PATH}
+              className="inline-flex rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700 transition hover:bg-blue-100"
+            >
+              Розумний пошук
+            </a>
+            <button
+              type="button"
+              onClick={() => setShowFavoritesOnly((current) => !current)}
+              className="hidden rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-bold text-rose-700 transition hover:bg-rose-100 sm:inline-flex"
+            >
+              Обрані {favoriteIds.length}
+            </button>
+            <button
+              type="button"
+              onClick={saveCurrentSearch}
+              className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
+            >
+              + Зберегти пошук
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <section className="bg-[radial-gradient(circle_at_top_left,rgba(37,99,235,.16),transparent_35%),linear-gradient(180deg,#0f172a_0%,#1e293b_58%,#f8fafc_58%)]">
+        <div className="mx-auto max-w-7xl px-4 pb-10 pt-10 lg:pb-14">
+          <div className="grid gap-6 lg:grid-cols-12">
+            <div className="rounded-[32px] border border-white/10 bg-slate-900/95 p-6 shadow-2xl shadow-slate-900/20 backdrop-blur lg:col-span-7">
+              <p className="text-xs font-black uppercase tracking-[0.28em] text-blue-300">
+                Search-first marketplace
+              </p>
+              <h1 className="mt-3 text-4xl font-black leading-tight text-white sm:text-5xl">
+                Нерухомість України
+              </h1>
+              <p className="mt-4 max-w-2xl text-base leading-relaxed text-slate-300">
+                Знаходьте об&apos;єкти за містом, районом, площею й бюджетом, зберігайте пошук, порівнюйте
+                обрані та швидко відсікайте неактуальні варіанти.
+              </p>
+
+              <div className="mt-6 flex flex-wrap gap-2">
+                <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white">
+                  Пошук відразу по всій Україні
+                </span>
+                <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white">
+                  єОселя 3% / 7%
+                </span>
+                <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white">
+                  Порівняння обраних
+                </span>
+                <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white">
+                  Швидкі сценарії
+                </span>
+              </div>
+
+              <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {[
+                  { label: "Знайдено", value: visibleProperties.length, note: "об'єктів" },
+                  { label: "У фільтрі", value: filteredProperties.length, note: "після умов" },
+                  { label: "Обрані", value: favoriteStats.count, note: "збережено" },
+                  { label: "єОселя", value: eOselyaCount, note: "пропозицій" },
+                ].map((metric) => (
+                  <div key={metric.label} className="rounded-[24px] border border-white/10 bg-white/10 p-4">
+                    <div className="text-xs font-black uppercase tracking-wide text-blue-200">{metric.label}</div>
+                    <div className="mt-1 text-3xl font-black text-white">{metric.value}</div>
+                    <div className="mt-1 text-xs font-semibold text-slate-300">{metric.note}</div>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {activeFilters.length ? (
-                activeFilters.map((item) => (
+
+            <div className="rounded-[32px] border border-slate-200 bg-white p-5 shadow-xl shadow-slate-200/70 lg:col-span-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Активний запит</p>
+                  <p className="mt-1 text-2xl font-black text-slate-900">UA-DIM</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearKeywordSearch}
+                  className="rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 transition hover:bg-blue-100"
+                >
+                  Очистити слово
+                </button>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3">
+                <p className="text-[11px] font-black uppercase tracking-wide text-blue-700">Поточний запит</p>
+                <p className="mt-1 text-sm leading-relaxed text-slate-700">{searchSummary}</p>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                {oneClickChips.slice(0, 6).map((chip) => (
                   <button
-                    key={item.key}
+                    key={chip.label}
                     type="button"
-                    onClick={() => clearActiveFilter(item.key)}
-                    className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-blue-50 hover:border-blue-200 transition"
-                    aria-label={`Прибрати фільтр ${item.label}`}
+                    onClick={chip.action}
+                    className="rounded-full border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100"
                   >
-                    {item.label}
-                    <span className="text-slate-400">✕</span>
+                    {chip.label}
                   </button>
-                ))
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Ключові слова</p>
+                  <span className="text-xs font-semibold text-slate-400">Швидке автодоповнення</span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {KEYWORD_SUGGESTIONS.map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      type="button"
+                      onClick={() => {
+                        const current = keywordDraft.trim();
+                        const nextValue = current ? `${current} ${suggestion}` : suggestion;
+                        setKeywordDraft(nextValue);
+                        setKeywordSearch(nextValue);
+                        window.requestAnimationFrame(() => {
+                          keywordInputRef.current?.focus();
+                          keywordInputRef.current?.select?.();
+                        });
+                      }}
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={saveCurrentSearch}
+                  className="min-h-[44px] rounded-2xl bg-slate-900 px-4 text-sm font-bold text-white transition hover:bg-blue-700"
+                >
+                  Зберегти поточний пошук
+                </button>
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="min-h-[44px] rounded-2xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition hover:bg-slate-50"
+                >
+                  Скинути фільтри
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-7xl px-4 pb-12">
+        <div className="grid gap-6 lg:grid-cols-12">
+          <aside className="space-y-6 lg:col-span-4 lg:sticky lg:top-24 self-start">
+            <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Профіль власника</p>
+                  <h2 className="mt-1 text-xl font-black text-slate-900">
+                    {currentUser ? currentUser.name : "Увійдіть у профіль"}
+                  </h2>
+                </div>
+                <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${currentUser ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-700"}`}>
+                  {currentUser ? "Авторизовано" : "Потрібен вхід"}
+                </span>
+              </div>
+
+              <p className="mt-2 text-sm text-slate-600">
+                Створюйте оголошення з профілю, додавайте кілька фото й відправляйте їх на модерацію.
+              </p>
+
+              {authError ? <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{authError}</div> : null}
+              {authSuccess ? <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{authSuccess}</div> : null}
+              {listingMessage ? <div className="mt-3 rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700">{listingMessage}</div> : null}
+
+              {!currentUser ? (
+                <form onSubmit={handleAuthSubmit} className="mt-4 space-y-3">
+                  {authMode === "register" ? (
+                    <input
+                      type="text"
+                      value={authForm.name}
+                      onChange={(event) => updateAuthForm("name", event.target.value)}
+                      placeholder="Ваше ім'я"
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                    />
+                  ) : null}
+                  <input
+                    type="email"
+                    value={authForm.email}
+                    onChange={(event) => updateAuthForm("email", event.target.value)}
+                    placeholder="Email"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                  />
+                  <input
+                    type="password"
+                    value={authForm.password}
+                    onChange={(event) => updateAuthForm("password", event.target.value)}
+                    placeholder="Пароль"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="submit"
+                      disabled={authLoading}
+                      className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      {authLoading ? "Зачекайте..." : authMode === "login" ? "Увійти" : "Зареєструватися"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAuthMode((current) => (current === "login" ? "register" : "login"))}
+                      className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                    >
+                      {authMode === "login" ? "Створити акаунт" : "Уже є акаунт"}
+                    </button>
+                  </div>
+                </form>
               ) : (
-                <p className="text-sm text-slate-500">Активних фільтрів немає.</p>
+                <div className="mt-4 space-y-3">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-xs font-black uppercase tracking-wide text-slate-500">Профіль</p>
+                    <p className="mt-1 font-semibold text-slate-900">{currentUser.email}</p>
+                    <p className="mt-1 text-xs text-slate-500">У профілі зручно створювати оголошення з 1–8 фото.</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCreateListingModal(true);
+                        setListingMessage("");
+                      }}
+                      className="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
+                    >
+                      + Створити оголошення
+                    </button>
+                    <button
+                      type="button"
+                      onClick={logoutProfile}
+                      className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                    >
+                      Вийти
+                    </button>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs font-black uppercase tracking-wide text-slate-500">Мої оголошення</p>
+                      {myListingsLoading ? <span className="text-xs text-slate-500">Завантаження…</span> : null}
+                    </div>
+                    {myListings.length ? (
+                      <ul className="mt-3 space-y-2">
+                        {myListings.slice(0, 3).map((item) => (
+                          <li key={item.id} className="rounded-xl border border-slate-200 bg-white p-2">
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+                                <p className="mt-1 text-xs text-slate-500">{item.city}, {item.district}</p>
+                              </div>
+                              <span className="rounded-full bg-blue-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-blue-700">
+                                {item.status === "published" ? "Опубліковано" : item.moderation_status === "approved" ? "Підтверджено" : "На модерації"}
+                              </span>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-3 text-sm text-slate-500">Ще немає створених оголошень.</p>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              {oneClickChips.map((chip) => (
-                <button
-                  key={chip.label}
-                  type="button"
-                  onClick={chip.action}
-                  className="px-3 py-1.5 rounded-full border border-blue-200 bg-white text-blue-700 text-xs font-semibold hover:bg-blue-100 transition"
-                >
-                  {chip.label}
-                </button>
-              ))}
-            </div>
-          </div>
 
-          <div className="mb-5 rounded-2xl border border-blue-100 bg-blue-50 p-4">
-            <div className="flex items-center justify-between gap-3 mb-2">
-              <p className="text-xs font-bold uppercase tracking-wide text-blue-700">Full-text пошук</p>
-              <button
-                type="button"
-                onClick={clearKeywordSearch}
-                className="px-2.5 py-1.5 rounded-lg bg-white border border-blue-200 text-blue-700 text-xs font-semibold hover:bg-blue-100 transition"
-              >
-                Очистити
-              </button>
-            </div>
-            <div className="flex flex-col sm:flex-row gap-2">
-              <input
-                ref={keywordInputRef}
-                type="text"
-                value={keywordDraft}
-                onChange={(e) => setKeywordDraft(e.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    applyKeywordSearch();
-                  }
-                }}
-                placeholder="ЖК, метро, вулиця, ремонт, тераса..."
-                className="flex-1 p-3 bg-white border border-blue-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-400"
-              />
-              <button
-                type="button"
-                onClick={applyKeywordSearch}
-                className="px-4 py-3 rounded-xl bg-blue-600 text-white font-semibold hover:bg-blue-700 transition"
-              >
-                Застосувати
-              </button>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {KEYWORD_SUGGESTIONS.map((suggestion) => (
+            <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Фільтри</p>
+                  <h2 className="mt-1 text-xl font-black text-slate-900">Пошук</h2>
+                </div>
                 <button
-                  key={suggestion}
                   type="button"
-                  onClick={() => {
-                    const current = keywordDraft.trim();
-                    const nextValue = current ? `${current} ${suggestion}` : suggestion;
-                    setKeywordDraft(nextValue);
-                    setKeywordSearch(nextValue);
-                    window.requestAnimationFrame(() => {
-                      keywordInputRef.current?.focus();
-                      keywordInputRef.current?.select?.();
-                    });
-                  }}
-                  className="px-3 py-1.5 rounded-full border border-blue-200 bg-white text-blue-700 text-xs font-semibold hover:bg-blue-100 transition"
+                  onClick={resetFilters}
+                  className="rounded-2xl bg-slate-900 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700"
                 >
-                  {suggestion}
+                  Скинути
                 </button>
-              ))}
-            </div>
-          </div>
+              </div>
 
-          <div className="mb-5">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <p className="text-xs font-bold uppercase tracking-wide text-gray-500">Швидкі сценарії</p>
-              <button
-                type="button"
-                onClick={saveCurrentSearch}
-                className="text-sm font-semibold text-blue-600 hover:text-blue-700 underline"
-              >
-                Зберегти поточний пошук
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {QUICK_SCENARIOS.map((scenario) => (
-                <button
-                  key={scenario.label}
-                  type="button"
-                  onClick={() => applyScenario(scenario)}
-                  className="px-3 py-2 rounded-xl bg-gray-100 text-gray-800 text-sm font-medium hover:bg-gray-200 transition"
-                >
-                  {scenario.label}
-                </button>
-              ))}
-            </div>
-            {!!savedSearches.length && (
+              <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3">
+                <p className="text-[11px] font-black uppercase tracking-wide text-blue-700">Активні умови</p>
+                <p className="mt-1 text-sm text-slate-700">{searchSummary}</p>
+              </div>
+
               <div className="mt-4 flex flex-wrap gap-2">
-                {savedSearches.slice(0, 4).map((entry) => (
-                  <span
-                    key={entry.id}
-                    className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 border border-blue-100"
+                {activeFilters.length ? (
+                  activeFilters.map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => clearActiveFilter(item.key)}
+                      className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-blue-200 hover:bg-blue-50"
+                      aria-label={`Прибрати фільтр ${item.label}`}
+                    >
+                      {item.label}
+                      <span className="text-slate-400">✕</span>
+                    </button>
+                  ))
+                ) : (
+                  <p className="text-sm text-slate-500">Активних фільтрів немає.</p>
+                )}
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Full-text пошук</p>
+                  <button
+                    type="button"
+                    onClick={clearKeywordSearch}
+                    className="rounded-lg border border-blue-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100"
                   >
-                    <button
-                      type="button"
-                      onClick={() => openSavedSearch(entry)}
-                      className="hover:text-blue-700"
-                    >
-                      {entry.name}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setSavedSearches((current) => current.filter((item) => item.id !== entry.id))
+                    Очистити
+                  </button>
+                </div>
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                  <input
+                    ref={keywordInputRef}
+                    type="text"
+                    value={keywordDraft}
+                    onChange={(e) => setKeywordDraft(e.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        applyKeywordSearch();
                       }
-                      className="text-rose-500 hover:text-rose-700"
-                      aria-label={`Видалити пошук ${entry.name}`}
+                    }}
+                    placeholder="ЖК, метро, вулиця, ремонт, тераса..."
+                    className="flex-1 rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                  />
+                  <button
+                    type="button"
+                    onClick={applyKeywordSearch}
+                    className="rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700"
+                  >
+                    Застосувати
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Швидкі сценарії</p>
+                  <button
+                    type="button"
+                    onClick={saveCurrentSearch}
+                    className="text-sm font-semibold text-blue-600 underline transition hover:text-blue-700"
+                  >
+                    Зберегти пошук
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {QUICK_SCENARIOS.map((scenario) => (
+                    <button
+                      key={scenario.label}
+                      type="button"
+                      onClick={() => applyScenario(scenario)}
+                      className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-medium text-slate-800 transition hover:bg-slate-200"
                     >
-                      ✕
+                      {scenario.label}
                     </button>
+                  ))}
+                </div>
+                {!!savedSearches.length && (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {savedSearches.slice(0, 4).map((entry) => (
+                      <span
+                        key={entry.id}
+                        className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                      >
+                        <button type="button" onClick={() => openSavedSearch(entry)} className="hover:text-blue-700">
+                          {entry.name}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSavedSearches((current) => current.filter((item) => item.id !== entry.id))
+                          }
+                          className="text-rose-500 hover:text-rose-700"
+                          aria-label={`Видалити пошук ${entry.name}`}
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 gap-4">
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Місто</label>
+                  <select
+                    value={cityFilter}
+                    onChange={(e) => setCityFilter(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                  >
+                    {cities.map((city) => (
+                      <option key={city} value={city}>
+                        {city === "Всі" ? "Всі міста України" : city}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Ціна, $</label>
+                  <div className="mt-1 grid grid-cols-2 gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="від"
+                      value={minPrice}
+                      onChange={(e) => setMinPrice(e.target.value)}
+                      className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="до"
+                      value={maxPrice}
+                      onChange={(e) => setMaxPrice(e.target.value)}
+                      className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Кімнати</label>
+                  <div className="mt-1 grid grid-cols-2 gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="від"
+                      value={minRooms}
+                      onChange={(e) => setMinRooms(e.target.value)}
+                      className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="до"
+                      value={maxRooms}
+                      onChange={(e) => setMaxRooms(e.target.value)}
+                      className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Площа, м²</label>
+                  <div className="mt-1 grid grid-cols-2 gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="від"
+                      value={minArea}
+                      onChange={(e) => setMinArea(e.target.value)}
+                      className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="до"
+                      value={maxArea}
+                      onChange={(e) => setMaxArea(e.target.value)}
+                      className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Сортування</label>
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                  >
+                    <option value="relevance">Найбільш релевантні</option>
+                    <option value="price-asc">Дешевші спочатку</option>
+                    <option value="price-desc">Дорожчі спочатку</option>
+                    <option value="area-desc">Більша площа спочатку</option>
+                    <option value="area-asc">Менша площа спочатку</option>
+                  </select>
+                  <p className="mt-1 text-xs text-slate-500">Авто: дешевші спочатку для єОселя</p>
+                </div>
+              </div>
+
+              <div className="mt-5 flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                <label className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={onlyEOselya}
+                    onChange={(e) => setOnlyEOselya(e.target.checked)}
+                    className="h-5 w-5"
+                  />
+                  <span className="font-medium text-slate-700">
+                    Тільки об&apos;єкти під <span className="font-bold text-blue-600">єОселя</span>
                   </span>
-                ))}
+                </label>
               </div>
-            )}
-          </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-            <div>
-              <label className="text-xs font-bold text-gray-500 uppercase">Місто</label>
-              <select
-                value={cityFilter}
-                onChange={(e) => setCityFilter(e.target.value)}
-                className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl"
-              >
-                {cities.map((city) => (
-                  <option key={city} value={city}>
-                    {city === "Всі" ? "Всі міста України" : city}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="text-xs font-bold text-gray-500 uppercase">Ціна, $</label>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="від"
-                  value={minPrice}
-                  onChange={(e) => setMinPrice(e.target.value)}
-                  className="p-3 bg-gray-50 border border-gray-200 rounded-xl"
-                />
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="до"
-                  value={maxPrice}
-                  onChange={(e) => setMaxPrice(e.target.value)}
-                  className="p-3 bg-gray-50 border border-gray-200 rounded-xl"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs font-bold text-gray-500 uppercase">Кімнати</label>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="від"
-                  value={minRooms}
-                  onChange={(e) => setMinRooms(e.target.value)}
-                  className="p-3 bg-gray-50 border border-gray-200 rounded-xl"
-                />
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="до"
-                  value={maxRooms}
-                  onChange={(e) => setMaxRooms(e.target.value)}
-                  className="p-3 bg-gray-50 border border-gray-200 rounded-xl"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs font-bold text-gray-500 uppercase">Площа, м²</label>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="від"
-                  value={minArea}
-                  onChange={(e) => setMinArea(e.target.value)}
-                  className="p-3 bg-gray-50 border border-gray-200 rounded-xl"
-                />
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="до"
-                  value={maxArea}
-                  onChange={(e) => setMaxArea(e.target.value)}
-                  className="p-3 bg-gray-50 border border-gray-200 rounded-xl"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs font-bold text-gray-500 uppercase">Сортування</label>
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
-                className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl"
-              >
-                <option value="relevance">Найбільш релевантні</option>
-                <option value="price-asc">Дешевші спочатку</option>
-                <option value="price-desc">Дорожчі спочатку</option>
-                <option value="area-desc">Більша площа спочатку</option>
-                <option value="area-asc">Менша площа спочатку</option>
-              </select>
-              <p className="text-xs text-gray-500 mt-1">Авто: дешевші спочатку для єОселя</p>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between mt-4 gap-4 flex-wrap">
-            <label className="flex items-center space-x-3">
-              <input
-                type="checkbox"
-                checked={onlyEOselya}
-                onChange={(e) => setOnlyEOselya(e.target.checked)}
-                className="w-5 h-5"
-              />
-              <span className="font-medium text-gray-700">
-                Тільки об&apos;єкти під <span className="text-blue-600 font-bold">єОселя</span>
-              </span>
-            </label>
-
-            <div className="flex items-center gap-4">
-              <button
-                onClick={resetFilters}
-                className="text-blue-600 font-bold underline hover:text-blue-700"
-              >
-                Скинути фільтри
-              </button>
-              <button
-                onClick={clearSavedFilters}
-                className="text-red-600 font-bold underline hover:text-red-700"
-              >
-                Очистити localStorage
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <p className="text-xs font-black uppercase tracking-wide text-rose-600">Обрані</p>
-                <p className="mt-1 text-sm text-slate-600">
-                  {favoriteStats.count
-                    ? `Збережено ${favoriteStats.count} об'єктів, середня ціна $${favoriteStats.avgPrice.toLocaleString(
-                        "uk-UA"
-                      )}, ${favoriteStats.verifiedCount} під єОселя.`
-                    : "Додавайте об'єкти в обране, щоб повертатися до них швидше."}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowFavoritesOnly((current) => !current)}
-                  className={`min-h-[44px] rounded-2xl px-4 text-sm font-bold transition ${
-                    showFavoritesOnly
-                      ? "bg-rose-600 text-white hover:bg-rose-700"
-                      : "bg-white text-rose-700 border border-rose-200 hover:bg-rose-100"
-                  }`}
-                >
-                  {showFavoritesOnly ? "❤️ Показую лише обрані" : "🤍 Показати лише обрані"}
-                </button>
+              <div className="mt-4 flex flex-wrap gap-3">
                 <button
                   type="button"
                   onClick={() => {
                     setFavoriteIds([]);
                     setShowFavoritesOnly(false);
                   }}
-                  className="min-h-[44px] rounded-2xl border border-rose-200 px-4 text-sm font-bold text-rose-700 hover:bg-rose-100 transition"
+                  className="rounded-2xl border border-rose-200 bg-white px-4 py-2 text-sm font-bold text-rose-700 transition hover:bg-rose-50"
                 >
                   Очистити обрані
                 </button>
-              </div>
-            </div>
-
-            <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Порівняння обраних</p>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Швидкий shortlist для прийняття рішення: ціна, площа, кімнати, єОселя.
-                  </p>
-                </div>
                 <button
                   type="button"
-                  onClick={() => setShowFavoritesOnly(true)}
-                  className="min-h-[44px] rounded-2xl bg-slate-900 px-4 text-sm font-bold text-white hover:bg-blue-700 transition"
+                  onClick={clearSavedFilters}
+                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-100"
                 >
-                  Порівняти зараз
+                  Очистити localStorage
                 </button>
               </div>
-
-              <div className="mt-3 rounded-xl bg-slate-50 border border-slate-200 p-3">
-                <p className="text-sm text-slate-700">{compareSummary}</p>
-              </div>
-
-              {!!compareProperties.length && (
-                <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
-                  {compareProperties.map((property) => (
-                    <div
-                      key={property.id}
-                      className={`rounded-xl border p-3 ${
-                        property.id === bestValueId
-                          ? "border-emerald-300 bg-emerald-50"
-                          : "border-slate-200 bg-white"
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-bold text-slate-900">{property.title}</p>
-                          <p className="text-xs text-slate-500 mt-1">
-                            {property.city}, {property.district}
-                          </p>
-                        </div>
-                        {property.id === bestValueId && (
-                          <span className="text-[10px] px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 font-semibold">
-                            BEST VALUE
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-3 space-y-1.5 text-sm text-slate-700">
-                        <div className="flex justify-between gap-3">
-                          <span>Ціна</span>
-                          <b>${property.price.toLocaleString("uk-UA")}</b>
-                        </div>
-                        <div className="flex justify-between gap-3">
-                          <span>Площа</span>
-                          <b>{property.area} м²</b>
-                        </div>
-                        <div className="flex justify-between gap-3">
-                          <span>Кімнати</span>
-                          <b>{property.rooms}</b>
-                        </div>
-                        <div className="flex justify-between gap-3">
-                          <span>єОселя</span>
-                          <b>{property.eOselya ? "Так" : "Ні"}</b>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
 
-            {!!favoriteProperties.length && (
-              <div className="mt-4 flex flex-wrap gap-2">
-                {favoriteProperties.slice(0, 4).map((property) => (
-                  <span
-                    key={property.id}
-                    className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 border border-rose-100"
+            <div className="rounded-[28px] border border-rose-200 bg-rose-50 p-5 shadow-sm">
+              <div className="flex flex-col gap-3">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide text-rose-600">Обрані</p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {favoriteStats.count
+                      ? `Збережено ${favoriteStats.count} об'єктів, середня ціна $${favoriteStats.avgPrice.toLocaleString(
+                          "uk-UA"
+                        )}, ${favoriteStats.verifiedCount} під єОселя.`
+                      : "Додавайте об'єкти в обране, щоб повертатися до них швидше."}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowFavoritesOnly((current) => !current)}
+                    className={`min-h-[44px] rounded-2xl px-4 text-sm font-bold transition ${
+                      showFavoritesOnly
+                        ? "bg-rose-600 text-white hover:bg-rose-700"
+                        : "border border-rose-200 bg-white text-rose-700 hover:bg-rose-100"
+                    }`}
                   >
-                    {property.title}
+                    {showFavoritesOnly ? "❤️ Показую лише обрані" : "🤍 Показати лише обрані"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowFavoritesOnly(true)}
+                    className="min-h-[44px] rounded-2xl bg-slate-900 px-4 text-sm font-bold text-white transition hover:bg-blue-700"
+                  >
+                    Порівняти зараз
+                  </button>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Порівняння обраних</p>
+                  <p className="mt-1 text-sm text-slate-600">{compareSummary}</p>
+
+                  {!!compareProperties.length && (
+                    <div className="mt-4 space-y-3">
+                      {compareProperties.map((property) => (
+                        <div
+                          key={property.id}
+                          className={`rounded-xl border p-3 ${
+                            property.id === bestValueId
+                              ? "border-emerald-300 bg-emerald-50"
+                              : "border-slate-200 bg-white"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-bold text-slate-900">{property.title}</p>
+                              <p className="mt-1 text-xs text-slate-500">
+                                {property.city}, {property.district}
+                              </p>
+                            </div>
+                            {property.id === bestValueId && (
+                              <span className="rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-semibold text-emerald-700">
+                                BEST VALUE
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-3 space-y-1.5 text-sm text-slate-700">
+                            <div className="flex justify-between gap-3">
+                              <span>Ціна</span>
+                              <b>${property.price.toLocaleString("uk-UA")}</b>
+                            </div>
+                            <div className="flex justify-between gap-3">
+                              <span>Площа</span>
+                              <b>{property.area} м²</b>
+                            </div>
+                            <div className="flex justify-between gap-3">
+                              <span>Кімнати</span>
+                              <b>{property.rooms}</b>
+                            </div>
+                            <div className="flex justify-between gap-3">
+                              <span>єОселя</span>
+                              <b>{property.eOselya ? "Так" : "Ні"}</b>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {!!favoriteProperties.length && (
+                  <div className="flex flex-wrap gap-2">
+                    {favoriteProperties.slice(0, 4).map((property) => (
+                      <span
+                        key={property.id}
+                        className="inline-flex items-center gap-2 rounded-full border border-rose-100 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
+                      >
+                        {property.title}
+                        <button
+                          type="button"
+                          onClick={() => toggleFavorite(property)}
+                          className="text-rose-500 hover:text-rose-700"
+                          aria-label={`Прибрати ${property.title} з обраного`}
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </aside>
+
+          <div className="space-y-4 lg:col-span-8">
+            <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Результати</p>
+                  <h2 className="mt-1 text-2xl font-black text-slate-900">
+                    {visibleProperties.length
+                      ? `Показано ${visibleProperties.length} з ${filteredProperties.length}`
+                      : "Нічого не знайдено"}
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {showFavoritesOnly
+                      ? "Лише обрані об'єкти"
+                      : "Об'єкти відсортовано за вашими фільтрами та релевантністю"}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowFavoritesOnly((current) => !current)}
+                    className={`rounded-2xl px-4 py-2 text-sm font-bold transition ${
+                      showFavoritesOnly
+                        ? "bg-rose-600 text-white hover:bg-rose-700"
+                        : "border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                    }`}
+                  >
+                    {showFavoritesOnly ? "Лише обрані" : "Показати обрані"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetFilters}
+                    className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-100"
+                  >
+                    Скинути
+                  </button>
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value)}
+                    className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                  >
+                    <option value="relevance">Релевантність</option>
+                    <option value="price-asc">Дешевші</option>
+                    <option value="price-desc">Дорожчі</option>
+                    <option value="area-desc">Більша площа</option>
+                    <option value="area-asc">Менша площа</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-2">
+              {visibleProperties.map((property) => (
+                <div
+                  key={property.id}
+                  className="group overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-xl"
+                >
+                  <div className="relative">
+                    <PhotoGallery images={property.images} title={property.title} />
+                    <div className="absolute left-3 top-3 flex flex-col gap-2">
+                      {property.eOselya && (
+                        <span className="rounded-full bg-blue-600 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-white shadow-md">
+                          єОселя
+                        </span>
+                      )}
+                      <span className="rounded-full bg-black/60 px-3 py-1.5 text-[10px] font-semibold text-white backdrop-blur-sm">
+                        {property.city}, {property.district}
+                      </span>
+                    </div>
                     <button
                       type="button"
                       onClick={() => toggleFavorite(property)}
-                      className="text-rose-500 hover:text-rose-700"
-                      aria-label={`Прибрати ${property.title} з обраного`}
+                      className="absolute right-3 top-3 rounded-full bg-white/90 px-3 py-1 text-sm font-bold shadow hover:bg-white"
+                      aria-label={
+                        favoriteIds.includes(property.id)
+                          ? `Прибрати ${property.title} з обраного`
+                          : `Додати ${property.title} в обране`
+                      }
                     >
-                      ✕
+                      {favoriteIds.includes(property.id) ? "❤️" : "🤍"}
                     </button>
-                  </span>
-                ))}
+                    <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between gap-2">
+                      <span className="rounded-full bg-black/60 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur-sm">
+                        {property.rooms} кімн.
+                      </span>
+                      <span className="rounded-full bg-white/90 px-3 py-1.5 text-xs font-bold text-slate-700">
+                        {property.area} м²
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="p-5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="line-clamp-2 text-lg font-bold leading-snug text-slate-900 group-hover:text-blue-700">
+                          {property.title}
+                        </h3>
+                        <p className="mt-2 text-sm text-slate-500">
+                          {property.city} • {property.district}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-2xl font-black text-blue-600">${property.price.toLocaleString("uk-UA")}</p>
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Ціна</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700">
+                        {property.rooms} кімн.
+                      </span>
+                      <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700">
+                        {property.area} м²
+                      </span>
+                      <span
+                        className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
+                          property.eOselya
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-amber-50 text-amber-700"
+                        }`}
+                      >
+                        {property.eOselya ? "Під єОселя" : "Стандартна пропозиція"}
+                      </span>
+                    </div>
+
+                    <div className="mt-4 flex items-center justify-between gap-3">
+                      <p className="text-xs text-slate-500">
+                        {property.eOselya
+                          ? "Підходить під державну програму"
+                          : "Базова пропозиція без держпрограми"}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => toggleFavorite(property)}
+                        className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700 transition hover:bg-blue-50 hover:text-blue-700"
+                      >
+                        {favoriteIds.includes(property.id) ? "В обраному" : "В обране"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {visibleProperties.length === 0 && (
+              <div className="rounded-[28px] border border-dashed border-slate-200 bg-white py-16 text-center">
+                <p className="text-lg font-medium text-slate-400">
+                  {showFavoritesOnly
+                    ? "У вас ще немає обраних об'єктів."
+                    : "За вказаними фільтрами нічого не знайдено."}
+                </p>
               </div>
             )}
           </div>
         </div>
       </section>
 
-      <main className="max-w-7xl mx-auto px-4 my-8">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {visibleProperties.map((property) => (
-            <div
-              key={property.id}
-              className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100"
-            >
-              <div className="relative">
-                <PhotoGallery images={property.images} title={property.title} />
+      {showCreateListingModal ? (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 px-4 py-8">
+          <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-[32px] border border-slate-200 bg-white p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">Створити оголошення</p>
+                <h3 className="mt-1 text-2xl font-black text-slate-900">Профільне оголошення</h3>
+                <p className="mt-2 text-sm text-slate-600">Після відправки оголошення з'явиться в профілі та надійде на модерацію.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCreateListingModal(false);
+                  setListingMessage("");
+                }}
+                className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateListing} className="mt-6 grid gap-4 md:grid-cols-2">
+              <div className="md:col-span-2">
+                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Назва</label>
+                <input
+                  required
+                  value={listingForm.title}
+                  onChange={(event) => updateListingField("title", event.target.value)}
+                  placeholder="Сучасна квартира з ремонтом"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Місто</label>
+                <input
+                  required
+                  value={listingForm.city}
+                  onChange={(event) => updateListingField("city", event.target.value)}
+                  placeholder="Київ"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Район</label>
+                <input
+                  required
+                  value={listingForm.district}
+                  onChange={(event) => updateListingField("district", event.target.value)}
+                  placeholder="Печерський"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Тип об'єкта</label>
+                <select
+                  value={listingForm.propertyType}
+                  onChange={(event) => updateListingField("propertyType", event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                >
+                  <option value="квартира">Квартира</option>
+                  <option value="будинок">Будинок</option>
+                  <option value="комерція">Комерція</option>
+                  <option value="земля">Земля</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Стан</label>
+                <select
+                  value={listingForm.conditionType}
+                  onChange={(event) => updateListingField("conditionType", event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                >
+                  <option value="нова будова">Нова будова</option>
+                  <option value="вторинка">Вторинка</option>
+                  <option value="після ремонту">Після ремонту</option>
+                  <option value="без ремонту">Без ремонту</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Ціна, $</label>
+                <input
+                  required
+                  type="number"
+                  min="1"
+                  value={listingForm.price}
+                  onChange={(event) => updateListingField("price", event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Кімнат</label>
+                <input
+                  required
+                  type="number"
+                  min="0"
+                  value={listingForm.rooms}
+                  onChange={(event) => updateListingField("rooms", event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Площа, м²</label>
+                <input
+                  required
+                  type="number"
+                  min="1"
+                  value={listingForm.area}
+                  onChange={(event) => updateListingField("area", event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Поверх</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={listingForm.floor}
+                  onChange={(event) => updateListingField("floor", event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Загалом поверхів</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={listingForm.totalFloors}
+                  onChange={(event) => updateListingField("totalFloors", event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Рік будівництва</label>
+                <input
+                  type="number"
+                  min="1900"
+                  value={listingForm.yearBuilt}
+                  onChange={(event) => updateListingField("yearBuilt", event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Тип пропозиції</label>
+                <select
+                  value={listingForm.listingType}
+                  onChange={(event) => updateListingField("listingType", event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                >
+                  <option value="sale">Продаж</option>
+                  <option value="rent">Оренда</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 md:col-span-2">
+                <input
+                  type="checkbox"
+                  checked={listingForm.eOselya}
+                  onChange={(event) => updateListingField("eOselya", event.target.checked)}
+                  className="h-5 w-5"
+                />
+                <label className="text-sm font-semibold text-slate-700">Під єОселя</label>
+              </div>
+              <div className="md:col-span-2">
+                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Опис</label>
+                <textarea
+                  rows="4"
+                  value={listingForm.description}
+                  onChange={(event) => updateListingField("description", event.target.value)}
+                  placeholder="Коротко про переваги об'єкта"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Фото (URL / файли)</label>
+                  <button
+                    type="button"
+                    onClick={addListingImageField}
+                    className="rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700"
+                  >
+                    + Додати URL
+                  </button>
+                </div>
+                <div className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4">
+                  <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-6 text-center text-sm font-semibold text-slate-700 transition hover:border-blue-300 hover:bg-blue-50">
+                    <span className="text-lg font-black text-blue-600">⬆</span>
+                    <span>Виберіть фото з комп'ютера</span>
+                    <span className="text-xs font-medium text-slate-500">PNG, JPG, WEBP. Декілька файлів за раз.</span>
+                    <input type="file" multiple accept="image/*" onChange={handleListingFileSelection} className="hidden" />
+                  </label>
+                  {selectedListingFiles.length ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {selectedListingFiles.map((file) => (
+                        <span key={file.name} className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+                          {file.name}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="mt-3 space-y-2">
+                  {listingForm.images.map((image, index) => (
+                    <div key={`${index}-${image}`} className="flex items-center gap-2">
+                      <input
+                        value={image}
+                        onChange={(event) => updateListingImage(index, event.target.value)}
+                        placeholder={`Посилання на фото ${index + 1}`}
+                        className="flex-1 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                      />
+                      {listingForm.images.length > 1 ? (
+                        <button
+                          type="button"
+                          onClick={() => removeListingImageField(index)}
+                          className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+                        >
+                          ✕
+                        </button>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-3 md:col-span-2">
+                <button
+                  type="submit"
+                  disabled={listingSubmitting}
+                  className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {listingSubmitting ? "Створюємо…" : "Публікувати оголошення"}
+                </button>
                 <button
                   type="button"
-                  onClick={() => toggleFavorite(property)}
-                  className="absolute right-3 top-3 rounded-full bg-white/90 px-3 py-1 text-sm font-bold shadow hover:bg-white"
-                  aria-label={
-                    favoriteIds.includes(property.id)
-                      ? `Прибрати ${property.title} з обраного`
-                      : `Додати ${property.title} в обране`
-                  }
+                  onClick={() => {
+                    setShowCreateListingModal(false);
+                    setListingMessage("");
+                  }}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
                 >
-                  {favoriteIds.includes(property.id) ? "❤️" : "🤍"}
+                  Скасувати
                 </button>
               </div>
-              <div className="p-5">
-                <h3 className="font-bold text-lg mb-2">{property.title}</h3>
-                <div className="flex gap-4 text-sm text-gray-500 font-medium mb-4">
-                  <span>{property.rooms} кімн.</span>
-                  <span>•</span>
-                  <span>{property.area} м²</span>
-                </div>
-                <p className="text-2xl font-black text-blue-600">
-                  ${property.price.toLocaleString("uk-UA")}
-                </p>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {visibleProperties.length === 0 && (
-          <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-gray-200 mt-6">
-            <p className="text-gray-400 font-medium text-lg">
-              {showFavoritesOnly
-                ? "У вас ще немає обраних об'єктів."
-                : "За вказаними фільтрами нічого не знайдено."}
-            </p>
+            </form>
           </div>
-        )}
-      </main>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+if (typeof document !== "undefined") {
+  const root = document.getElementById("root");
+  if (root && window.ReactDOM?.createRoot) {
+    window.ReactDOM.createRoot(root).render(React.createElement(RealEstateApp));
+  }
 }
