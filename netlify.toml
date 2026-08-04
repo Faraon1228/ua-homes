@@ -20,6 +20,16 @@
   to = "/favicon.png"
   status = 200
 
+[[redirects]]
+  from = "/apple-touch-icon.png"
+  to = "/icons/Icon-192.png"
+  status = 200
+
+[[redirects]]
+  from = "/apple-touch-icon-precomposed.png"
+  to = "/icons/Icon-192.png"
+  status = 200
+
 # Redirect legacy ua-dom hostnames to primary ua-dim domain
 [[redirects]]
   from = "https://ua-dom.com/*"
