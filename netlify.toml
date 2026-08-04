@@ -60,6 +60,12 @@
   status = 200
   force = true
 
+[[redirects]]
+  from = "/listing/*"
+  to = "https://backend-production-51964.up.railway.app/:splat"
+  status = 200
+  force = true
+
 # Root → main app shell
 [[redirects]]
   from = "/"

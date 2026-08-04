@@ -546,7 +546,6 @@ export default function RealEstateApp() {
   const [liveCatalogListings, setLiveCatalogListings] = useState([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
-  const [publishedListingFocusId, setPublishedListingFocusId] = useState(null);
 
   const catalogProperties = useMemo(() => {
     if (liveCatalogListings.length) return liveCatalogListings;
@@ -720,23 +719,6 @@ export default function RealEstateApp() {
     () => (showFavoritesOnly ? filteredProperties.filter((p) => favoriteIds.includes(p.id)) : filteredProperties),
     [filteredProperties, favoriteIds, showFavoritesOnly]
   );
-  useEffect(() => {
-    if (!publishedListingFocusId) return undefined;
-    const selector = `#listing-card-${publishedListingFocusId}`;
-    let attempts = 0;
-    const maxAttempts = 12;
-    const timer = window.setInterval(() => {
-      const node = document.querySelector(selector);
-      attempts += 1;
-      if (node) {
-        node.scrollIntoView({ behavior: "smooth", block: "center" });
-        window.clearInterval(timer);
-      } else if (attempts >= maxAttempts) {
-        window.clearInterval(timer);
-      }
-    }, 250);
-    return () => window.clearInterval(timer);
-  }, [publishedListingFocusId, visibleProperties.length]);
   const favoriteStats = useMemo(() => {
     if (!favoriteProperties.length) return { count: 0, avgPrice: 0, verifiedCount: 0 };
     const totalPrice = favoriteProperties.reduce((sum, item) => sum + item.price, 0);
@@ -1093,21 +1075,12 @@ export default function RealEstateApp() {
       setSelectedListingFiles([]);
       setSelectedListingFilePreviews([]);
       setShowCreateListingModal(false);
+      if (!isEditing && result.listing?.id && result.listing?.status === "published") {
+        window.location.assign(`/listing/${result.listing.id}`);
+        return;
+      }
       await loadMyListings();
       await loadCatalogListings();
-      if (!isEditing && result.listing?.id) {
-        setShowFavoritesOnly(false);
-        const createdTitle = String(result.listing.title || "").trim();
-        if (createdTitle) {
-          setKeywordDraft(createdTitle);
-          setKeywordSearch(createdTitle);
-        }
-        if (result.listing.city) {
-          setCityFilter(String(result.listing.city));
-        }
-        setPublishedListingFocusId(result.listing.id);
-        window.setTimeout(() => setPublishedListingFocusId(null), 6000);
-      }
     } catch (error) {
       setListingMessage(error.message || "Не вдалося зберегти оголошення");
     } finally {
@@ -1925,12 +1898,7 @@ export default function RealEstateApp() {
               {visibleProperties.map((property) => (
                 <div
                   key={property.id}
-                  id={`listing-card-${property.id}`}
-                  className={`group overflow-hidden rounded-[28px] border bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-xl ${
-                    publishedListingFocusId === property.id
-                      ? "border-blue-500 ring-2 ring-blue-200"
-                      : "border-slate-200"
-                  }`}
+                  className="group overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-xl"
                 >
                   <div className="relative">
                     <PhotoGallery images={property.images} title={property.title} />
