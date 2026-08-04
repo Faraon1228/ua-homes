@@ -211,6 +211,11 @@ function getApiUrl(path) {
   return `${getApiBaseUrl()}${normalizedPath}`;
 }
 
+function allowMockCatalogFallback() {
+  if (typeof window === "undefined") return true;
+  return window.location.protocol === "file:";
+}
+
 function describeSearchState(filters, keywordSearch) {
   const parts = [];
   if (filters.cityFilter && filters.cityFilter !== "Всі") parts.push(filters.cityFilter);
@@ -542,10 +547,11 @@ export default function RealEstateApp() {
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
 
-  const catalogProperties = useMemo(
-    () => (liveCatalogListings.length ? liveCatalogListings : MOCK_PROPERTIES),
-    [liveCatalogListings]
-  );
+  const catalogProperties = useMemo(() => {
+    if (liveCatalogListings.length) return liveCatalogListings;
+    if (allowMockCatalogFallback() && !catalogError) return MOCK_PROPERTIES;
+    return [];
+  }, [catalogError, liveCatalogListings]);
 
   const cities = useMemo(
     () => ["Всі", ...Array.from(new Set(catalogProperties.map((p) => p.city)))],
@@ -581,6 +587,15 @@ export default function RealEstateApp() {
     } finally {
       setCatalogLoading(false);
     }
+  };
+
+  const mergeListingIntoCatalog = (listing) => {
+    if (!listing?.id) return;
+    const mappedListing = mapListingToProperty(listing);
+    setLiveCatalogListings((current) => {
+      const next = current.filter((item) => item.id !== mappedListing.id);
+      return [mappedListing, ...next];
+    });
   };
 
   useEffect(() => {
@@ -1049,6 +1064,7 @@ export default function RealEstateApp() {
       if (!response.ok) {
         throw new Error(result.error || "Не вдалося створити оголошення");
       }
+      mergeListingIntoCatalog(result.listing);
       setListingMessage(
         isEditing
           ? "Оголошення оновлено та залишено опублікованим."
@@ -1807,12 +1823,16 @@ export default function RealEstateApp() {
                 <div>
                   <p className="text-xs font-black uppercase tracking-wide text-slate-500">Результати</p>
                   <h2 className="mt-1 text-2xl font-black text-slate-900">
-                    {visibleProperties.length
+                    {catalogLoading && !catalogProperties.length
+                      ? "Завантажуємо оголошення"
+                      : visibleProperties.length
                       ? `Показано ${visibleProperties.length} з ${filteredProperties.length}`
                       : "Нічого не знайдено"}
                   </h2>
                   <p className="mt-1 text-sm text-slate-600">
-                    {showFavoritesOnly
+                    {catalogError
+                      ? catalogError
+                      : showFavoritesOnly
                       ? "Лише обрані об'єкти"
                       : "Об'єкти відсортовано за вашими фільтрами та релевантністю"}
                   </p>
@@ -1851,6 +1871,24 @@ export default function RealEstateApp() {
                 </div>
               </div>
             </div>
+
+            {catalogError ? (
+             <div className="rounded-[28px] border border-rose-200 bg-rose-50 p-4 shadow-sm">
+               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                 <div>
+                   <p className="text-sm font-bold text-rose-700">Каталог тимчасово недоступний</p>
+                   <p className="mt-1 text-sm text-rose-600">{catalogError}</p>
+                 </div>
+                 <button
+                   type="button"
+                   onClick={loadCatalogListings}
+                   className="rounded-2xl border border-rose-200 bg-white px-4 py-2 text-sm font-bold text-rose-700 transition hover:bg-rose-100"
+                 >
+                   Спробувати ще раз
+                 </button>
+               </div>
+             </div>
+            ) : null}
 
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-2">
               {visibleProperties.map((property) => (
@@ -1948,7 +1986,9 @@ export default function RealEstateApp() {
             {visibleProperties.length === 0 && (
               <div className="rounded-[28px] border border-dashed border-slate-200 bg-white py-16 text-center">
                 <p className="text-lg font-medium text-slate-400">
-                  {showFavoritesOnly
+                  {catalogLoading && !catalogProperties.length
+                    ? "Завантажуємо каталог..."
+                    : showFavoritesOnly
                     ? "У вас ще немає обраних об'єктів."
                     : "За вказаними фільтрами нічого не знайдено."}
                 </p>
