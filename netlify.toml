@@ -88,26 +88,26 @@
   force = true
 
 [[redirects]]
-  from = "/agencies/*"
-  to = "https://backend-production-51964.up.railway.app/agencies/:splat"
-  status = 200
-  force = true
-
-[[redirects]]
   from = "/agencies"
   to = "https://backend-production-51964.up.railway.app/agencies"
   status = 200
   force = true
 
 [[redirects]]
-  from = "/insights/*"
-  to = "https://backend-production-51964.up.railway.app/insights/:splat"
+  from = "/agencies/*"
+  to = "https://backend-production-51964.up.railway.app/agencies/:splat"
   status = 200
   force = true
 
 [[redirects]]
   from = "/insights"
   to = "https://backend-production-51964.up.railway.app/insights"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/insights/*"
+  to = "https://backend-production-51964.up.railway.app/insights/:splat"
   status = 200
   force = true
 
