@@ -11,6 +11,7 @@ Environment variables:
                         If absent, falls back to in-process memory (dev only).
 """
 import base64
+import hashlib
 import json
 import os
 import re
@@ -516,9 +517,14 @@ PLACEHOLDER_LISTING_IMAGE = (
 IMG = PLACEHOLDER_LISTING_IMAGE
 
 
+def demo_image_url(seed: str) -> str:
+    base = (PUBLIC_SITE_URL or "http://localhost:5050").rstrip("/")
+    return f"{base}/demo-images/{quote(seed, safe='')}.svg"
+
+
 def imgs(*ids):
-    """Return a JSON array of picsum.photos URLs seeded by Unsplash photo IDs for deterministic demo images."""
-    return json.dumps([f"https://picsum.photos/seed/{uid}/800/600" for uid in ids])
+    """Return a JSON array of first-party demo image URLs for deterministic seed media."""
+    return json.dumps([demo_image_url(uid) for uid in ids])
 
 
 def normalize_listing_images(raw_images) -> list[str]:
@@ -2084,6 +2090,58 @@ def public_app_base_url() -> str:
 
 def public_app_url() -> str:
     return f"{public_app_base_url()}/real-estate-demo.html"
+
+
+@app.route("/api/demo-images/<path:seed>.svg", methods=["GET"])
+def demo_image(seed: str):
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    palette = [
+        ("#0f172a", "#1d4ed8"),
+        ("#1e293b", "#2563eb"),
+        ("#172554", "#0ea5e9"),
+        ("#111827", "#7c3aed"),
+        ("#0f172a", "#0891b2"),
+        ("#1f2937", "#0f766e"),
+    ]
+    accent_pairs = [
+        ("#e2e8f0", "#cbd5e1"),
+        ("#dbeafe", "#bfdbfe"),
+        ("#dcfce7", "#bbf7d0"),
+        ("#fae8ff", "#e9d5ff"),
+        ("#fef3c7", "#fde68a"),
+        ("#fee2e2", "#fecaca"),
+    ]
+    bg_start, bg_end = palette[int(digest[0], 16) % len(palette)]
+    card_fill, card_stroke = accent_pairs[int(digest[1], 16) % len(accent_pairs)]
+    seed_label = escape(seed[:28].upper())
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" role="img" aria-label="UA-Dim demo image {seed_label}">
+<defs>
+  <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+    <stop offset="0%" stop-color="{bg_start}"/>
+    <stop offset="100%" stop-color="{bg_end}"/>
+  </linearGradient>
+</defs>
+<rect width="1200" height="800" fill="url(#bg)"/>
+<rect x="54" y="54" width="1092" height="692" rx="40" fill="rgba(255,255,255,.08)" stroke="rgba(255,255,255,.18)" stroke-width="4"/>
+<rect x="106" y="122" width="420" height="42" rx="21" fill="rgba(255,255,255,.14)"/>
+<text x="134" y="151" fill="#ffffff" font-family="Arial,sans-serif" font-size="28" font-weight="700">UA-Dim • Demo listing</text>
+<rect x="106" y="206" width="456" height="320" rx="34" fill="{card_fill}" opacity=".95"/>
+<rect x="642" y="206" width="454" height="178" rx="34" fill="rgba(255,255,255,.12)"/>
+<rect x="642" y="408" width="454" height="118" rx="28" fill="rgba(255,255,255,.08)"/>
+<rect x="642" y="552" width="454" height="118" rx="28" fill="rgba(255,255,255,.08)"/>
+<path d="M144 466 256 338l112 96 124-154 146 186Z" fill="{card_stroke}" opacity=".95"/>
+<circle cx="222" cy="292" r="46" fill="#ffffff" opacity=".72"/>
+<rect x="742" y="246" width="206" height="34" rx="17" fill="rgba(255,255,255,.22)"/>
+<rect x="742" y="298" width="298" height="26" rx="13" fill="rgba(255,255,255,.16)"/>
+<rect x="742" y="444" width="236" height="26" rx="13" fill="rgba(255,255,255,.16)"/>
+<rect x="742" y="587" width="236" height="26" rx="13" fill="rgba(255,255,255,.16)"/>
+<text x="106" y="610" fill="#ffffff" font-family="Arial,sans-serif" font-size="52" font-weight="700">Надійне фото з домену UA-Dim</text>
+<text x="106" y="662" fill="rgba(255,255,255,.76)" font-family="Arial,sans-serif" font-size="28">Без зовнішніх CDN • стабільно для production і preview</text>
+<text x="106" y="712" fill="rgba(255,255,255,.64)" font-family="Arial,sans-serif" font-size="22">Seed: {seed_label}</text>
+</svg>"""
+    response = Response(svg, mimetype="image/svg+xml")
+    response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
 
 
 def _seo_landing_stats(db: sqlite3.Connection, limit: int = 8):
