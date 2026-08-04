@@ -518,7 +518,15 @@ IMG = PLACEHOLDER_LISTING_IMAGE
 
 
 def demo_image_url(seed: str) -> str:
-    base = (PUBLIC_SITE_URL or "http://localhost:5050").rstrip("/")
+    base = (PUBLIC_SITE_URL or "").rstrip("/")
+    try:
+        host = (urlsplit(base).hostname or "").lower()
+    except ValueError:
+        host = ""
+    if host in {"", "localhost", "127.0.0.1", "0.0.0.0"}:
+        base = "http://localhost:5050"
+    else:
+        base = "https://ua-dim.com"
     return f"{base}/demo-images/{quote(seed, safe='')}.svg"
 
 
