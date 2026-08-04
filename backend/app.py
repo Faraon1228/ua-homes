@@ -3,7 +3,7 @@ from __future__ import annotations
 Security: bcrypt passwords, JWT auth, rate limiting, CORS, parameterised queries.
 
 Environment variables:
-  UA_HOMES_SECRET     — JWT signing secret (auto-generated if absent)
+  UA_HOMES_SECRET     — JWT signing secret (required in production; auto-generated only for local/dev fallback)
   UA_HOMES_PUBLIC_URL — Canonical public URL for SEO/CORS
   DATABASE_URL        — PostgreSQL DSN (e.g. postgres://user:pass@host/db).
                         If absent, falls back to local SQLite ua_homes.db.
@@ -34,12 +34,42 @@ from flask_limiter.util import get_remote_address
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH  = os.path.join(BASE_DIR, "ua_homes.db")
 
-SECRET_KEY = os.environ.get("UA_HOMES_SECRET", secrets.token_hex(32))
-JWT_ALGO   = "HS256"
-JWT_EXP_H  = 72
-
 # PostgreSQL DSN — if set, the app uses psycopg2 instead of SQLite.
 DATABASE_URL: str | None = os.environ.get("DATABASE_URL", "").strip() or None
+PUBLIC_SITE_URL = os.environ.get("UA_HOMES_PUBLIC_URL", "").strip().rstrip("/")
+
+
+def _production_secret_required() -> bool:
+    runtime_name = (
+        os.environ.get("RAILWAY_ENVIRONMENT_NAME")
+        or os.environ.get("RAILWAY_ENVIRONMENT")
+        or os.environ.get("FLASK_ENV")
+        or os.environ.get("ENVIRONMENT")
+        or ""
+    ).strip().lower()
+    if runtime_name in {"production", "prod"}:
+        return True
+    if DATABASE_URL:
+        return True
+    if PUBLIC_SITE_URL:
+        try:
+            host = (urlsplit(PUBLIC_SITE_URL).hostname or "").lower()
+        except ValueError:
+            host = ""
+        if host and host not in {"localhost", "127.0.0.1", "0.0.0.0"}:
+            return True
+    return False
+
+
+_configured_secret = os.environ.get("UA_HOMES_SECRET", "").strip()
+if not _configured_secret:
+    if _production_secret_required():
+        raise RuntimeError("UA_HOMES_SECRET must be set for production deployments.")
+    _configured_secret = secrets.token_hex(32)
+
+SECRET_KEY = _configured_secret
+JWT_ALGO   = "HS256"
+JWT_EXP_H  = 72
 
 # Redis DSN — if set, rate-limiter stores counters in Redis (safe for multi-worker).
 REDIS_URL: str | None = os.environ.get("REDIS_URL", "").strip() or None
@@ -369,7 +399,6 @@ limiter = Limiter(
     storage_uri=_limiter_storage,
 )
 
-PUBLIC_SITE_URL = os.environ.get("UA_HOMES_PUBLIC_URL", "").strip().rstrip("/")
 ALERTS_DISPATCH_KEY = os.environ.get("UA_HOMES_ALERTS_DISPATCH_KEY", "").strip()
 ALERTS_PUSH_WEBHOOK_URL = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_URL", "").strip()
 ALERTS_PUSH_WEBHOOK_BEARER = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_BEARER", "").strip()
