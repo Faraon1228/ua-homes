@@ -93,23 +93,27 @@ const KEYWORD_SUGGESTIONS = [
 
 const SMART_SEARCH_PATH = "smart-search.html";
 
-const INITIAL_LISTING_FORM = {
-  title: "",
-  city: "Київ",
-  district: "",
-  propertyType: "квартира",
-  conditionType: "вторинка",
-  listingType: "sale",
-  price: "",
-  rooms: "",
-  area: "",
-  floor: "1",
-  totalFloors: "1",
-  yearBuilt: "",
-  eOselya: false,
-  description: "",
-  images: ["", "", ""],
-};
+const INITIAL_LISTING_IMAGE_FIELDS = ["", "", ""];
+
+function createInitialListingForm() {
+  return {
+    title: "",
+    city: "Київ",
+    district: "",
+    propertyType: "квартира",
+    conditionType: "вторинка",
+    listingType: "sale",
+    price: "",
+    rooms: "",
+    area: "",
+    floor: "1",
+    totalFloors: "1",
+    yearBuilt: "",
+    eOselya: false,
+    description: "",
+    images: [...INITIAL_LISTING_IMAGE_FIELDS],
+  };
+}
 
 function normalizeImageSrc(src) {
   if (!src) return "";
@@ -134,6 +138,38 @@ function mapListingToProperty(listing) {
     description: listing?.description || "",
     status: listing?.status || "published",
   };
+}
+
+function mapListingToForm(listing) {
+  const images = Array.isArray(listing?.images) ? listing.images.filter(Boolean).slice(0, 8) : [];
+  while (images.length < INITIAL_LISTING_IMAGE_FIELDS.length) {
+    images.push("");
+  }
+
+  return {
+    title: listing?.title || "",
+    city: listing?.city || "Київ",
+    district: listing?.district || "",
+    propertyType: listing?.property_type || listing?.propertyType || "квартира",
+    conditionType: listing?.condition_type || listing?.conditionType || "вторинка",
+    listingType: listing?.listing_type || listing?.listingType || "sale",
+    price: listing?.price != null ? String(listing.price) : "",
+    rooms: listing?.rooms != null ? String(listing.rooms) : "",
+    area: listing?.area != null ? String(listing.area) : "",
+    floor: listing?.floor != null ? String(listing.floor) : "1",
+    totalFloors: listing?.total_floors != null ? String(listing.total_floors) : "1",
+    yearBuilt: listing?.year_built != null ? String(listing.year_built) : "",
+    eOselya: Boolean(listing?.e_oselya ?? listing?.eOselya),
+    description: listing?.description || "",
+    images,
+  };
+}
+
+function getListingStatusLabel(listing) {
+  if (listing?.status === "published" && listing?.listing_status === "active") return "Активне";
+  if (listing?.status === "published") return "Опубліковано";
+  if (listing?.moderation_status === "approved") return "Підтверджено";
+  return "На модерації";
 }
 
 function getStored(key, fallback) {
@@ -494,7 +530,8 @@ export default function RealEstateApp() {
   const [authError, setAuthError] = useState("");
   const [authSuccess, setAuthSuccess] = useState("");
   const [showCreateListingModal, setShowCreateListingModal] = useState(false);
-  const [listingForm, setListingForm] = useState(INITIAL_LISTING_FORM);
+  const [editingListingId, setEditingListingId] = useState(null);
+  const [listingForm, setListingForm] = useState(() => createInitialListingForm());
   const [listingSubmitting, setListingSubmitting] = useState(false);
   const [listingMessage, setListingMessage] = useState("");
   const [myListings, setMyListings] = useState([]);
@@ -513,6 +550,10 @@ export default function RealEstateApp() {
   const cities = useMemo(
     () => ["Всі", ...Array.from(new Set(catalogProperties.map((p) => p.city)))],
     [catalogProperties]
+  );
+  const activeMyListingsCount = useMemo(
+    () => myListings.filter((item) => item.status === "published" && item.listing_status === "active").length,
+    [myListings]
   );
 
   useEffect(() => {
@@ -596,14 +637,13 @@ export default function RealEstateApp() {
     setMyListingsLoading(true);
     setListingMessage("");
     try {
-      const response = await fetch(getApiUrl("/listings?status=all&limit=20"), {
+      const response = await fetch(getApiUrl("/listings?mine=1&status=all&limit=100&sort=newest"), {
         headers: { Authorization: `Bearer ${authToken}` },
       });
       if (!response.ok) throw new Error("Не вдалося завантажити оголошення");
       const data = await response.json();
       const rows = Array.isArray(data.listings) ? data.listings : [];
-      const mine = rows.filter((item) => String(item.user_id) === String(currentUser?.id));
-      setMyListings(mine);
+      setMyListings(rows);
     } catch (error) {
       setListingMessage(error.message || "Не вдалося завантажити оголошення");
     } finally {
@@ -874,6 +914,36 @@ export default function RealEstateApp() {
     setAuthSuccess("Ви вийшли з профілю");
     setMyListings([]);
     setListingMessage("");
+    setEditingListingId(null);
+    setListingForm(createInitialListingForm());
+    setSelectedListingFiles([]);
+    setSelectedListingFilePreviews([]);
+  };
+
+  const closeListingModal = () => {
+    setShowCreateListingModal(false);
+    setEditingListingId(null);
+    setListingForm(createInitialListingForm());
+    setSelectedListingFiles([]);
+    setSelectedListingFilePreviews([]);
+  };
+
+  const openCreateListingModal = () => {
+    setEditingListingId(null);
+    setListingForm(createInitialListingForm());
+    setSelectedListingFiles([]);
+    setSelectedListingFilePreviews([]);
+    setListingMessage("");
+    setShowCreateListingModal(true);
+  };
+
+  const openEditListingModal = (listing) => {
+    setEditingListingId(listing.id);
+    setListingForm(mapListingToForm(listing));
+    setSelectedListingFiles([]);
+    setSelectedListingFilePreviews([]);
+    setListingMessage("");
+    setShowCreateListingModal(true);
   };
 
   const updateListingField = (field, value) => {
@@ -966,8 +1036,9 @@ export default function RealEstateApp() {
         images: [...uploadedImageDataUrls, ...imageUrls].slice(0, 8),
       };
 
-      const response = await fetch(getApiUrl("/listings"), {
-        method: "POST",
+      const isEditing = Boolean(editingListingId);
+      const response = await fetch(getApiUrl(isEditing ? `/listings/${editingListingId}` : "/listings"), {
+        method: isEditing ? "PATCH" : "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${authToken}`,
@@ -978,15 +1049,20 @@ export default function RealEstateApp() {
       if (!response.ok) {
         throw new Error(result.error || "Не вдалося створити оголошення");
       }
-      setListingMessage(`Оголошення створено${result.listing?.status === "published" ? " і вже опубліковане" : " і надіслане на модерацію"}.`);
-      setListingForm(INITIAL_LISTING_FORM);
+      setListingMessage(
+        isEditing
+          ? "Оголошення оновлено та залишено опублікованим."
+          : `Оголошення створено${result.listing?.status === "published" ? " і вже опубліковане" : " і надіслане на модерацію"}.`
+      );
+      setEditingListingId(null);
+      setListingForm(createInitialListingForm());
       setSelectedListingFiles([]);
       setSelectedListingFilePreviews([]);
       setShowCreateListingModal(false);
       await loadMyListings();
       await loadCatalogListings();
     } catch (error) {
-      setListingMessage(error.message || "Не вдалося створити оголошення");
+      setListingMessage(error.message || "Не вдалося зберегти оголошення");
     } finally {
       setListingSubmitting(false);
     }
@@ -1228,7 +1304,7 @@ export default function RealEstateApp() {
               </div>
 
               <p className="mt-2 text-sm text-slate-600">
-                Створюйте оголошення з профілю, додавайте кілька фото й відправляйте їх на модерацію.
+                Створюйте оголошення з профілю, одразу публікуйте їх на сайті та редагуйте без переходу в адмінку.
               </p>
 
               {authError ? <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{authError}</div> : null}
@@ -1282,15 +1358,22 @@ export default function RealEstateApp() {
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                     <p className="text-xs font-black uppercase tracking-wide text-slate-500">Профіль</p>
                     <p className="mt-1 font-semibold text-slate-900">{currentUser.email}</p>
-                    <p className="mt-1 text-xs text-slate-500">У профілі зручно створювати оголошення з 1–8 фото.</p>
+                    <p className="mt-1 text-xs text-slate-500">У профілі видно активні оголошення, їх статус і доступне швидке редагування.</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
+                      <p className="text-[11px] font-black uppercase tracking-wide text-emerald-700">Активні</p>
+                      <p className="mt-1 text-2xl font-black text-emerald-700">{activeMyListingsCount}</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">Усього</p>
+                      <p className="mt-1 text-2xl font-black text-slate-900">{myListings.length}</p>
+                    </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
-                      onClick={() => {
-                        setShowCreateListingModal(true);
-                        setListingMessage("");
-                      }}
+                      onClick={openCreateListingModal}
                       className="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
                     >
                       + Створити оголошення
@@ -1306,20 +1389,38 @@ export default function RealEstateApp() {
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-xs font-black uppercase tracking-wide text-slate-500">Мої оголошення</p>
-                      {myListingsLoading ? <span className="text-xs text-slate-500">Завантаження…</span> : null}
+                      {myListingsLoading ? (
+                        <span className="text-xs text-slate-500">Завантаження…</span>
+                      ) : (
+                        <span className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                          {activeMyListingsCount} активних
+                        </span>
+                      )}
                     </div>
                     {myListings.length ? (
                       <ul className="mt-3 space-y-2">
-                        {myListings.slice(0, 3).map((item) => (
-                          <li key={item.id} className="rounded-xl border border-slate-200 bg-white p-2">
-                            <div className="flex items-start justify-between gap-2">
+                        {myListings.map((item) => (
+                          <li key={item.id} className="rounded-xl border border-slate-200 bg-white p-3">
+                            <div className="flex items-start justify-between gap-3">
                               <div>
                                 <p className="text-sm font-semibold text-slate-900">{item.title}</p>
                                 <p className="mt-1 text-xs text-slate-500">{item.city}, {item.district}</p>
+                                <p className="mt-2 text-xs font-semibold text-slate-500">
+                                  ${Number(item.price || 0).toLocaleString("uk-UA")} • {item.rooms} кімн. • {item.area} м²
+                                </p>
                               </div>
                               <span className="rounded-full bg-blue-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-blue-700">
-                                {item.status === "published" ? "Опубліковано" : item.moderation_status === "approved" ? "Підтверджено" : "На модерації"}
+                                {getListingStatusLabel(item)}
                               </span>
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => openEditListingModal(item)}
+                                className="rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 transition hover:bg-blue-100"
+                              >
+                                Редагувати
+                              </button>
                             </div>
                           </li>
                         ))}
@@ -1862,14 +1963,20 @@ export default function RealEstateApp() {
           <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-[32px] border border-slate-200 bg-white p-6 shadow-2xl">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-xs font-black uppercase tracking-wide text-slate-500">Створити оголошення</p>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">
+                  {editingListingId ? "Редагувати оголошення" : "Створити оголошення"}
+                </p>
                 <h3 className="mt-1 text-2xl font-black text-slate-900">Профільне оголошення</h3>
-                <p className="mt-2 text-sm text-slate-600">Після відправки оголошення з'явиться в профілі та надійде на модерацію.</p>
+                <p className="mt-2 text-sm text-slate-600">
+                  {editingListingId
+                    ? "Змініть поля, збережіть і оголошення залишиться опублікованим на сайті."
+                    : "Після відправки оголошення одразу з'явиться в профілі та на сайті."}
+                </p>
               </div>
               <button
                 type="button"
                 onClick={() => {
-                  setShowCreateListingModal(false);
+                  closeListingModal();
                   setListingMessage("");
                 }}
                 className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700"
@@ -2101,12 +2208,12 @@ export default function RealEstateApp() {
                   disabled={listingSubmitting}
                   className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                  {listingSubmitting ? "Створюємо…" : "Публікувати оголошення"}
+                  {listingSubmitting ? "Зберігаємо…" : editingListingId ? "Зберегти зміни" : "Публікувати оголошення"}
                 </button>
                 <button
                   type="button"
                   onClick={() => {
-                    setShowCreateListingModal(false);
+                    closeListingModal();
                     setListingMessage("");
                   }}
                   className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"

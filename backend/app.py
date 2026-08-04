@@ -505,6 +505,146 @@ def normalize_listing_images(raw_images) -> list[str]:
         normalized.append(fallback if "images.unsplash.com" in host else url)
     return normalized or [fallback]
 
+
+def parse_listing_request_payload() -> tuple[dict, list[str]]:
+    data: dict = {}
+    image_urls: list[str] = []
+
+    if request.files:
+        payload_json = request.form.get("payload", "")
+        if payload_json:
+            try:
+                data = json.loads(payload_json)
+            except json.JSONDecodeError:
+                data = {}
+        image_urls_json = request.form.get("image_urls", "[]")
+        try:
+            parsed_urls = json.loads(image_urls_json)
+        except (TypeError, ValueError):
+            parsed_urls = []
+        if isinstance(parsed_urls, list):
+            image_urls.extend(str(u).strip() for u in parsed_urls if str(u).strip())
+    else:
+        data = request.get_json(silent=True) or {}
+
+    uploaded_images: list[str] = []
+    if request.files:
+        for upload in request.files.getlist("images"):
+            if not getattr(upload, "filename", None):
+                continue
+            if not (upload.mimetype or "").startswith("image/"):
+                continue
+            image_bytes = upload.read()
+            if not image_bytes:
+                continue
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            uploaded_images.append(f"data:{upload.mimetype};base64,{encoded}")
+
+    return data, list(dict.fromkeys([*uploaded_images, *image_urls]))
+
+
+def validate_listing_payload(data: dict, carried_images: list[str] | None = None) -> tuple[dict, dict]:
+    title = strip(data.get("title"), 200)
+    city = strip(data.get("city"), 100)
+    district = strip(data.get("district"), 100)
+    prop_type = strip(data.get("propertyType"), 50) or "квартира"
+    condition = strip(data.get("conditionType"), 50) or "вторинка"
+    description = strip(data.get("description"), 2000)
+    price = pos_int(data.get("price"))
+    rooms = nonneg_int(data.get("rooms"))
+    area = pos_float(data.get("area"))
+    floor = nonneg_int(data.get("floor")) or 1
+    total_floors = pos_int(data.get("totalFloors")) or 1
+    year_built = nonneg_int(data.get("yearBuilt"))
+    e_oselya = bool(data.get("eOselya", False))
+    listing_type = strip(data.get("listingType", "sale"), 10).lower()
+    listing_status = strip(data.get("listingStatus", "active"), 20).lower()
+    source = strip(data.get("source", "owner"), 20).lower()
+    agency_slug = strip(data.get("agencySlug", ""), 80).lower() or None
+    has_photo_tour = bool(data.get("hasPhotoTour", False))
+    has_video_tour = bool(data.get("hasVideoTour", False))
+    owner_verification_requested = bool(data.get("verifiedOwner", False) or data.get("requestOwnerVerification", False))
+    phone_verification_requested = bool(data.get("verifiedPhone", False) or data.get("requestPhoneVerification", False))
+    verified_docs = bool(data.get("verifiedDocs", False))
+    images_raw = data.get("images", [])
+
+    image_values: list[str] = []
+    if carried_images:
+        image_values.extend(str(image).strip() for image in carried_images if str(image).strip())
+    if isinstance(images_raw, list):
+        image_values.extend(str(image).strip() for image in images_raw if str(image).strip())
+    image_values = list(dict.fromkeys(image_values))[:10]
+
+    lat = data.get("latitude")
+    lng = data.get("longitude")
+    try:
+        lat = float(lat) if lat is not None else None
+        lng = float(lng) if lng is not None else None
+    except (TypeError, ValueError):
+        lat = lng = None
+
+    valid_types = {"квартира", "будинок", "комерція", "земля"}
+    valid_conditions = {"нова будова", "вторинка", "після ремонту", "без ремонту"}
+    valid_listing_types = {"sale", "rent"}
+    valid_listing_statuses = {"active", "sold", "removed"}
+    valid_sources = {"owner", "agency", "agent", "seed"}
+
+    if prop_type not in valid_types:
+        prop_type = "квартира"
+    if condition not in valid_conditions:
+        condition = "вторинка"
+    if listing_type not in valid_listing_types:
+        listing_type = "sale"
+    if listing_status not in valid_listing_statuses:
+        listing_status = "active"
+    if source not in valid_sources:
+        source = "owner"
+    if agency_slug and not re.match(r"^[a-z0-9-]{2,80}$", agency_slug):
+        agency_slug = None
+
+    errors = {}
+    if not title:
+        errors["title"] = "Назва обов'язкова"
+    if not city:
+        errors["city"] = "Місто обов'язкове"
+    if not district:
+        errors["district"] = "Район обов'язковий"
+    if price is None:
+        errors["price"] = "Ціна > 0"
+    if rooms is None:
+        errors["rooms"] = "Кімнати >= 0"
+    if area is None:
+        errors["area"] = "Площа > 0"
+
+    payload = {
+        "title": title,
+        "city": city,
+        "district": district,
+        "property_type": prop_type,
+        "condition_type": condition,
+        "description": description,
+        "price": price,
+        "rooms": rooms,
+        "area": area,
+        "floor": floor,
+        "total_floors": total_floors,
+        "year_built": year_built,
+        "e_oselya": e_oselya,
+        "listing_type": listing_type,
+        "listing_status": listing_status,
+        "source": source,
+        "agency_slug": agency_slug,
+        "has_photo_tour": has_photo_tour,
+        "has_video_tour": has_video_tour,
+        "owner_verification_requested": owner_verification_requested,
+        "phone_verification_requested": phone_verification_requested,
+        "verified_docs": verified_docs,
+        "images_json": json.dumps(image_values),
+        "lat": lat,
+        "lng": lng,
+    }
+    return payload, errors
+
 DEVELOPMENT_PROJECTS = [
     {
         "slug": "river-garden-residence",
@@ -2712,6 +2852,7 @@ def get_listings():
     db   = get_db()
     args = request.args
 
+    mine_only     = truthy_flag(args.get("mine"))
     city          = strip(args.get("city",      ""), 100)
     prop_type     = strip(args.get("type",      ""), 50)
     min_price     = pos_int(args.get("minPrice"))
@@ -2723,7 +2864,7 @@ def get_listings():
     e_oselya      = args.get("eOselya") == "1"
     district      = strip(args.get("district", ""), 100)
     search        = strip(args.get("search", ""), 120)
-    status        = strip(args.get("status", "published"), 20).lower()
+    status        = strip(args.get("status", "all" if mine_only else "published"), 20).lower()
     limit         = nonneg_int(args.get("limit")) or 60
     offset        = nonneg_int(args.get("offset")) or 0
     limit         = min(max(limit, 1), 200)
@@ -2755,6 +2896,13 @@ def get_listings():
 
     query  = LISTING_SELECT + " WHERE 1=1"
     params: list = []
+
+    if mine_only:
+        actor_id, _ = get_optional_actor(db)
+        if actor_id is None:
+            return jsonify(error="Потрібна авторизація"), 401
+        query += " AND l.user_id = ?"
+        params.append(actor_id)
 
     if status and status != "all":
         query += " AND l.status = ?"
@@ -2999,103 +3147,14 @@ def add_review(lid: int):
 def create_listing():
     from app import _refresh_listing_city_summary, cache_delete_prefix
 
-    data: dict = {}
-    if request.files:
-        payload_json = request.form.get("payload", "")
-        if payload_json:
-            try:
-                data = json.loads(payload_json)
-            except json.JSONDecodeError:
-                data = {}
-        image_urls_json = request.form.get("image_urls", "[]")
-        try:
-            image_urls = json.loads(image_urls_json)
-        except (TypeError, ValueError):
-            image_urls = []
-        if not isinstance(image_urls, list):
-            image_urls = []
-    else:
-        data = request.get_json(silent=True) or {}
-        image_urls = []
-
-    uploaded_images: list[str] = []
-    if request.files:
-        for upload in request.files.getlist("images"):
-            if not getattr(upload, "filename", None):
-                continue
-            if not (upload.mimetype or "").startswith("image/"):
-                continue
-            image_bytes = upload.read()
-            if not image_bytes:
-                continue
-            encoded = base64.b64encode(image_bytes).decode("ascii")
-            uploaded_images.append(f"data:{upload.mimetype};base64,{encoded}")
+    data, carried_images = parse_listing_request_payload()
+    listing_payload, errors = validate_listing_payload(data, carried_images)
+    if errors:
+        return jsonify(error="Невалідні дані", fields=errors), 422
 
     db = get_db()
     actor = db.execute("SELECT role FROM users WHERE id = ?", (g.user_id,)).fetchone()
     is_admin = bool(actor and actor["role"] == "admin")
-
-    title         = strip(data.get("title"),         200)
-    city          = strip(data.get("city"),           100)
-    district      = strip(data.get("district"),       100)
-    prop_type     = strip(data.get("propertyType"),    50) or "квартира"
-    condition     = strip(data.get("conditionType"),   50) or "вторинка"
-    description   = strip(data.get("description"),   2000)
-    price         = pos_int(data.get("price"))
-    rooms         = nonneg_int(data.get("rooms"))
-    area          = pos_float(data.get("area"))
-    floor         = nonneg_int(data.get("floor"))      or 1
-    total_floors  = pos_int(data.get("totalFloors"))   or 1
-    year_built    = nonneg_int(data.get("yearBuilt"))
-    e_oselya      = bool(data.get("eOselya", False))
-    listing_type  = strip(data.get("listingType", "sale"), 10).lower()
-    listing_status= strip(data.get("listingStatus", "active"), 20).lower()
-    source        = strip(data.get("source", "owner"), 20).lower()
-    agency_slug   = strip(data.get("agencySlug", ""), 80).lower() or None
-    has_photo_tour = bool(data.get("hasPhotoTour", False))
-    has_video_tour = bool(data.get("hasVideoTour", False))
-    owner_verification_requested = bool(data.get("verifiedOwner", False) or data.get("requestOwnerVerification", False))
-    phone_verification_requested = bool(data.get("verifiedPhone", False) or data.get("requestPhoneVerification", False))
-    verified_docs  = bool(data.get("verifiedDocs", False))
-    images_raw    = data.get("images", [])
-    image_values: list[str] = []
-    if isinstance(images_raw, list):
-        image_values.extend(str(u).strip() for u in images_raw if str(u).strip())
-    if isinstance(image_urls, list):
-        image_values.extend(str(u).strip() for u in image_urls if str(u).strip())
-    image_values = list(dict.fromkeys([*uploaded_images, *image_values]))
-    images        = json.dumps(image_values[:10])
-    lat           = data.get("latitude")
-    lng           = data.get("longitude")
-
-    VALID_TYPES  = {"квартира","будинок","комерція","земля"}
-    VALID_CONDS  = {"нова будова","вторинка","після ремонту","без ремонту"}
-    VALID_LISTING_TYPES = {"sale", "rent"}
-    VALID_LISTING_STATUS = {"active", "sold", "removed"}
-    VALID_SOURCES = {"owner", "agency", "agent", "seed"}
-    if prop_type not in VALID_TYPES: prop_type = "квартира"
-    if condition not in VALID_CONDS: condition = "вторинка"
-    if listing_type not in VALID_LISTING_TYPES: listing_type = "sale"
-    if listing_status not in VALID_LISTING_STATUS: listing_status = "active"
-    if source not in VALID_SOURCES: source = "owner"
-    if agency_slug and not re.match(r"^[a-z0-9-]{2,80}$", agency_slug):
-        agency_slug = None
-
-    errors = {}
-    if not title:    errors["title"]    = "Назва обов'язкова"
-    if not city:     errors["city"]     = "Місто обов'язкове"
-    if not district: errors["district"] = "Район обов'язковий"
-    if price is None:  errors["price"]  = "Ціна > 0"
-    if rooms is None:  errors["rooms"]  = "Кімнати >= 0"
-    if area is None:   errors["area"]   = "Площа > 0"
-    if errors:
-        return jsonify(error="Невалідні дані", fields=errors), 422
-
-    try:
-        lat = float(lat) if lat is not None else None
-        lng = float(lng) if lng is not None else None
-    except (TypeError, ValueError):
-        lat = lng = None
 
     publish_now = data.get("publishNow", True)
     if isinstance(publish_now, str):
@@ -3108,10 +3167,10 @@ def create_listing():
     moderation_status = "approved" if (is_admin or publish_now) else "pending_review"
     moderation_reason = None if (is_admin or publish_now) else "Нове оголошення очікує модерації перед публікацією."
     moderation_updated_at = datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ")
-    owner_verification_status = "verified" if is_admin and owner_verification_requested else ("pending" if owner_verification_requested else "unverified")
-    phone_verification_status = "verified" if is_admin and phone_verification_requested else ("pending" if phone_verification_requested else "unverified")
-    verified_owner = is_admin and owner_verification_requested
-    verified_phone = is_admin and phone_verification_requested
+    owner_verification_status = "verified" if is_admin and listing_payload["owner_verification_requested"] else ("pending" if listing_payload["owner_verification_requested"] else "unverified")
+    phone_verification_status = "verified" if is_admin and listing_payload["phone_verification_requested"] else ("pending" if listing_payload["phone_verification_requested"] else "unverified")
+    verified_owner = is_admin and listing_payload["owner_verification_requested"]
+    verified_phone = is_admin and listing_payload["phone_verification_requested"]
     cur = db.execute(
         """INSERT INTO listings
             (user_id,title,city,district,property_type,condition_type,price,rooms,area,
@@ -3121,22 +3180,19 @@ def create_listing():
             owner_verification_status,phone_verification_status,
             moderation_status,moderation_reason,moderation_updated_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (g.user_id, title, city, district, prop_type, condition, price, rooms, area,
-         floor, total_floors, year_built, int(e_oselya), images, lat, lng, description, status,
-         published_at_value, listing_type, source, agency_slug, listing_status, int(has_photo_tour), int(has_video_tour),
-         int(verified_owner), int(verified_phone), int(verified_docs),
+        (g.user_id, listing_payload["title"], listing_payload["city"], listing_payload["district"], listing_payload["property_type"], listing_payload["condition_type"], listing_payload["price"], listing_payload["rooms"], listing_payload["area"],
+         listing_payload["floor"], listing_payload["total_floors"], listing_payload["year_built"], int(listing_payload["e_oselya"]), listing_payload["images_json"], listing_payload["lat"], listing_payload["lng"], listing_payload["description"], status,
+         published_at_value, listing_payload["listing_type"], listing_payload["source"], listing_payload["agency_slug"], listing_payload["listing_status"], int(listing_payload["has_photo_tour"]), int(listing_payload["has_video_tour"]),
+         int(verified_owner), int(verified_phone), int(listing_payload["verified_docs"]),
          owner_verification_status, phone_verification_status, moderation_status, moderation_reason, moderation_updated_at),
     )
-    if owner_verification_requested:
+    if listing_payload["owner_verification_requested"]:
         log_listing_event(db, cur.lastrowid, "request_owner_verification", "Автоматично створено під час подачі оголошення.")
-    if phone_verification_requested:
+    if listing_payload["phone_verification_requested"]:
         log_listing_event(db, cur.lastrowid, "request_phone_verification", "Автоматично створено під час подачі оголошення.")
     if not is_admin:
         log_listing_event(db, cur.lastrowid, "submit_for_moderation", moderation_reason)
     db.commit()
-    if status == "published":
-        _refresh_listing_city_summary(db)
-        cache_delete_prefix("admin:reports:listings-by-city:")
     if status == "published":
         _refresh_listing_city_summary(db)
         cache_delete_prefix("admin:reports:listings-by-city:")
@@ -3151,6 +3207,148 @@ def create_listing():
 
     row = db.execute(LISTING_SELECT + " WHERE l.id = ?", (cur.lastrowid,)).fetchone()
     return jsonify(listing=_row_to_listing(row)), 201
+
+
+@app.route("/api/listings/<int:listing_id>", methods=["PATCH"])
+@require_auth
+def update_listing(listing_id: int):
+    from app import _refresh_listing_city_summary, cache_delete_prefix
+
+    db = get_db()
+    listing = db.execute(
+        """
+        SELECT id, user_id, status, published_at,
+               verified_owner, verified_phone, verified_docs,
+               owner_verification_status, phone_verification_status
+        FROM listings
+        WHERE id = ?
+        """,
+        (listing_id,),
+    ).fetchone()
+    if not listing:
+        return jsonify(error="Оголошення не знайдено"), 404
+
+    actor = db.execute("SELECT role FROM users WHERE id = ?", (g.user_id,)).fetchone()
+    is_admin = bool(actor and actor["role"] == "admin")
+    if listing["user_id"] != g.user_id and not is_admin:
+        return jsonify(error="Недостатньо прав"), 403
+
+    data, carried_images = parse_listing_request_payload()
+    listing_payload, errors = validate_listing_payload(data, carried_images)
+    if errors:
+        return jsonify(error="Невалідні дані", fields=errors), 422
+
+    next_status = "published"
+    moderation_status = "approved"
+    moderation_reason = None
+    owner_verification_status = listing["owner_verification_status"] or verification_state_from_bool(listing["verified_owner"])
+    phone_verification_status = listing["phone_verification_status"] or verification_state_from_bool(listing["verified_phone"])
+    verified_owner = bool(listing["verified_owner"])
+    verified_phone = bool(listing["verified_phone"])
+    verified_docs = bool(listing["verified_docs"])
+
+    if is_admin and listing_payload["owner_verification_requested"]:
+        verified_owner = True
+        owner_verification_status = "verified"
+    elif listing_payload["owner_verification_requested"] and owner_verification_status == "unverified":
+        owner_verification_status = "pending"
+
+    if is_admin and listing_payload["phone_verification_requested"]:
+        verified_phone = True
+        phone_verification_status = "verified"
+    elif listing_payload["phone_verification_requested"] and phone_verification_status == "unverified":
+        phone_verification_status = "pending"
+
+    if is_admin and "verifiedDocs" in data:
+        verified_docs = bool(listing_payload["verified_docs"])
+
+    db.execute(
+        """
+        UPDATE listings
+        SET title = ?,
+            city = ?,
+            district = ?,
+            property_type = ?,
+            condition_type = ?,
+            price = ?,
+            rooms = ?,
+            area = ?,
+            floor = ?,
+            total_floors = ?,
+            year_built = ?,
+            e_oselya = ?,
+            images = ?,
+            latitude = ?,
+            longitude = ?,
+            description = ?,
+            status = ?,
+            published_at = COALESCE(published_at, datetime('now')),
+            listing_type = ?,
+            source = ?,
+            agency_slug = ?,
+            listing_status = ?,
+            has_photo_tour = ?,
+            has_video_tour = ?,
+            verified_owner = ?,
+            verified_phone = ?,
+            verified_docs = ?,
+            owner_verification_status = ?,
+            phone_verification_status = ?,
+            moderation_status = ?,
+            moderation_reason = ?,
+            moderation_updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (
+            listing_payload["title"],
+            listing_payload["city"],
+            listing_payload["district"],
+            listing_payload["property_type"],
+            listing_payload["condition_type"],
+            listing_payload["price"],
+            listing_payload["rooms"],
+            listing_payload["area"],
+            listing_payload["floor"],
+            listing_payload["total_floors"],
+            listing_payload["year_built"],
+            int(listing_payload["e_oselya"]),
+            listing_payload["images_json"],
+            listing_payload["lat"],
+            listing_payload["lng"],
+            listing_payload["description"],
+            next_status,
+            listing_payload["listing_type"],
+            listing_payload["source"],
+            listing_payload["agency_slug"],
+            listing_payload["listing_status"],
+            int(listing_payload["has_photo_tour"]),
+            int(listing_payload["has_video_tour"]),
+            int(verified_owner),
+            int(verified_phone),
+            int(verified_docs),
+            owner_verification_status,
+            phone_verification_status,
+            moderation_status,
+            moderation_reason,
+            listing_id,
+        ),
+    )
+    log_listing_event(db, listing_id, "listing_updated", "Оголошення відредаговано власником." if not is_admin else "Оголошення відредаговано адміністратором.", admin_id=g.user_id if is_admin else None)
+    db.commit()
+
+    if listing["status"] != "published":
+        run_dispatch_with_logging(
+            db,
+            trigger_type="listing_update_published",
+            listing_id=listing_id,
+            dry_run=False,
+            raise_errors=False,
+        )
+
+    _refresh_listing_city_summary(db)
+    cache_delete_prefix("admin:reports:listings-by-city:")
+    row = db.execute(LISTING_SELECT + " WHERE l.id = ?", (listing_id,)).fetchone()
+    return jsonify(listing=_row_to_listing(row))
 
 
 @app.route("/api/listings/<int:listing_id>", methods=["DELETE"])
