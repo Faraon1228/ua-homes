@@ -15,6 +15,11 @@
   status = 200
   force = true
 
+[[redirects]]
+  from = "/favicon.ico"
+  to = "/favicon.png"
+  status = 200
+
 # Redirect legacy ua-dom hostnames to primary ua-dim domain
 [[redirects]]
   from = "https://ua-dom.com/*"
