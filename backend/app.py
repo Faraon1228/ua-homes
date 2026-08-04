@@ -527,11 +527,19 @@ def normalize_listing_images(raw_images) -> list[str]:
         url = strip(str(image), 2048)
         if not url:
             continue
+        # Keep data URIs (base64 uploads) and valid http(s) URLs as-is
+        if url.startswith("data:image/"):
+            normalized.append(url)
+            continue
         try:
-            host = (urlsplit(url).hostname or "").lower()
+            parsed = urlsplit(url)
+            if parsed.scheme in ("http", "https") and parsed.hostname:
+                normalized.append(url)
+                continue
         except ValueError:
-            host = ""
-        normalized.append(fallback if "images.unsplash.com" in host else url)
+            pass
+        # Anything else → placeholder
+        normalized.append(fallback)
     return normalized or [fallback]
 
 
@@ -576,25 +584,25 @@ def validate_listing_payload(data: dict, carried_images: list[str] | None = None
     title = strip(data.get("title"), 200)
     city = strip(data.get("city"), 100)
     district = strip(data.get("district"), 100)
-    prop_type = strip(data.get("propertyType"), 50) or "квартира"
-    condition = strip(data.get("conditionType"), 50) or "вторинка"
+    prop_type = strip(data.get("propertyType") or data.get("property_type"), 50) or "квартира"
+    condition = strip(data.get("conditionType") or data.get("condition_type"), 50) or "вторинка"
     description = strip(data.get("description"), 2000)
     price = pos_int(data.get("price"))
     rooms = nonneg_int(data.get("rooms"))
     area = pos_float(data.get("area"))
     floor = nonneg_int(data.get("floor")) or 1
-    total_floors = pos_int(data.get("totalFloors")) or 1
-    year_built = nonneg_int(data.get("yearBuilt"))
-    e_oselya = bool(data.get("eOselya", False))
-    listing_type = strip(data.get("listingType", "sale"), 10).lower()
-    listing_status = strip(data.get("listingStatus", "active"), 20).lower()
+    total_floors = pos_int(data.get("totalFloors") or data.get("total_floors")) or 1
+    year_built = nonneg_int(data.get("yearBuilt") or data.get("year_built"))
+    e_oselya = bool(data.get("eOselya") or data.get("e_oselya") or False)
+    listing_type = strip(data.get("listingType") or data.get("listing_type") or "sale", 10).lower()
+    listing_status = strip(data.get("listingStatus") or data.get("listing_status") or "active", 20).lower()
     source = strip(data.get("source", "owner"), 20).lower()
-    agency_slug = strip(data.get("agencySlug", ""), 80).lower() or None
-    has_photo_tour = bool(data.get("hasPhotoTour", False))
-    has_video_tour = bool(data.get("hasVideoTour", False))
-    owner_verification_requested = bool(data.get("verifiedOwner", False) or data.get("requestOwnerVerification", False))
-    phone_verification_requested = bool(data.get("verifiedPhone", False) or data.get("requestPhoneVerification", False))
-    verified_docs = bool(data.get("verifiedDocs", False))
+    agency_slug = strip(data.get("agencySlug") or data.get("agency_slug") or "", 80).lower() or None
+    has_photo_tour = bool(data.get("hasPhotoTour") or data.get("has_photo_tour") or False)
+    has_video_tour = bool(data.get("hasVideoTour") or data.get("has_video_tour") or False)
+    owner_verification_requested = bool(data.get("verifiedOwner") or data.get("verified_owner") or data.get("requestOwnerVerification") or False)
+    phone_verification_requested = bool(data.get("verifiedPhone") or data.get("verified_phone") or data.get("requestPhoneVerification") or False)
+    verified_docs = bool(data.get("verifiedDocs") or data.get("verified_docs") or False)
     images_raw = data.get("images", [])
 
     image_values: list[str] = []
