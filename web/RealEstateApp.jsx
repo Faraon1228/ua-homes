@@ -142,12 +142,12 @@ function getStoredJSON(key, fallback) {
 }
 
 function getApiBaseUrl() {
-  if (typeof window === "undefined") return "/api-backend";
+  if (typeof window === "undefined") return "https://backend-production-51964.up.railway.app/api";
   const hostname = window.location.hostname || "";
   if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0") {
     return "http://127.0.0.1:5050/api";
   }
-  return "/api-backend";
+  return "https://backend-production-51964.up.railway.app/api";
 }
 
 function getApiUrl(path) {
