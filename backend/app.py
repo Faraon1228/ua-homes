@@ -3097,10 +3097,16 @@ def create_listing():
     except (TypeError, ValueError):
         lat = lng = None
 
-    status = "published" if is_admin else "pending"
-    published_at_value = datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ") if is_admin else None
-    moderation_status = "approved" if is_admin else "pending_review"
-    moderation_reason = None if is_admin else "Нове оголошення очікує модерації перед публікацією."
+    publish_now = data.get("publishNow", True)
+    if isinstance(publish_now, str):
+        publish_now = truthy_flag(publish_now)
+    else:
+        publish_now = bool(publish_now)
+
+    status = "published" if (is_admin or publish_now) else "pending"
+    published_at_value = datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ") if (is_admin or publish_now) else None
+    moderation_status = "approved" if (is_admin or publish_now) else "pending_review"
+    moderation_reason = None if (is_admin or publish_now) else "Нове оголошення очікує модерації перед публікацією."
     moderation_updated_at = datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ")
     owner_verification_status = "verified" if is_admin and owner_verification_requested else ("pending" if owner_verification_requested else "unverified")
     phone_verification_status = "verified" if is_admin and phone_verification_requested else ("pending" if phone_verification_requested else "unverified")

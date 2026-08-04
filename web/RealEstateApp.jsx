@@ -116,6 +116,26 @@ function normalizeImageSrc(src) {
   return src.includes("images.unsplash.com") ? FALLBACK_IMAGE : src;
 }
 
+function mapListingToProperty(listing) {
+  const images = Array.isArray(listing?.images)
+    ? listing.images.filter(Boolean)
+    : [];
+
+  return {
+    id: listing?.id ?? 0,
+    title: listing?.title || "Оголошення без назви",
+    city: listing?.city || "Київ",
+    district: listing?.district || "",
+    price: Number(listing?.price || 0),
+    rooms: Number(listing?.rooms || 0),
+    area: Number(listing?.area || 0),
+    eOselya: Boolean(listing?.e_oselya ?? listing?.eOselya),
+    images,
+    description: listing?.description || "",
+    status: listing?.status || "published",
+  };
+}
+
 function getStored(key, fallback) {
   if (typeof window === "undefined") return fallback;
   const value = window.localStorage.getItem(key);
@@ -480,10 +500,18 @@ export default function RealEstateApp() {
   const [myListings, setMyListings] = useState([]);
   const [myListingsLoading, setMyListingsLoading] = useState(false);
   const [selectedListingFiles, setSelectedListingFiles] = useState([]);
+  const [liveCatalogListings, setLiveCatalogListings] = useState([]);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState("");
+
+  const catalogProperties = useMemo(
+    () => (liveCatalogListings.length ? liveCatalogListings : MOCK_PROPERTIES),
+    [liveCatalogListings]
+  );
 
   const cities = useMemo(
-    () => ["Всі", ...Array.from(new Set(MOCK_PROPERTIES.map((p) => p.city)))],
-    []
+    () => ["Всі", ...Array.from(new Set(catalogProperties.map((p) => p.city)))],
+    [catalogProperties]
   );
 
   useEffect(() => {
@@ -494,6 +522,28 @@ export default function RealEstateApp() {
     setKeywordDraft(keywordSearch);
     window.localStorage.setItem(KEYWORD_SEARCH_KEY, keywordSearch);
   }, [keywordSearch]);
+
+  const loadCatalogListings = async () => {
+    setCatalogLoading(true);
+    setCatalogError("");
+    try {
+      const response = await fetch(getApiUrl("/listings?status=published&limit=60&sort=newest"));
+      if (!response.ok) throw new Error("Не вдалося завантажити оголошення");
+      const data = await response.json();
+      const rows = Array.isArray(data.listings) ? data.listings : [];
+      const mapped = rows.map(mapListingToProperty);
+      setLiveCatalogListings(mapped);
+    } catch (error) {
+      setCatalogError(error.message || "Не вдалося завантажити оголошення");
+      setLiveCatalogListings([]);
+    } finally {
+      setCatalogLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadCatalogListings();
+  }, []);
 
   useEffect(() => {
     window.localStorage.setItem("re.cityFilter", cityFilter);
@@ -585,12 +635,12 @@ export default function RealEstateApp() {
   );
 
   const filteredProperties = useMemo(
-    () => filterAndSortProperties(MOCK_PROPERTIES, searchFilters),
-    [searchFilters]
+    () => filterAndSortProperties(catalogProperties, searchFilters),
+    [catalogProperties, searchFilters]
   );
   const favoriteProperties = useMemo(
-    () => MOCK_PROPERTIES.filter((property) => favoriteIds.includes(property.id)),
-    [favoriteIds]
+    () => catalogProperties.filter((property) => favoriteIds.includes(property.id)),
+    [catalogProperties, favoriteIds]
   );
   const compareProperties = useMemo(() => favoriteProperties.slice(0, 3), [favoriteProperties]);
   const bestValueId = useMemo(() => {
@@ -892,6 +942,7 @@ export default function RealEstateApp() {
         description: listingForm.description.trim(),
         listingStatus: "active",
         source: "owner",
+        publishNow: true,
         images: [...uploadedImageDataUrls, ...imageUrls].slice(0, 8),
       };
 
@@ -912,6 +963,7 @@ export default function RealEstateApp() {
       setSelectedListingFiles([]);
       setShowCreateListingModal(false);
       await loadMyListings();
+      await loadCatalogListings();
     } catch (error) {
       setListingMessage(error.message || "Не вдалося створити оголошення");
     } finally {
