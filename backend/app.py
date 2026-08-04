@@ -2923,11 +2923,32 @@ def get_listings():
                 listing_ids.append(value)
         listing_ids = list(dict.fromkeys(listing_ids))[:200]
 
+    actor_id, is_admin = get_optional_actor(db)
+    if not mine_only and not is_admin and status and status != "published":
+        return jsonify(error="Недостатньо прав для перегляду неопублікованих оголошень"), 403
+
+    if not status:
+        status = "published"
+
+    cache_payload: dict | None = None
+    cache_key = None
+    cacheable_public_query = (
+        not mine_only
+        and not is_admin
+        and status == "published"
+        and sort_key != "views-desc"
+    )
+    if cacheable_public_query:
+        query_string = request.query_string.decode("utf-8", errors="ignore")
+        cache_key = f"public:listings:v1:{query_string}"
+        cache_payload = cached_json_get(cache_key)
+        if cache_payload is not None:
+            return jsonify(**cache_payload)
+
     query  = LISTING_SELECT + " WHERE 1=1"
     params: list = []
 
     if mine_only:
-        actor_id, _ = get_optional_actor(db)
         if actor_id is None:
             return jsonify(error="Потрібна авторизація"), 401
         query += " AND l.user_id = ?"
@@ -3094,7 +3115,7 @@ def get_listings():
             .rstrip("=")
         )
 
-    return jsonify(
+    response_payload = dict(
         listings=listings,
         total=total,
         limit=limit,
@@ -3102,6 +3123,9 @@ def get_listings():
         has_more=has_more,
         next_cursor=next_cursor,
     )
+    if cache_key and cacheable_public_query:
+        cached_json_set(cache_key, response_payload, ttl_seconds=20)
+    return jsonify(**response_payload)
 
 
 @app.route("/api/listings/<int:lid>", methods=["GET"])
@@ -3224,7 +3248,9 @@ def create_listing():
     db.commit()
     if status == "published":
         _refresh_listing_city_summary(db)
+        db.commit()
         cache_delete_prefix("admin:reports:listings-by-city:")
+        cache_delete_prefix("public:listings:")
     if status == "published":
         run_dispatch_with_logging(
             db,
@@ -3375,7 +3401,9 @@ def update_listing(listing_id: int):
         )
 
     _refresh_listing_city_summary(db)
+    db.commit()
     cache_delete_prefix("admin:reports:listings-by-city:")
+    cache_delete_prefix("public:listings:")
     row = db.execute(LISTING_SELECT + " WHERE l.id = ?", (listing_id,)).fetchone()
     return jsonify(listing=_row_to_listing(row))
 
@@ -3394,7 +3422,9 @@ def delete_listing(listing_id: int):
     db.execute("DELETE FROM listings WHERE id = ?", (listing_id,))
     db.commit()
     _refresh_listing_city_summary(db)
+    db.commit()
     cache_delete_prefix("admin:reports:listings-by-city:")
+    cache_delete_prefix("public:listings:")
     return jsonify(ok=True)
 
 
@@ -3533,7 +3563,9 @@ def update_listing_verification(listing_id: int):
 
     row = db.execute(LISTING_SELECT + " WHERE l.id = ?", (listing_id,)).fetchone()
     _refresh_listing_city_summary(db)
+    db.commit()
     cache_delete_prefix("admin:reports:listings-by-city:")
+    cache_delete_prefix("public:listings:")
     return jsonify(listing=_row_to_listing(row))
 
 

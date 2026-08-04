@@ -1079,8 +1079,7 @@ export default function RealEstateApp() {
         window.location.assign(`/listing/${result.listing.id}`);
         return;
       }
-      await loadMyListings();
-      await loadCatalogListings();
+      await Promise.all([loadMyListings(), loadCatalogListings()]);
     } catch (error) {
       setListingMessage(error.message || "Не вдалося зберегти оголошення");
     } finally {
