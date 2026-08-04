@@ -500,6 +500,7 @@ export default function RealEstateApp() {
   const [myListings, setMyListings] = useState([]);
   const [myListingsLoading, setMyListingsLoading] = useState(false);
   const [selectedListingFiles, setSelectedListingFiles] = useState([]);
+  const [selectedListingFilePreviews, setSelectedListingFilePreviews] = useState([]);
   const [liveCatalogListings, setLiveCatalogListings] = useState([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
@@ -903,6 +904,25 @@ export default function RealEstateApp() {
     setSelectedListingFiles(files);
   };
 
+  useEffect(() => {
+    if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
+      setSelectedListingFilePreviews([]);
+      return undefined;
+    }
+
+    const previews = selectedListingFiles.map((file) => ({
+      id: `${file.name}-${file.size}-${file.lastModified}`,
+      name: file.name,
+      src: URL.createObjectURL(file),
+    }));
+
+    setSelectedListingFilePreviews(previews);
+
+    return () => {
+      previews.forEach((preview) => URL.revokeObjectURL(preview.src));
+    };
+  }, [selectedListingFiles]);
+
   const readListingFileAsDataUrl = (file) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -961,6 +981,7 @@ export default function RealEstateApp() {
       setListingMessage(`Оголошення створено${result.listing?.status === "published" ? " і вже опубліковане" : " і надіслане на модерацію"}.`);
       setListingForm(INITIAL_LISTING_FORM);
       setSelectedListingFiles([]);
+      setSelectedListingFilePreviews([]);
       setShowCreateListingModal(false);
       await loadMyListings();
       await loadCatalogListings();
@@ -2026,12 +2047,29 @@ export default function RealEstateApp() {
                     <input type="file" multiple accept="image/*" onChange={handleListingFileSelection} className="hidden" />
                   </label>
                   {selectedListingFiles.length ? (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {selectedListingFiles.map((file) => (
-                        <span key={file.name} className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
-                          {file.name}
-                        </span>
-                      ))}
+                    <div className="mt-3 space-y-3">
+                      <div className="flex flex-wrap gap-2">
+                        {selectedListingFiles.map((file) => (
+                          <span
+                            key={`${file.name}-${file.size}-${file.lastModified}`}
+                            className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700"
+                          >
+                            {file.name}
+                          </span>
+                        ))}
+                      </div>
+                      {selectedListingFilePreviews.length ? (
+                        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                          {selectedListingFilePreviews.map((preview) => (
+                            <div key={preview.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                              <img src={preview.src} alt={preview.name} className="h-28 w-full object-cover" />
+                              <div className="border-t border-slate-100 px-3 py-2 text-xs font-medium text-slate-600">
+                                {preview.name}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
