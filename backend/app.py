@@ -115,7 +115,7 @@ HTML_CSP = (
     "object-src 'none'; "
     "frame-ancestors 'none'; "
     "form-action 'self'; "
-    "img-src 'self' data: blob: https://images.unsplash.com https://*.tile.openstreetmap.org; "
+    "img-src 'self' data: blob: https://images.unsplash.com https://picsum.photos https://fastly.picsum.photos https://*.tile.openstreetmap.org; "
     "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.tailwindcss.com; "
     "style-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; "
     "connect-src 'self' https://backend-production-51964.up.railway.app; "
@@ -517,7 +517,8 @@ IMG = PLACEHOLDER_LISTING_IMAGE
 
 
 def imgs(*ids):
-    return json.dumps([IMG for _ in ids])
+    """Return a JSON array of picsum.photos URLs seeded by Unsplash photo IDs for deterministic demo images."""
+    return json.dumps([f"https://picsum.photos/seed/{uid}/800/600" for uid in ids])
 
 
 def normalize_listing_images(raw_images) -> list[str]:
@@ -1446,7 +1447,12 @@ def require_auth(f):
             return jsonify(error="Сесія закінчилась — увійдіть знову"), 401
         except jwt.PyJWTError:
             return jsonify(error="Невалідний токен"), 401
-        g.user_id    = int(payload["sub"])
+        user_id = int(payload["sub"])
+        db = get_db()
+        user_row = db.execute("SELECT id, email FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user_row:
+            return jsonify(error="Сесія недійсна — увійдіть знову"), 401
+        g.user_id    = user_id
         g.user_email = payload["email"]
         return f(*args, **kwargs)
     return wrapper
