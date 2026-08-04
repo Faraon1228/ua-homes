@@ -50,19 +50,19 @@
 # SEO pages and ЖК detail pages → backend-rendered routes
 [[redirects]]
   from = "/seo/*"
-  to = "https://backend-production-51964.up.railway.app/:splat"
+  to = "https://backend-production-51964.up.railway.app/seo/:splat"
   status = 200
   force = true
 
 [[redirects]]
   from = "/zhk/*"
-  to = "https://backend-production-51964.up.railway.app/:splat"
+  to = "https://backend-production-51964.up.railway.app/zhk/:splat"
   status = 200
   force = true
 
 [[redirects]]
   from = "/listing/*"
-  to = "https://backend-production-51964.up.railway.app/:splat"
+  to = "https://backend-production-51964.up.railway.app/listing/:splat"
   status = 200
   force = true
 
