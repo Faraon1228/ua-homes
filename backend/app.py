@@ -2246,6 +2246,21 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
             public_id = f"listings/{g.user_id}/{unique_id}/{os.path.splitext(filename)[0]}"
             upload_url = f"https://api.cloudinary.com/v1_1/{cloud_name}/image/upload"
 
+            # Prefer unsigned uploads with preset (no signature validation issues)
+            if upload_preset:
+                return {
+                    "uploadUrl": upload_url,
+                    "method": "POST",
+                    "storage": "cloudinary",
+                    "expiresIn": expires_in,
+                    "cloudName": cloud_name,
+                    "authType": "unsigned",
+                    "uploadPreset": upload_preset,
+                    "publicId": public_id,
+                    "resourceType": "image",
+                }
+
+            # Fallback to signed uploads if credentials available
             if api_key and api_secret:
                 timestamp = int(datetime.datetime.utcnow().timestamp())
                 
@@ -2266,19 +2281,6 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
                     "apiKey": api_key,
                     "timestamp": timestamp,
                     "signature": signature,
-                    "publicId": public_id,
-                    "resourceType": "image",
-                }
-
-            if upload_preset:
-                return {
-                    "uploadUrl": upload_url,
-                    "method": "POST",
-                    "storage": "cloudinary",
-                    "expiresIn": expires_in,
-                    "cloudName": cloud_name,
-                    "authType": "unsigned",
-                    "uploadPreset": upload_preset,
                     "publicId": public_id,
                     "resourceType": "image",
                 }
