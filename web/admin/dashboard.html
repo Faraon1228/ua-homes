@@ -46,7 +46,7 @@
                     <i class="fas fa-clipboard-list mr-2"></i> Чернетки
                 </button>
                 <button onclick="showPage('new-listing')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
-                    <i class="fas fa-plus-circle mr-2"></i> Додати об'єкт
+                    <i class="fas fa-plus-circle mr-2"></i> Додати оголошення
                 </button>
                 <button onclick="showPage('csv-import')" class="w-full text-left px-6 py-3 hover:bg-gray-100 transition">
                     <i class="fas fa-file-csv mr-2"></i> CSV Імпорт
@@ -84,7 +84,7 @@
                 <div id="page-dashboard" class="p-6">
                     <div class="grid grid-cols-4 gap-4 mb-8">
                         <div class="bg-white p-6 rounded-lg shadow-sm border-l-4 border-blue-600">
-                            <div class="text-gray-600 text-sm">Всього об'єктів</div>
+                            <div class="text-gray-600 text-sm">Всього оголошень</div>
                             <div id="stat-listings" class="text-3xl font-bold text-blue-600 mt-2">-</div>
                         </div>
                         <div class="bg-white p-6 rounded-lg shadow-sm border-l-4 border-green-600">
@@ -104,7 +104,7 @@
                     <div class="grid grid-cols-2 gap-6">
                         <!-- Recent Listings -->
                         <div class="bg-white p-6 rounded-lg shadow-sm">
-                            <h3 class="text-lg font-bold mb-4">Останні об'єкти</h3>
+                            <h3 class="text-lg font-bold mb-4">Останні оголошення</h3>
                             <div id="recent-listings" class="space-y-3">
                                 <p class="text-gray-500">Завантаження...</p>
                             </div>
@@ -181,7 +181,7 @@
                         <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-auto">
                             <div class="p-6 border-b border-gray-200">
                                 <div class="flex justify-between items-center">
-                                    <h3 class="text-xl font-bold">Редагувати об'єкт</h3>
+                                    <h3 class="text-xl font-bold">Редагувати оголошення</h3>
                                     <button type="button" onclick="closeEditModal()" class="text-gray-500 hover:text-gray-700">
                                         <i class="fas fa-times text-xl"></i>
                                     </button>
@@ -285,7 +285,7 @@
 
                 <!-- New Listing Page -->
                 <div id="page-new-listing" class="p-6 hidden max-w-2xl">
-                    <h2 class="text-2xl font-bold mb-6">Додати новий об'єкт</h2>
+                    <h2 class="text-2xl font-bold mb-6">Додати нове оголошення</h2>
                     <form onsubmit="saveNewListing(event)" class="bg-white p-6 rounded-lg shadow-sm space-y-5">
                         <div class="flex items-center gap-3">
                             <div class="flex-1">
@@ -333,7 +333,7 @@
                                     <option value="земля">Земля</option>
                                 </select>
                             </div>
-                            <input type="text" placeholder="Назва об'єкта" id="form-title" required class="w-full p-2 border border-gray-300 rounded">
+                            <input type="text" placeholder="Назва оголошення" id="form-title" required class="w-full p-2 border border-gray-300 rounded">
                             <select id="form-region" class="w-full p-2 border border-gray-300 rounded">
                                 <option value="">Оберіть область або АР Крим</option>
                             </select>
@@ -1594,7 +1594,7 @@
                 listings: 'Нерухомість',
                 drafts: 'Чернетки',
                 review: 'Огляд чернетки',
-                'new-listing': "Додати об'єкт",
+                'new-listing': 'Додати оголошення',
                 'csv-import': 'CSV Імпорт',
                 users: 'Користувачі',
                 moderation: 'Модерація',

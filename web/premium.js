@@ -406,7 +406,7 @@
 
   // ── Inject upgrade CTA into header ────────────────────────────────────────
   function injectUpgradeCTA() {
-    // Try to find "Додати об'єкт" button and add upgrade button near it
+    // Try to find the add-listing button and add upgrade button near it
     var addBtn = Array.from(document.querySelectorAll('button')).find(function (b) {
       var t = b.textContent || '';
       return t.includes('Додати') || t.includes('додати');
