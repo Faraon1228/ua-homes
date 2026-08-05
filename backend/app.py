@@ -2228,11 +2228,17 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
         import cloudinary.utils
         
         try:
-            cloudinary.config(secure=True)
+            cloudinary.config(cloud_url=CLOUDINARY_URL, secure=True)
             cloud_name = getattr(cloudinary.config(), "cloud_name", None) or ""
             api_key = getattr(cloudinary.config(), "api_key", None) or os.environ.get("CLOUDINARY_API_KEY", "").strip()
             api_secret = getattr(cloudinary.config(), "api_secret", None) or os.environ.get("CLOUDINARY_API_SECRET", "").strip()
             upload_preset = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "").strip()
+            
+            if not cloud_name and CLOUDINARY_URL:
+                from urllib.parse import urlparse
+                parsed = urlparse(CLOUDINARY_URL)
+                cloud_name = parsed.hostname or ""
+            
             if not cloud_name:
                 return None
 
