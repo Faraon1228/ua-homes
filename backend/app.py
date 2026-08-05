@@ -2240,6 +2240,9 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
             api_secret = parsed.password or os.environ.get("CLOUDINARY_API_SECRET", "").strip()
             upload_preset = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "").strip()
             
+            # Debug logging
+            print(f"[Cloudinary] cloud_name={cloud_name}, preset={upload_preset}, has_api_key={bool(api_key)}")
+            
             if not cloud_name:
                 return None
 
@@ -2248,6 +2251,7 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
 
             # Prefer unsigned uploads with preset (no signature validation issues)
             if upload_preset:
+                print(f"[Cloudinary] Using UNSIGNED upload preset: {upload_preset}")
                 return {
                     "uploadUrl": upload_url,
                     "method": "POST",
@@ -2262,6 +2266,7 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
 
             # Fallback to signed uploads if credentials available
             if api_key and api_secret:
+                print(f"[Cloudinary] Preset NOT available, using SIGNED uploads with credentials")
                 timestamp = int(datetime.datetime.utcnow().timestamp())
                 
                 # Let cloudinary SDK handle signature generation - it knows the correct format
