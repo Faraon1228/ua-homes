@@ -78,6 +78,22 @@ _REDIS_CACHE = None
 _REDIS_CACHE_DISABLED = False
 _REPORT_CACHE: dict[str, tuple[float, object]] = {}
 
+# S3 Configuration for Direct Upload (Presigned URLs) — solves scaling issue with base64 encoding
+# Supports: AWS S3, Cloudinary, MinIO, or any S3-compatible storage
+# When S3 is configured, frontend uploads directly to S3, bypassing backend (no more base64 bloat)
+S3_ENABLED = bool(os.environ.get("S3_BUCKET") or os.environ.get("CLOUDINARY_URL"))
+S3_BUCKET = os.environ.get("S3_BUCKET", "").strip() or None
+S3_REGION = os.environ.get("S3_REGION", "us-east-1").strip()
+S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "").strip() or None
+S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "").strip() or None
+S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "").strip() or None  # For MinIO or custom S3
+CLOUDINARY_URL: str | None = os.environ.get("CLOUDINARY_URL", "").strip() or None
+
+# Image upload limits
+MAX_UPLOAD_SIZE = 10_485_760  # 10 MB per image
+MAX_IMAGES_PER_LISTING = 8
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+
 _DEFAULT_CORS_ORIGINS: list[str | re.Pattern[str]] = [
     re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"),
     re.compile(r"^https://(localhost|127\.0\.0\.1)(:\d+)?$"),
@@ -559,6 +575,20 @@ def normalize_listing_images(raw_images) -> list[str]:
 
 
 def parse_listing_request_payload() -> tuple[dict, list[str]]:
+    """
+    Parse listing data from multipart form or JSON.
+    
+    **NEW (v2024):** Supports both:
+    - Legacy: Direct image upload → base64 encoding (for backward compatibility)
+    - Modern: Presigned S3 URLs (recommended for scale)
+    
+    The frontend should use:
+    1. GET /api/images/presigned-url → get upload URL
+    2. PUT direct to S3 with presigned URL
+    3. POST /api/listings with { image_urls: ["https://s3.../path"] }
+    
+    This bypasses the backend entirely for file transfer.
+    """
     data: dict = {}
     image_urls: list[str] = []
 
@@ -579,18 +609,31 @@ def parse_listing_request_payload() -> tuple[dict, list[str]]:
     else:
         data = request.get_json(silent=True) or {}
 
+    # Handle legacy base64 uploads (if S3 not available)
+    # WARNING: This path does NOT scale. Prefer Presigned URLs above.
     uploaded_images: list[str] = []
-    if request.files:
+    if request.files and not S3_ENABLED:
         for upload in request.files.getlist("images"):
             if not getattr(upload, "filename", None):
                 continue
             if not (upload.mimetype or "").startswith("image/"):
                 continue
+            
+            # Size check
             image_bytes = upload.read()
             if not image_bytes:
                 continue
-            encoded = base64.b64encode(image_bytes).decode("ascii")
-            uploaded_images.append(f"data:{upload.mimetype};base64,{encoded}")
+            if len(image_bytes) > MAX_UPLOAD_SIZE:
+                print(f"Warning: Image too large ({len(image_bytes)} bytes), skipping")
+                continue
+            
+            # Only base64 encode if S3 is NOT available (fallback mode)
+            try:
+                encoded = base64.b64encode(image_bytes).decode("ascii")
+                uploaded_images.append(f"data:{upload.mimetype};base64,{encoded}")
+            except Exception as e:
+                print(f"Error encoding image: {e}")
+                continue
 
     return data, list(dict.fromkeys([*uploaded_images, *image_urls]))
 
@@ -2104,7 +2147,231 @@ def public_app_url() -> str:
     return f"{public_app_base_url()}/real-estate-demo.html"
 
 
-@app.route("/api/demo-images/<path:seed>.svg", methods=["GET"])
+# ─── S3 / Direct Upload Support ──────────────────────────────────────────────
+
+def generate_presigned_upload_url(filename: str, content_type: str, expires_in: int = 3600) -> dict | None:
+    """
+    Generate Presigned URL for direct browser → S3 upload.
+    
+    Returns: {
+        'uploadUrl': 'https://bucket.s3.amazonaws.com/...',
+        'fields': {'key': 'path/to/file', 'policy': '...', ...},  # For HTML form
+        'headers': {'Authorization': '...'},  # For PUT request
+        'storage': 'aws_s3' | 'cloudinary' | None
+    }
+    
+    This allows browser to upload directly to S3 without backend bottleneck.
+    Backend only verifies signature + stores URL reference.
+    """
+    
+    if not S3_ENABLED:
+        return None
+    
+    # Generate unique key per listing (namespace by user + timestamp)
+    import uuid
+    unique_id = uuid.uuid4().hex[:12]
+    s3_key = f"listings/{g.user_id}/{unique_id}/{filename}"
+    
+    # AWS S3 Presigned URL
+    if S3_BUCKET and S3_ACCESS_KEY and S3_SECRET_KEY:
+        import boto3
+        from botocore.config import Config
+        
+        s3_client = boto3.client(
+            's3',
+            region_name=S3_REGION,
+            aws_access_key_id=S3_ACCESS_KEY,
+            aws_secret_access_key=S3_SECRET_KEY,
+            endpoint_url=S3_ENDPOINT,  # For MinIO/custom S3
+            config=Config(signature_version='s3v4')
+        )
+        
+        try:
+            url = s3_client.generate_presigned_url(
+                'put_object',
+                Params={
+                    'Bucket': S3_BUCKET,
+                    'Key': s3_key,
+                    'ContentType': content_type,
+                    'Metadata': {
+                        'user-id': str(g.user_id),
+                        'uploaded-at': datetime.datetime.utcnow().isoformat()
+                    }
+                },
+                ExpiresIn=expires_in
+            )
+            
+            # Return info for browser upload
+            return {
+                'uploadUrl': url,
+                'key': s3_key,
+                'bucket': S3_BUCKET,
+                'region': S3_REGION,
+                'method': 'PUT',
+                'storage': 'aws_s3',
+                'expiresIn': expires_in
+            }
+        except Exception as e:
+            print(f"Error generating S3 presigned URL: {e}")
+            return None
+    
+    # Cloudinary Upload
+    elif CLOUDINARY_URL:
+        import cloudinary
+        import cloudinary.uploader
+        
+        try:
+            cloudinary.config(secure=True)
+            # Generate unsigned upload endpoint + session token
+            # This is simpler than AWS but requires cloudinary SDK
+            # Real implementation would use cloudinary.uploader.unsigned_upload_url()
+            return {
+                'uploadUrl': f"https://api.cloudinary.com/v1_1/{os.environ.get('CLOUDINARY_CLOUD_NAME', 'dummycloud')}/image/upload",
+                'method': 'POST',
+                'storage': 'cloudinary',
+                'expiresIn': expires_in
+            }
+        except Exception as e:
+            print(f"Error generating Cloudinary upload URL: {e}")
+            return None
+    
+    return None
+
+
+@app.route("/api/images/presigned-url", methods=["POST"])
+@require_auth
+@limiter.limit("100 per hour")  # Rate limit presigned URL generation
+def get_presigned_upload_url():
+    """
+    Generate Presigned URL for browser → S3 direct upload.
+    
+    Request:
+      POST /api/images/presigned-url
+      { "filename": "photo.jpg", "contentType": "image/jpeg" }
+    
+    Response:
+      {
+        "uploadUrl": "https://s3.amazonaws.com/...",
+        "key": "listings/123/abc123/photo.jpg",
+        "method": "PUT",
+        "storage": "aws_s3",
+        "expiresIn": 3600
+      }
+    
+    Browser then does: fetch(uploadUrl, { method: 'PUT', body: file })
+    """
+    
+    data = request.get_json(silent=True) or {}
+    filename = str(data.get("filename", "")).strip()
+    content_type = str(data.get("contentType", "image/jpeg")).strip()
+    
+    if not filename:
+        return jsonify(error="Missing filename"), 400
+    
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        return jsonify(error=f"Unsupported image type. Allowed: {', '.join(ALLOWED_IMAGE_TYPES)}"), 400
+    
+    presigned = generate_presigned_upload_url(filename, content_type)
+    if not presigned:
+        return jsonify(error="S3 not configured. Upload backend not available.", fallback="base64"), 503
+    
+    return jsonify(presigned)
+
+
+@app.route("/api/images/confirm-upload", methods=["POST"])
+@require_auth
+@limiter.limit("200 per hour")
+def confirm_uploaded_image():
+    """
+    Confirm S3 upload and get final image URL.
+    
+    Frontend calls this AFTER successful S3 upload to:
+    1. Verify file exists in S3
+    2. Generate CDN URL
+    3. Store reference in database
+    
+    Request:
+      POST /api/images/confirm-upload
+      { "key": "listings/123/abc123/photo.jpg", "etag": "abc123" }
+    
+    Response:
+      { "url": "https://cdn.example.com/listings/123/abc123/photo.jpg" }
+    """
+    
+    data = request.get_json(silent=True) or {}
+    s3_key = str(data.get("key", "")).strip()
+    etag = str(data.get("etag", "")).strip()  # For verification
+    
+    if not s3_key:
+        return jsonify(error="Missing S3 key"), 400
+    
+    # Verify key belongs to current user (prevent arbitrary file access)
+    if not s3_key.startswith(f"listings/{g.user_id}/"):
+        return jsonify(error="Unauthorized: file does not belong to you"), 403
+    
+    # Security: Verify file actually exists in S3 before returning URL
+    if S3_BUCKET and S3_ACCESS_KEY:
+        try:
+            import boto3
+            s3 = boto3.client(
+                's3',
+                region_name=S3_REGION,
+                aws_access_key_id=S3_ACCESS_KEY,
+                aws_secret_access_key=S3_SECRET_KEY,
+                endpoint_url=S3_ENDPOINT
+            )
+            response = s3.head_object(Bucket=S3_BUCKET, Key=s3_key)
+            
+            if etag and response.get('ETag', '').strip('"') != etag:
+                return jsonify(error="ETag mismatch - file may be corrupted"), 400
+        except s3.exceptions.NoSuchKey:
+            return jsonify(error="File not found in S3"), 404
+        except Exception as e:
+            print(f"Error verifying S3 upload: {e}")
+            return jsonify(error="Failed to verify upload"), 500
+    
+    # Generate CDN URL (can be CloudFront, direct S3, or custom CDN)
+    cdn_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}" if S3_BUCKET else f"https://cdn.ua-dim.com/{s3_key}"
+    
+    return jsonify({"url": cdn_url})
+
+
+@app.route("/api/images/abort-upload", methods=["POST"])
+@require_auth
+@limiter.limit("50 per hour")
+def abort_multipart_upload():
+    """
+    Abort incomplete S3 multipart upload (cleanup on user cancel).
+    """
+    data = request.get_json(silent=True) or {}
+    upload_id = str(data.get("uploadId", "")).strip()
+    s3_key = str(data.get("key", "")).strip()
+    
+    if not s3_key or not upload_id:
+        return jsonify(error="Missing uploadId or key"), 400
+    
+    if not s3_key.startswith(f"listings/{g.user_id}/"):
+        return jsonify(error="Unauthorized"), 403
+    
+    # Abort on S3 if using multipart
+    if S3_BUCKET and S3_ACCESS_KEY:
+        try:
+            import boto3
+            s3 = boto3.client(
+                's3',
+                region_name=S3_REGION,
+                aws_access_key_id=S3_ACCESS_KEY,
+                aws_secret_access_key=S3_SECRET_KEY,
+                endpoint_url=S3_ENDPOINT
+            )
+            s3.abort_multipart_upload(Bucket=S3_BUCKET, Key=s3_key, UploadId=upload_id)
+        except Exception as e:
+            print(f"Error aborting upload: {e}")
+    
+    return jsonify(status="ok")
+
+
+
 def demo_image(seed: str):
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
     palette = [

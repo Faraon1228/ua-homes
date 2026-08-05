@@ -9,3 +9,7 @@ psycopg2-binary>=2.9.9
 # Redis for rate-limiter shared state across Gunicorn workers
 redis>=5.0.0
 limits>=3.6.0
+# S3 / Direct Upload support (optional — only needed when S3_BUCKET is set)
+boto3>=1.26.0
+# Cloudinary support (optional — alternative to S3)
+cloudinary>=1.33.0
