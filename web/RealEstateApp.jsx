@@ -1171,6 +1171,27 @@ export default function RealEstateApp() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  useEffect(() => {
+    const handleAddHash = () => {
+      if (window.location.hash !== "#add") return;
+      const anchor = document.getElementById("add");
+      if (anchor) {
+        const top = anchor.getBoundingClientRect().top + window.scrollY - 96;
+        window.scrollTo({ top: Math.max(top, 0), behavior: "smooth" });
+      }
+      if (!currentUser) {
+        setAuthMode("register");
+        return;
+      }
+      openCreateListingModal();
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    };
+
+    handleAddHash();
+    window.addEventListener("hashchange", handleAddHash);
+    return () => window.removeEventListener("hashchange", handleAddHash);
+  }, [currentUser]);
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <header className="sticky top-0 z-50 border-b border-slate-200 bg-white/95 backdrop-blur">
@@ -1351,7 +1372,7 @@ export default function RealEstateApp() {
 
       <section className="mx-auto max-w-7xl px-4 pb-12">
         <div className="grid gap-6 lg:grid-cols-12">
-          <aside className="space-y-6 lg:col-span-4 lg:sticky lg:top-24 self-start">
+          <aside id="add" className="space-y-6 lg:col-span-4 lg:sticky lg:top-24 self-start">
             <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex items-start justify-between gap-3">
                 <div>
