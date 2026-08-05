@@ -2170,7 +2170,11 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
     Backend only verifies signature + stores URL reference.
     """
     
+    print(f"[Upload] generate_presigned_upload_url called with filename: {filename}")
+    print(f"[Upload] S3_ENABLED: {S3_ENABLED}, S3_BUCKET: {bool(S3_BUCKET)}, CLOUDINARY_URL: {bool(CLOUDINARY_URL)}")
+    
     if not S3_ENABLED:
+        print(f"[Upload] S3 not enabled, returning None")
         return None
     
     # Generate unique key per listing (namespace by user + timestamp)
