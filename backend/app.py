@@ -2248,7 +2248,6 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
 
 @app.route("/api/images/presigned-url", methods=["POST"])
 @require_auth
-@limiter.limit("100 per hour")  # Rate limit presigned URL generation
 def get_presigned_upload_url():
     """
     Generate Presigned URL for browser → S3 direct upload.
@@ -2288,7 +2287,6 @@ def get_presigned_upload_url():
 
 @app.route("/api/images/confirm-upload", methods=["POST"])
 @require_auth
-@limiter.limit("200 per hour")
 def confirm_uploaded_image():
     """
     Confirm S3 upload and get final image URL.
@@ -2346,7 +2344,6 @@ def confirm_uploaded_image():
 
 @app.route("/api/images/abort-upload", methods=["POST"])
 @require_auth
-@limiter.limit("50 per hour")
 def abort_multipart_upload():
     """
     Abort incomplete S3 multipart upload (cleanup on user cancel).
@@ -2381,7 +2378,6 @@ def abort_multipart_upload():
 
 @app.route("/api/images/optimize", methods=["POST"])
 @require_auth
-@limiter.limit("100 per hour")
 def optimize_image():
     """
     Optimize uploaded image: convert to WebP/AVIF + create 3 sizes (thumbnail, medium, large).
