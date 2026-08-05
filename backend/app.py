@@ -2242,13 +2242,14 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
             upload_url = f"https://api.cloudinary.com/v1_1/{cloud_name}/image/upload"
 
             if api_key and api_secret:
+                import hashlib
                 timestamp = int(datetime.datetime.utcnow().timestamp())
-                signature_params = {
-                    "timestamp": timestamp,
-                    "public_id": public_id,
-                    "resource_type": "image",
-                }
-                signature = cloudinary.utils.api_sign_request(signature_params, api_secret)
+                
+                # Generate signature: SHA1 of "param1=value1&param2=value2...&api_secret"
+                # Include only the params that Cloudinary expects
+                signature_string = f"public_id={public_id}&timestamp={timestamp}{api_secret}"
+                signature = hashlib.sha1(signature_string.encode()).hexdigest()
+                
                 return {
                     "uploadUrl": upload_url,
                     "method": "POST",
