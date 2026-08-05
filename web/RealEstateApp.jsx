@@ -472,9 +472,52 @@ function PhotoGallery({ images, title }) {
     setIndex((current) => (current + 1) % items.length);
   };
 
+  // Generate WebP/AVIF variants from original URL
+  // If S3 upload was optimized, URL format: https://bucket/listings/123/abc/photo-medium.webp
+  // Fallback to original if optimization not available
+  const getImageVariants = (url) => {
+    if (!url) return { original: url, webp: null, avif: null };
+    
+    // If already optimized (S3 URL with size suffix), extract base and create variants
+    const urlObj = new URL(url, window.location.origin);
+    const pathname = urlObj.pathname;
+    
+    // Check if it's an S3 URL with optimization
+    if (pathname.includes('listings/') && (pathname.includes('-medium') || pathname.includes('-large') || pathname.includes('-thumbnail'))) {
+      // Already optimized, just return the WebP version
+      return {
+        original: url,
+        webp: url.endsWith('.webp') ? url : url.replace(/\.(jpg|png)$/, '-medium.webp'),
+        avif: url.endsWith('.avif') ? url : url.replace(/\.(jpg|png)$/, '-medium.avif')
+      };
+    }
+    
+    // Original image (fallback if optimization not available)
+    return { original: url, webp: null, avif: null };
+  };
+
+  const currentImage = items[index];
+  const variants = getImageVariants(currentImage);
+
   return (
     <div className="relative h-60 overflow-hidden bg-slate-200">
-      <img src={items[index]} alt={title} loading="lazy" decoding="async" className="h-full w-full object-cover" />
+      {/* Picture element for responsive format selection (AVIF > WebP > original) */}
+      <picture>
+        {variants.avif && (
+          <source srcSet={variants.avif} type="image/avif" />
+        )}
+        {variants.webp && (
+          <source srcSet={variants.webp} type="image/webp" />
+        )}
+        <img 
+          src={variants.original} 
+          alt={title} 
+          loading="lazy" 
+          decoding="async" 
+          className="h-full w-full object-cover" 
+        />
+      </picture>
+      
       {items.length > 1 && (
         <>
           <button
