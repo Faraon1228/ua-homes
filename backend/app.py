@@ -2246,7 +2246,7 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
     return None
 
 
-@app.route("/images/presigned-url", methods=["POST"])
+@app.route("/api/images/presigned-url", methods=["POST"])
 @require_auth
 @limiter.limit("100 per hour")  # Rate limit presigned URL generation
 def get_presigned_upload_url():
@@ -2286,7 +2286,7 @@ def get_presigned_upload_url():
     return jsonify(presigned)
 
 
-@app.route("/images/confirm-upload", methods=["POST"])
+@app.route("/api/images/confirm-upload", methods=["POST"])
 @require_auth
 @limiter.limit("200 per hour")
 def confirm_uploaded_image():
@@ -2344,7 +2344,7 @@ def confirm_uploaded_image():
     return jsonify({"url": cdn_url})
 
 
-@app.route("/images/abort-upload", methods=["POST"])
+@app.route("/api/images/abort-upload", methods=["POST"])
 @require_auth
 @limiter.limit("50 per hour")
 def abort_multipart_upload():
@@ -2379,7 +2379,7 @@ def abort_multipart_upload():
     return jsonify(status="ok")
 
 
-@app.route("/images/optimize", methods=["POST"])
+@app.route("/api/images/optimize", methods=["POST"])
 @require_auth
 @limiter.limit("100 per hour")
 def optimize_image():
@@ -4451,7 +4451,7 @@ def _insert_observability_event(
     )
 
 
-@app.route("/analytics/summary", methods=["GET"])
+@app.route("/api/analytics/summary", methods=["GET"])
 def analytics_summary():
     db = get_db()
     total = db.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
@@ -4470,7 +4470,7 @@ def analytics_summary():
     )
 
 
-@app.route("/analytics/lead-funnel", methods=["POST"])
+@app.route("/api/analytics/lead-funnel", methods=["POST"])
 def analytics_lead_funnel_event():
     db = get_db()
     data = _parse_json_payload()
@@ -4679,7 +4679,7 @@ def create_lead_request():
     ), 201
 
 
-@app.route("/analytics/client-telemetry", methods=["POST"])
+@app.route("/api/analytics/client-telemetry", methods=["POST"])
 def analytics_client_telemetry():
     db = get_db()
     data = _parse_json_payload()
@@ -4717,7 +4717,7 @@ def analytics_client_telemetry():
     return jsonify(ok=True), 201
 
 
-@app.route("/analytics/web-vitals", methods=["POST"])
+@app.route("/api/analytics/web-vitals", methods=["POST"])
 def analytics_web_vitals():
     db = get_db()
     data = _parse_json_payload()
