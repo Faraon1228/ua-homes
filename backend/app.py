@@ -1072,8 +1072,6 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_listings_status_e_oselya ON listings(status, e_oselya);
         CREATE INDEX IF NOT EXISTS idx_listings_status_listing_status ON listings(status, listing_status);
         CREATE INDEX IF NOT EXISTS idx_listings_status_verified ON listings(status, verified_owner, verified_phone, verified_docs);
-        CREATE INDEX IF NOT EXISTS idx_agency_profiles_slug_verified ON agency_profiles(slug, is_verified);
-
         CREATE TABLE IF NOT EXISTS listing_alerts (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id      INTEGER REFERENCES users(id) ON DELETE CASCADE,
