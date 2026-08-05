@@ -2526,6 +2526,7 @@ def optimize_image():
 
 
 @app.route("/api/demo-images/<path:seed>.svg", methods=["GET"])
+def generate_demo_svg(seed: str):
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
     palette = [
         ("#0f172a", "#1d4ed8"),
