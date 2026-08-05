@@ -410,6 +410,11 @@ def db_placeholder() -> str:
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": _cors_origins()}}, supports_credentials=True, vary_header=True)
 
+# Configure Cloudinary early so api_sign_request has credentials
+if CLOUDINARY_URL:
+    import cloudinary
+    cloudinary.config(secure=True)  # Auto-loads from CLOUDINARY_URL environment variable
+
 # Rate-limiter storage: Redis when available (multi-worker safe), else in-memory.
 _limiter_storage = f"redis://{REDIS_URL.replace('redis://','')}" if REDIS_URL else "memory://"
 if REDIS_URL and not REDIS_URL.startswith("redis://"):
