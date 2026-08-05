@@ -591,9 +591,9 @@ def parse_listing_request_payload() -> tuple[dict, list[str]]:
     - Modern: Presigned S3 URLs (recommended for scale)
     
     The frontend should use:
-    1. GET /api/images/presigned-url → get upload URL
+    1. POST /api-backend/images/presigned-url → get upload URL
     2. PUT direct to S3 with presigned URL
-    3. POST /api/listings with { image_urls: ["https://s3.../path"] }
+    3. POST /api-backend/listings with { image_urls: ["https://s3.../path"] }
     
     This bypasses the backend entirely for file transfer.
     """
@@ -2246,7 +2246,7 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
     return None
 
 
-@app.route("/api/images/presigned-url", methods=["POST"])
+@app.route("/images/presigned-url", methods=["POST"])
 @require_auth
 @limiter.limit("100 per hour")  # Rate limit presigned URL generation
 def get_presigned_upload_url():
@@ -2254,7 +2254,7 @@ def get_presigned_upload_url():
     Generate Presigned URL for browser → S3 direct upload.
     
     Request:
-      POST /api/images/presigned-url
+      POST /api-backend/images/presigned-url
       { "filename": "photo.jpg", "contentType": "image/jpeg" }
     
     Response:
@@ -2286,7 +2286,7 @@ def get_presigned_upload_url():
     return jsonify(presigned)
 
 
-@app.route("/api/images/confirm-upload", methods=["POST"])
+@app.route("/images/confirm-upload", methods=["POST"])
 @require_auth
 @limiter.limit("200 per hour")
 def confirm_uploaded_image():
@@ -2299,7 +2299,7 @@ def confirm_uploaded_image():
     3. Store reference in database
     
     Request:
-      POST /api/images/confirm-upload
+      POST /api-backend/images/confirm-upload
       { "key": "listings/123/abc123/photo.jpg", "etag": "abc123" }
     
     Response:
@@ -2344,7 +2344,7 @@ def confirm_uploaded_image():
     return jsonify({"url": cdn_url})
 
 
-@app.route("/api/images/abort-upload", methods=["POST"])
+@app.route("/images/abort-upload", methods=["POST"])
 @require_auth
 @limiter.limit("50 per hour")
 def abort_multipart_upload():
@@ -2379,7 +2379,7 @@ def abort_multipart_upload():
     return jsonify(status="ok")
 
 
-@app.route("/api/images/optimize", methods=["POST"])
+@app.route("/images/optimize", methods=["POST"])
 @require_auth
 @limiter.limit("100 per hour")
 def optimize_image():
@@ -2389,7 +2389,7 @@ def optimize_image():
     This endpoint processes the already-uploaded image from S3 and creates optimized variants.
     
     Request:
-     POST /api/images/optimize
+     POST /api-backend/images/optimize
      { "key": "listings/123/abc123/photo.jpg" }
     
     Response:
@@ -2406,8 +2406,8 @@ def optimize_image():
     
     Architecture:
     1. Frontend uploads original image to S3 (presigned URL)
-    2. Frontend calls /api/images/confirm-upload to verify
-    3. **Frontend calls /api/images/optimize to create variants**
+    2. Frontend calls /api-backend/images/confirm-upload to verify
+    3. **Frontend calls /api-backend/images/optimize to create variants**
     4. Frontend stores all URLs in listing
     
     Benefits:
@@ -4450,7 +4450,7 @@ def _insert_observability_event(
     )
 
 
-@app.route("/api/analytics/summary", methods=["GET"])
+@app.route("/analytics/summary", methods=["GET"])
 def analytics_summary():
     db = get_db()
     total = db.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
@@ -4469,7 +4469,7 @@ def analytics_summary():
     )
 
 
-@app.route("/api/analytics/lead-funnel", methods=["POST"])
+@app.route("/analytics/lead-funnel", methods=["POST"])
 def analytics_lead_funnel_event():
     db = get_db()
     data = _parse_json_payload()
@@ -4678,7 +4678,7 @@ def create_lead_request():
     ), 201
 
 
-@app.route("/api/analytics/client-telemetry", methods=["POST"])
+@app.route("/analytics/client-telemetry", methods=["POST"])
 def analytics_client_telemetry():
     db = get_db()
     data = _parse_json_payload()
@@ -4716,7 +4716,7 @@ def analytics_client_telemetry():
     return jsonify(ok=True), 201
 
 
-@app.route("/api/analytics/web-vitals", methods=["POST"])
+@app.route("/analytics/web-vitals", methods=["POST"])
 def analytics_web_vitals():
     db = get_db()
     data = _parse_json_payload()
