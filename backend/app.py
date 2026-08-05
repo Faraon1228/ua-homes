@@ -2170,11 +2170,7 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
     Backend only verifies signature + stores URL reference.
     """
     
-    print(f"[Upload] generate_presigned_upload_url called with filename: {filename}")
-    print(f"[Upload] S3_ENABLED: {S3_ENABLED}, S3_BUCKET: {bool(S3_BUCKET)}, CLOUDINARY_URL: {bool(CLOUDINARY_URL)}")
-    
     if not S3_ENABLED:
-        print(f"[Upload] S3 not enabled, returning None")
         return None
     
     # Generate unique key per listing (namespace by user + timestamp)
@@ -2238,11 +2234,6 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
             api_key = parsed.username or os.environ.get("CLOUDINARY_API_KEY", "").strip()
             api_secret = parsed.password or os.environ.get("CLOUDINARY_API_SECRET", "").strip()
             upload_preset = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "").strip()
-            
-            # Debug logging
-            print(f"[Cloudinary Debug] CLOUDINARY_URL present: {bool(CLOUDINARY_URL)}")
-            print(f"[Cloudinary Debug] Parsed - hostname: {cloud_name}, username: {bool(parsed.username)}, password: {bool(parsed.password)}")
-            print(f"[Cloudinary Debug] Extracted - api_key: {api_key[:20] if api_key else 'EMPTY'}, api_secret: {api_secret[:20] if api_secret else 'EMPTY'}")
             
             if not cloud_name:
                 return None
