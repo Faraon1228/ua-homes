@@ -6,7 +6,7 @@ buildCommand = "pip install -r requirements.txt"
 watchPatterns = ["backend/**"]
 
 [deploy]
-startCommand = "gunicorn -c gunicorn.conf.py app:app"
+startCommand = "cd backend && gunicorn -c gunicorn.conf.py app:app"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
