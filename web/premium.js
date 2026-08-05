@@ -10,40 +10,37 @@
     : 'https://backend-production-51964.up.railway.app';
 
   // ── Тарифи ────────────────────────────────────────────────────────────────
+  // Ідентифікатори мають збігатися з SUBSCRIPTION_PLANS у backend/app.py.
   var PLANS = [
     {
       id: 'free',
+      audience: 'owner',
       name: 'Базовий',
       price: 0,
       period: 'безкоштовно',
       badge: null,
       color: '#64748b',
-      bg: '#f8fafc',
-      border: '#e2e8f0',
       features: [
         '1 оголошення',
         '30 днів активності',
         'Стандартна позиція',
-        'Телефон прихований',
       ],
       limits: ['Без виділення', 'Без ТОП-позиції'],
-      cta: 'Поточний план',
+      cta: 'Доступний одразу',
       disabled: true,
     },
     {
       id: 'standard',
+      audience: 'owner',
       name: 'Стандарт',
       price: 299,
       period: 'міс',
       badge: null,
       color: '#2563eb',
-      bg: '#eff6ff',
-      border: '#bfdbfe',
       features: [
         '5 оголошень',
         '60 днів активності',
         'Виділення в пошуку',
-        'Телефон відкритий',
         'Статистика переглядів',
       ],
       limits: ['Без ТОП-позиції'],
@@ -52,19 +49,70 @@
     },
     {
       id: 'premium',
+      audience: 'owner',
       name: 'Преміум',
       price: 699,
       period: 'міс',
       badge: '🔥 Популярний',
       color: '#7c3aed',
-      bg: '#f5f3ff',
-      border: '#ddd6fe',
       features: [
         '15 оголошень',
         '90 днів активності',
         'ТОП-позиція в пошуку',
         'Бейдж «Перевірено»',
-        'Телефон + WhatsApp',
+        'Детальна аналітика',
+      ],
+      limits: [],
+      cta: 'Підключити',
+      disabled: false,
+    },
+    {
+      id: 'realtor_free',
+      audience: 'realtor',
+      name: 'Ріелтор Базовий',
+      price: 0,
+      period: 'безкоштовно',
+      badge: null,
+      color: '#64748b',
+      features: [
+        '3 оголошення',
+        '30 днів активності',
+        'Профіль ріелтора',
+      ],
+      limits: ['Без виділення', 'Без ТОП-позиції'],
+      cta: 'Доступний одразу',
+      disabled: true,
+    },
+    {
+      id: 'realtor_start',
+      audience: 'realtor',
+      name: 'Ріелтор Старт',
+      price: 799,
+      period: 'міс',
+      badge: null,
+      color: '#0d9488',
+      features: [
+        '30 оголошень',
+        'Профіль ріелтора',
+        'Виділення в пошуку',
+        'Статистика переглядів',
+      ],
+      limits: ['Без ТОП-позиції'],
+      cta: 'Підключити',
+      disabled: false,
+    },
+    {
+      id: 'realtor_pro',
+      audience: 'realtor',
+      name: 'Ріелтор Про',
+      price: 1499,
+      period: 'міс',
+      badge: '🔥 Популярний',
+      color: '#b45309',
+      features: [
+        '100 оголошень',
+        'ТОП-позиція в пошуку',
+        'Бейдж «Перевірено»',
         'Детальна аналітика',
         'Пріоритетна підтримка',
       ],
@@ -73,29 +121,49 @@
       disabled: false,
     },
     {
-      id: 'agent',
-      name: 'Топ-агент',
-      price: 1499,
+      id: 'realtor_agency',
+      audience: 'realtor',
+      name: 'Агенція',
+      price: 2999,
       period: 'міс',
-      badge: '⭐ Для агентів',
-      color: '#b45309',
-      bg: '#fffbeb',
-      border: '#fde68a',
+      badge: '🏢 Для команд',
+      color: '#1d4ed8',
       features: [
         'Необмежено оголошень',
-        '120 днів активності',
-        'ТОП × 3 позиції',
         'Брендинг агентства',
-        'CRM-інтеграція',
         'API доступ',
-        'Особистий менеджер',
+        'CRM-інтеграція',
         'Верифікація агентства',
+        'Особистий менеджер',
       ],
       limits: [],
       cta: 'Підключити',
       disabled: false,
     },
   ];
+
+  var AUDIENCES = [
+    { id: 'owner', label: '🏠 Власник', hint: 'Продаю або здаю власне житло' },
+    { id: 'realtor', label: '🤝 Ріелтор', hint: 'Працюю з клієнтами та об\'єктами' },
+  ];
+
+  // Старі посилання на тариф «agent» ведуть на «Ріелтор Про».
+  var LEGACY_PLAN_ALIASES = { agent: 'realtor_pro' };
+
+  var activeAudience = 'owner';
+
+  function resolvePlanId(planId) {
+    return LEGACY_PLAN_ALIASES[planId] || planId;
+  }
+
+  function findPlan(planId) {
+    var wanted = resolvePlanId(planId);
+    return PLANS.find(function (p) { return p.id === wanted; });
+  }
+
+  function plansForAudience(audience) {
+    return PLANS.filter(function (p) { return p.audience === audience; });
+  }
 
   // ── Стилі ─────────────────────────────────────────────────────────────────
   var STYLE = `
@@ -119,8 +187,21 @@
       text-align:center;margin:0 0 6px;
     }
     .ua-pm-sub {
-      text-align:center;color:#94a3b8;font-size:14px;margin:0 0 32px;
+      text-align:center;color:#94a3b8;font-size:14px;margin:0 0 20px;
     }
+    .ua-pm-tabs {
+      display:flex;gap:10px;justify-content:center;margin:0 0 24px;flex-wrap:wrap;
+    }
+    .ua-pm-tab {
+      display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;
+      background:#1e293b;border:1.5px solid #334155;border-radius:14px;
+      padding:10px 20px;color:#cbd5e1;transition:border-color .2s,background .2s,color .2s;
+      font:inherit;min-width:180px;
+    }
+    .ua-pm-tab:hover{border-color:#64748b}
+    .ua-pm-tab--active{background:#2563eb;border-color:#2563eb;color:#fff}
+    .ua-pm-tab-label{font-size:15px;font-weight:700}
+    .ua-pm-tab-hint{font-size:11px;opacity:.75}
     .ua-pm-grid {
       display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;
     }
@@ -213,7 +294,7 @@
   }
 
   function renderCard(plan) {
-    var isPopular = plan.id === 'premium';
+    var isPopular = plan.badge === '🔥 Популярний';
     var limits = plan.limits.map(function (l) {
       return '<li>' + l + '</li>';
     }).join('');
@@ -232,17 +313,60 @@
     );
   }
 
+  function renderGrid() {
+    return plansForAudience(activeAudience).map(renderCard).join('');
+  }
+
+  function renderAudienceTabs() {
+    return (
+      '<div class="ua-pm-tabs" role="tablist">' +
+      AUDIENCES.map(function (a) {
+        return (
+          '<button class="ua-pm-tab' + (a.id === activeAudience ? ' ua-pm-tab--active' : '') + '"' +
+          ' role="tab" aria-selected="' + (a.id === activeAudience) + '" data-audience="' + a.id + '">' +
+          '<span class="ua-pm-tab-label">' + a.label + '</span>' +
+          '<span class="ua-pm-tab-hint">' + a.hint + '</span>' +
+          '</button>'
+        );
+      }).join('') +
+      '</div>'
+    );
+  }
+
+  function refreshGrid() {
+    var tabs = document.querySelector('.ua-pm-tabs');
+    var grid = document.getElementById('ua-pm-grid');
+    if (!grid) return;
+    if (tabs) tabs.outerHTML = renderAudienceTabs();
+    document.getElementById('ua-pm-grid').innerHTML = renderGrid();
+    bindAudienceTabs();
+    bindCardButtons();
+  }
+
+  function bindAudienceTabs() {
+    var tabs = document.querySelectorAll('.ua-pm-tab');
+    tabs.forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        var next = tab.getAttribute('data-audience');
+        if (!next || next === activeAudience) return;
+        activeAudience = next;
+        refreshGrid();
+      });
+    });
+  }
+
   function buildModal() {
     var backdrop = document.createElement('div');
     backdrop.id = 'ua-premium-backdrop';
     backdrop.innerHTML = (
-      '<div id="ua-premium-modal" role="dialog" aria-modal="true" aria-label="Преміум тарифи UA-Dim">' +
+      '<div id="ua-premium-modal" role="dialog" aria-modal="true" aria-label="Тарифи UA-Dim">' +
       '<button class="ua-pm-close" id="ua-pm-close-btn" aria-label="Закрити">×</button>' +
-      '<h2 class="ua-pm-title">🏆 Преміум для власників і агентів</h2>' +
-      '<p class="ua-pm-sub">Отримайте більше показів, ТОП-позицію та довіру покупців</p>' +
+      '<h2 class="ua-pm-title">🏆 Тарифи UA-Dim</h2>' +
+      '<p class="ua-pm-sub">Окремі пакети для власників житла та ріелторів</p>' +
+      renderAudienceTabs() +
       '<div id="ua-pm-error" class="ua-pm-error-banner"></div>' +
       '<div class="ua-pm-grid" id="ua-pm-grid">' +
-      PLANS.map(renderCard).join('') +
+      renderGrid() +
       '</div>' +
       '<p style="text-align:center;color:#475569;font-size:12px;margin-top:24px">Оплата через LiqPay · Захищено SSL · Скасування у будь-який момент</p>' +
       '</div>'
@@ -252,7 +376,7 @@
 
   // ── Payment flow ───────────────────────────────────────────────────────────
   function startPayment(planId) {
-    var plan = PLANS.find(function (p) { return p.id === planId; });
+    var plan = findPlan(planId);
     if (!plan || plan.disabled) return;
 
     var grid = document.getElementById('ua-pm-grid');
@@ -313,7 +437,7 @@
       })
       .catch(function (err) {
         // Show error and restore grid
-        grid.innerHTML = PLANS.map(renderCard).join('');
+        grid.innerHTML = renderGrid();
         bindCardButtons();
         errBanner.textContent = '⚠️ ' + (err.message || 'Помилка підключення до сервера оплати. Спробуйте пізніше.');
         errBanner.style.display = 'block';
@@ -347,11 +471,18 @@
   }
 
   // ── Open / Close Modal ─────────────────────────────────────────────────────
-  function openModal() {
-    if (document.getElementById('ua-premium-backdrop')) return;
+  function openModal(audience) {
+    if (audience === 'owner' || audience === 'realtor') {
+      activeAudience = audience;
+    }
+    if (document.getElementById('ua-premium-backdrop')) {
+      refreshGrid();
+      return;
+    }
     injectStyle();
     var modal = buildModal();
     document.body.appendChild(modal);
+    bindAudienceTabs();
     bindCardButtons();
 
     document.getElementById('ua-pm-close-btn').addEventListener('click', closeModal);
@@ -363,7 +494,7 @@
 
     // Track open
     if (window.dataLayer) {
-      window.dataLayer.push({ event: 'premium_modal_open' });
+      window.dataLayer.push({ event: 'premium_modal_open', audience: activeAudience });
     }
   }
 
@@ -428,9 +559,9 @@
     var params = new URLSearchParams(window.location.search);
     if (params.get('payment') === 'success') {
       var planId = params.get('plan') || '';
-      var plan = PLANS.find(function (p) { return p.id === planId; }) || { name: 'Преміум', price: 0 };
+      var plan = findPlan(planId) || { name: 'Преміум', price: 0 };
       setTimeout(function () {
-        openModal();
+        openModal(plan.audience);
         showSuccess(plan, false);
       }, 800);
       // Track conversion
@@ -450,6 +581,7 @@
     open: openModal,
     close: closeModal,
     plans: PLANS,
+    plansFor: plansForAudience,
   };
 
   // ── Init ───────────────────────────────────────────────────────────────────

@@ -95,6 +95,24 @@ const SMART_SEARCH_PATH = "smart-search.html";
 
 const INITIAL_LISTING_IMAGE_FIELDS = ["", "", ""];
 
+// Ідентифікатори мають збігатися з ACCOUNT_TYPES у backend/app.py.
+const ACCOUNT_TYPE_OPTIONS = [
+  { id: "owner", label: "🏠 Власник", hint: "Продаю або здаю власне житло" },
+  { id: "realtor", label: "🤝 Ріелтор", hint: "Працюю з клієнтами та об'єктами" },
+];
+
+function accountTypeOf(user) {
+  return user?.account_type === "realtor" ? "realtor" : "owner";
+}
+
+function formatPlanQuota(usage) {
+  if (!usage) return null;
+  if (usage.listings_limit === null || usage.listings_limit === undefined) {
+    return `${usage.listings_used} оголошень · без ліміту`;
+  }
+  return `${usage.listings_used} / ${usage.listings_limit} оголошень`;
+}
+
 function createInitialListingForm() {
   return {
     title: "",
@@ -573,10 +591,12 @@ export default function RealEstateApp() {
   const [authToken, setAuthToken] = useState(() => getStored("uaDim.authToken", ""));
   const [currentUser, setCurrentUser] = useState(() => getStoredJSON("uaDim.currentUser", null));
   const [authMode, setAuthMode] = useState("login");
-  const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
+  const [authForm, setAuthForm] = useState({ name: "", email: "", password: "", accountType: "owner" });
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState("");
   const [authSuccess, setAuthSuccess] = useState("");
+  const [accountTypeSwitching, setAccountTypeSwitching] = useState(false);
+  const [planLimitPrompt, setPlanLimitPrompt] = useState(null);
   const [showCreateListingModal, setShowCreateListingModal] = useState(false);
   const [editingListingId, setEditingListingId] = useState(null);
   const [listingForm, setListingForm] = useState(() => createInitialListingForm());
@@ -604,6 +624,59 @@ export default function RealEstateApp() {
     () => myListings.filter((item) => item.status === "published" && item.listing_status === "active").length,
     [myListings]
   );
+
+  const isRealtorCabinet = accountTypeOf(currentUser) === "realtor";
+  const planUsage = currentUser?.usage || null;
+  const planName = currentUser?.plan?.name || (isRealtorCabinet ? "Ріелтор Free" : "Базовий");
+  const planIsFree = !currentUser?.plan_id || currentUser.plan_id === "free" || currentUser.plan_id === "realtor_free";
+  const planQuota = formatPlanQuota(planUsage);
+  const planLimitReached = planUsage ? planUsage.listings_remaining === 0 : false;
+  const cabinet = isRealtorCabinet
+    ? {
+        eyebrow: "Кабінет ріелтора",
+        badge: "Ріелтор",
+        intro: "Ведіть портфель об'єктів клієнтів, стежте за лімітом тарифу та піднімайте оголошення в ТОП.",
+        profileHint: "У кабінеті ріелтора видно портфель об'єктів, статус кожного та ліміт вашого пакета.",
+      }
+    : {
+        eyebrow: "Кабінет власника",
+        badge: "Власник",
+        intro: "Створюйте оголошення з профілю, одразу публікуйте їх на сайті та редагуйте без переходу в адмінку.",
+        profileHint: "У профілі видно активні оголошення, їх статус і доступне швидке редагування.",
+      };
+
+  const openPlansModal = (audience) => {
+    const target = audience || (isRealtorCabinet ? "realtor" : "owner");
+    if (window.uaPremium?.open) {
+      window.uaPremium.open(target);
+    } else {
+      window.location.href = "premium.html";
+    }
+  };
+
+  const switchAccountType = async () => {
+    if (!authToken || accountTypeSwitching) return;
+    const nextType = isRealtorCabinet ? "owner" : "realtor";
+    setAccountTypeSwitching(true);
+    setAuthError("");
+    setAuthSuccess("");
+    try {
+      const response = await fetch(getApiUrl("/auth/me"), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ accountType: nextType }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Не вдалося змінити тип кабінету");
+      setCurrentUser(result.user || null);
+      setAuthSuccess(nextType === "realtor" ? "Увімкнено кабінет ріелтора" : "Увімкнено кабінет власника");
+    } catch (error) {
+      setAuthError(error.message || "Не вдалося змінити тип кабінету");
+    } finally {
+      setAccountTypeSwitching(false);
+    }
+  };
+
 
   useEffect(() => {
     setSortBy((prev) => resolveSortByForEOselya(prev, onlyEOselya));
@@ -709,12 +782,27 @@ export default function RealEstateApp() {
     }
   };
 
+  const refreshProfile = async () => {
+    if (!authToken) return;
+    try {
+      const response = await fetch(getApiUrl("/auth/me"), {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (data.user) setCurrentUser(data.user);
+    } catch (_error) {
+      // Профіль лишається з локального кешу — не блокуємо кабінет.
+    }
+  };
+
   useEffect(() => {
     if (!authToken) {
       setMyListings([]);
       return;
     }
     loadMyListings();
+    refreshProfile();
   }, [authToken, currentUser?.id]);
 
   const searchFilters = useMemo(
@@ -948,6 +1036,7 @@ export default function RealEstateApp() {
                 name: authForm.name.trim(),
                 email: authForm.email.trim(),
                 password: authForm.password,
+                accountType: authForm.accountType,
               }
         ),
       });
@@ -958,7 +1047,7 @@ export default function RealEstateApp() {
       setAuthToken(result.token || "");
       setCurrentUser(result.user || null);
       setAuthSuccess(authMode === "login" ? "Увійшли в профіль" : "Обліковий запис створено");
-      setAuthForm({ name: "", email: "", password: "" });
+      setAuthForm({ name: "", email: "", password: "", accountType: authForm.accountType });
     } catch (error) {
       setAuthError(error.message || "Не вдалося виконати дію");
     } finally {
@@ -1089,7 +1178,7 @@ export default function RealEstateApp() {
         eOselya: Boolean(listingForm.eOselya),
         description: listingForm.description.trim(),
         listingStatus: "active",
-        source: "owner",
+        source: isRealtorCabinet ? "agent" : "owner",
         publishNow: true,
         images: [...uploadedImageDataUrls, ...imageUrls].slice(0, 8),
       };
@@ -1104,6 +1193,18 @@ export default function RealEstateApp() {
         body: JSON.stringify(payload),
       });
       const result = await response.json();
+      if (response.status === 402 || result.code === "plan_limit_reached") {
+        setShowCreateListingModal(false);
+        setPlanLimitPrompt({
+          message: result.error || "Ліміт оголошень за вашим тарифом вичерпано.",
+          usage: result.usage || null,
+          planName: result.plan?.name || planName,
+        });
+        if (result.usage) {
+          setCurrentUser((prev) => (prev ? { ...prev, usage: result.usage } : prev));
+        }
+        return;
+      }
       if (!response.ok) {
         throw new Error(result.error || "Не вдалося створити оголошення");
       }
@@ -1376,18 +1477,22 @@ export default function RealEstateApp() {
             <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Профіль власника</p>
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">
+                    {currentUser ? cabinet.eyebrow : "Профіль"}
+                  </p>
                   <h2 className="mt-1 text-xl font-black text-slate-900">
                     {currentUser ? currentUser.name : "Увійдіть у профіль"}
                   </h2>
                 </div>
                 <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${currentUser ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-700"}`}>
-                  {currentUser ? "Авторизовано" : "Потрібен вхід"}
+                  {currentUser ? cabinet.badge : "Потрібен вхід"}
                 </span>
               </div>
 
               <p className="mt-2 text-sm text-slate-600">
-                Створюйте оголошення з профілю, одразу публікуйте їх на сайті та редагуйте без переходу в адмінку.
+                {currentUser
+                  ? cabinet.intro
+                  : "Створіть кабінет власника або ріелтора, щоб публікувати оголошення просто з сайту."}
               </p>
 
               {authError ? <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{authError}</div> : null}
@@ -1396,6 +1501,29 @@ export default function RealEstateApp() {
 
               {!currentUser ? (
                 <form onSubmit={handleAuthSubmit} className="mt-4 space-y-3">
+                  {authMode === "register" ? (
+                    <div className="space-y-2">
+                      <p className="text-xs font-black uppercase tracking-wide text-slate-500">Тип кабінету</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {ACCOUNT_TYPE_OPTIONS.map((option) => (
+                          <button
+                            key={option.id}
+                            type="button"
+                            onClick={() => updateAuthForm("accountType", option.id)}
+                            aria-pressed={authForm.accountType === option.id}
+                            className={`rounded-2xl border p-3 text-left transition ${
+                              authForm.accountType === option.id
+                                ? "border-blue-600 bg-blue-50 text-blue-900"
+                                : "border-slate-200 bg-white text-slate-700 hover:border-slate-300"
+                            }`}
+                          >
+                            <span className="block text-sm font-bold">{option.label}</span>
+                            <span className="mt-0.5 block text-[11px] text-slate-500">{option.hint}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                   {authMode === "register" ? (
                     <input
                       type="text"
@@ -1441,18 +1569,56 @@ export default function RealEstateApp() {
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                     <p className="text-xs font-black uppercase tracking-wide text-slate-500">Профіль</p>
                     <p className="mt-1 font-semibold text-slate-900">{currentUser.email}</p>
-                    <p className="mt-1 text-xs text-slate-500">У профілі видно активні оголошення, їх статус і доступне швидке редагування.</p>
+                    <p className="mt-1 text-xs text-slate-500">{cabinet.profileHint}</p>
                   </div>
+
+                  <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] font-black uppercase tracking-wide text-blue-700">Тариф</p>
+                        <p className="mt-1 font-black text-slate-900">{planName}</p>
+                        {planQuota ? <p className="mt-0.5 text-xs text-slate-600">{planQuota}</p> : null}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openPlansModal()}
+                        className="rounded-2xl bg-blue-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700"
+                      >
+                        {planIsFree ? "Обрати тариф" : "Змінити тариф"}
+                      </button>
+                    </div>
+                    {planLimitReached ? (
+                      <p className="mt-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-rose-700">
+                        Ліміт вичерпано — оновіть тариф, щоб додати ще оголошення.
+                      </p>
+                    ) : null}
+                  </div>
+
                   <div className="grid grid-cols-2 gap-3">
                     <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
                       <p className="text-[11px] font-black uppercase tracking-wide text-emerald-700">Активні</p>
                       <p className="mt-1 text-2xl font-black text-emerald-700">{activeMyListingsCount}</p>
                     </div>
                     <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                      <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">Усього</p>
+                      <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">
+                        {isRealtorCabinet ? "У портфелі" : "Усього"}
+                      </p>
                       <p className="mt-1 text-2xl font-black text-slate-900">{myListings.length}</p>
                     </div>
                   </div>
+
+                  {isRealtorCabinet ? (
+                    <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                      <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">Агентство</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">
+                        {currentUser.agency_slug || "Профіль агентства ще не підключено"}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Брендинг агентства і верифікація доступні на тарифі «Агенція».
+                      </p>
+                    </div>
+                  ) : null}
+
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
@@ -1460,6 +1626,18 @@ export default function RealEstateApp() {
                       className="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
                     >
                       + Створити оголошення
+                    </button>
+                    <button
+                      type="button"
+                      onClick={switchAccountType}
+                      disabled={accountTypeSwitching}
+                      className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-60"
+                    >
+                      {accountTypeSwitching
+                        ? "Перемикаємо…"
+                        : isRealtorCabinet
+                          ? "Кабінет власника"
+                          : "Кабінет ріелтора"}
                     </button>
                     <button
                       type="button"
@@ -2064,6 +2242,43 @@ export default function RealEstateApp() {
           </div>
         </div>
       </section>
+
+      {planLimitPrompt ? (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/70 px-4 py-8">
+          <div className="w-full max-w-md rounded-[32px] border border-slate-200 bg-white p-6 shadow-2xl">
+            <p className="text-xs font-black uppercase tracking-wide text-rose-600">Ліміт тарифу</p>
+            <h3 className="mt-1 text-xl font-black text-slate-900">Потрібен більший пакет</h3>
+            <p className="mt-2 text-sm text-slate-600">{planLimitPrompt.message}</p>
+            <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+              <p>
+                Поточний тариф: <span className="font-bold">{planLimitPrompt.planName}</span>
+              </p>
+              {formatPlanQuota(planLimitPrompt.usage) ? (
+                <p className="mt-1 text-xs text-slate-500">{formatPlanQuota(planLimitPrompt.usage)}</p>
+              ) : null}
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setPlanLimitPrompt(null);
+                  openPlansModal();
+                }}
+                className="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
+              >
+                Переглянути тарифи
+              </button>
+              <button
+                type="button"
+                onClick={() => setPlanLimitPrompt(null)}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+              >
+                Пізніше
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showCreateListingModal ? (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 px-4 py-8">

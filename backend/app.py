@@ -3439,10 +3439,11 @@ def me():
     db  = get_db()
     if request.method == "PATCH":
         data = request.get_json(silent=True) or {}
-        name = strip(data.get("name"), 100)
-        if not name:
-            return jsonify(error="Вкажіть ім'я"), 422
-        db.execute("UPDATE users SET name = ? WHERE id = ?", (name, g.user_id))
+        if "name" in data:
+            name = strip(data.get("name"), 100)
+            if not name:
+                return jsonify(error="Вкажіть ім'я"), 422
+            db.execute("UPDATE users SET name = ? WHERE id = ?", (name, g.user_id))
 
         raw_account_type = data.get("accountType", data.get("account_type"))
         if raw_account_type is not None:
