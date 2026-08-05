@@ -431,6 +431,10 @@ def _init_postgres_db():
                 password        TEXT    NOT NULL,
                 password_hash   TEXT,
                 role            TEXT    NOT NULL DEFAULT 'user',
+                account_type    TEXT    NOT NULL DEFAULT 'owner',
+                plan_id         TEXT    NOT NULL DEFAULT 'free',
+                plan_expires_at TEXT,
+                agency_slug     TEXT,
                 status          TEXT    NOT NULL DEFAULT 'active',
                 created_at      TEXT    NOT NULL DEFAULT ({db_now_expr()})
             );
@@ -697,11 +701,20 @@ def _init_postgres_db():
             CREATE INDEX IF NOT EXISTS idx_premium_orders_status ON premium_orders(status);
         """)
 
+        # Backward-compatible migration for databases created before subscriptions.
         cur.execute("""
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS account_type    TEXT NOT NULL DEFAULT 'owner';
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_id         TEXT NOT NULL DEFAULT 'free';
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_expires_at TEXT;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS agency_slug     TEXT;
         """)
         cur.execute(
+            "UPDATE users SET account_type = 'owner'"
+            " WHERE account_type IS NULL OR account_type NOT IN ('owner', 'realtor')"
         )
         cur.execute(
+            "UPDATE users SET plan_id = CASE WHEN account_type = 'realtor' THEN 'realtor_free' ELSE 'free' END"
+            " WHERE plan_id IS NULL OR plan_id = ''"
         )
         db.commit()
     finally:
@@ -1253,10 +1266,173 @@ SEED_RENT_LISTINGS = [
 VERIFICATION_STATES = {"unverified", "pending", "verified", "rejected"}
 MODERATION_STATES = {"pending_review", "in_review", "approved", "changes_requested", "rejected"}
 
+ACCOUNT_TYPES = {"owner", "realtor"}
+DEFAULT_ACCOUNT_TYPE = "owner"
+
+# Subscription catalog. `listing_limit = None` means unlimited.
+# `audience` decides which cabinet (owner / realtor) offers the plan.
+SUBSCRIPTION_PLANS: dict[str, dict] = {
+    "free": {
+        "name": "Базовий",
+        "audience": "owner",
+        "price": 0,
+        "listing_limit": 1,
+        "duration_days": 30,
+        "features": ["1 оголошення", "30 днів активності", "Стандартна позиція"],
+    },
+    "standard": {
+        "name": "Стандарт",
+        "audience": "owner",
+        "price": 299,
+        "listing_limit": 5,
+        "duration_days": 60,
+        "features": ["5 оголошень", "60 днів активності", "Виділення в пошуку", "Статистика переглядів"],
+    },
+    "premium": {
+        "name": "Преміум",
+        "audience": "owner",
+        "price": 699,
+        "listing_limit": 15,
+        "duration_days": 90,
+        "features": ["15 оголошень", "90 днів активності", "ТОП-позиція в пошуку", "Бейдж «Перевірено»", "Детальна аналітика"],
+    },
+    "realtor_free": {
+        "name": "Ріелтор Базовий",
+        "audience": "realtor",
+        "price": 0,
+        "listing_limit": 3,
+        "duration_days": 30,
+        "features": ["3 оголошення", "30 днів активності", "Профіль ріелтора"],
+    },
+    "realtor_start": {
+        "name": "Ріелтор Старт",
+        "audience": "realtor",
+        "price": 799,
+        "listing_limit": 30,
+        "duration_days": 30,
+        "features": ["30 оголошень", "Профіль ріелтора", "Виділення в пошуку", "Статистика переглядів"],
+    },
+    "realtor_pro": {
+        "name": "Ріелтор Про",
+        "audience": "realtor",
+        "price": 1499,
+        "listing_limit": 100,
+        "duration_days": 30,
+        "features": ["100 оголошень", "ТОП-позиція в пошуку", "Бейдж «Перевірено»", "Детальна аналітика", "Пріоритетна підтримка"],
+    },
+    "realtor_agency": {
+        "name": "Агенція",
+        "audience": "realtor",
+        "price": 2999,
+        "listing_limit": None,
+        "duration_days": 30,
+        "features": ["Необмежено оголошень", "Брендинг агентства", "API доступ", "CRM-інтеграція", "Верифікація агентства", "Особистий менеджер"],
+    },
+}
+
+DEFAULT_PLAN_BY_ACCOUNT_TYPE = {"owner": "free", "realtor": "realtor_free"}
+PAID_PLAN_IDS = {plan_id for plan_id, plan in SUBSCRIPTION_PLANS.items() if plan["price"] > 0}
+
+
+def normalize_account_type(value) -> str:
+    """Coerce arbitrary input to a supported account type."""
+    candidate = str(value or "").strip().lower()
+    return candidate if candidate in ACCOUNT_TYPES else DEFAULT_ACCOUNT_TYPE
+
+
+def default_plan_for(account_type: str) -> str:
+    return DEFAULT_PLAN_BY_ACCOUNT_TYPE.get(normalize_account_type(account_type), "free")
+
+
+def plan_public_dict(plan_id: str) -> dict:
+    plan = SUBSCRIPTION_PLANS[plan_id]
+    return {
+        "id": plan_id,
+        "name": plan["name"],
+        "audience": plan["audience"],
+        "price": plan["price"],
+        "currency": "UAH",
+        "listing_limit": plan["listing_limit"],
+        "duration_days": plan["duration_days"],
+        "features": list(plan["features"]),
+    }
+
+
+def resolve_user_plan(row) -> tuple[str, dict]:
+    """Return the effective plan id and definition for a user row.
+
+    Falls back to the account's free plan when the stored plan is unknown or expired.
+    """
+    account_type = normalize_account_type(row["account_type"] if _has_key(row, "account_type") else None)
+    fallback = default_plan_for(account_type)
+    plan_id = str((row["plan_id"] if _has_key(row, "plan_id") else "") or "").strip()
+    if plan_id not in SUBSCRIPTION_PLANS:
+        plan_id = fallback
+
+    expires_at = str((row["plan_expires_at"] if _has_key(row, "plan_expires_at") else "") or "").strip()
+    if plan_id in PAID_PLAN_IDS and expires_at:
+        try:
+            expiry = datetime.datetime.fromisoformat(expires_at.replace(" ", "T"))
+        except ValueError:
+            expiry = None
+        if expiry and expiry <= datetime.datetime.utcnow():
+            plan_id = fallback
+
+    return plan_id, SUBSCRIPTION_PLANS[plan_id]
+
+
+def _has_key(row, key: str) -> bool:
+    try:
+        return key in row.keys()
+    except AttributeError:
+        try:
+            return key in row
+        except TypeError:
+            return False
+
+
+def listing_usage(db, user_id: int, plan: dict) -> dict:
+    """Count listings that occupy a plan slot and derive the remaining quota."""
+    row = db.execute(
+        "SELECT COUNT(*) AS used FROM listings"
+        " WHERE user_id = ? AND status IN ('draft', 'pending', 'published')",
+        (user_id,),
+    ).fetchone()
+    used = int(row["used"] if _has_key(row, "used") else row[0])
+    limit = plan["listing_limit"]
+    return {
+        "listings_used": used,
+        "listings_limit": limit,
+        "listings_remaining": None if limit is None else max(limit - used, 0),
+    }
+
+
+def apply_plan_to_user(db, user_id: int, plan_id: str) -> None:
+    """Activate a paid plan for a user, extending an unexpired same-plan term."""
+    plan = SUBSCRIPTION_PLANS[plan_id]
+    row = db.execute(
+        "SELECT plan_id, plan_expires_at FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
+
+    start = datetime.datetime.utcnow()
+    if row and str(row["plan_id"] or "") == plan_id:
+        current_expiry = str(row["plan_expires_at"] or "").strip()
+        if current_expiry:
+            try:
+                parsed = datetime.datetime.fromisoformat(current_expiry.replace(" ", "T"))
+                start = max(start, parsed)
+            except ValueError:
+                pass
+
+    expires_at = (start + datetime.timedelta(days=plan["duration_days"])).replace(microsecond=0).isoformat(sep=" ")
+    db.execute(
+        "UPDATE users SET plan_id = ?, plan_expires_at = ?, account_type = ? WHERE id = ?",
+        (plan_id, expires_at, plan["audience"], user_id),
+    )
+
 
 def verification_state_from_bool(value) -> str:
     return "verified" if bool(value) else "unverified"
-
 
 def moderation_state_from_status(status: str | None) -> str:
     status = (status or "").strip().lower()
@@ -1292,6 +1468,10 @@ def init_db():
             password        TEXT    NOT NULL,
             password_hash   TEXT,
             role            TEXT    NOT NULL DEFAULT 'user',
+            account_type    TEXT    NOT NULL DEFAULT 'owner',
+            plan_id         TEXT    NOT NULL DEFAULT 'free',
+            plan_expires_at TEXT,
+            agency_slug     TEXT,
             status          TEXT    NOT NULL DEFAULT 'active',
             created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
         );
@@ -1630,6 +1810,21 @@ def init_db():
         db.execute("ALTER TABLE users ADD COLUMN phone_verify_expires TEXT")
     if "phone_verified" not in user_columns:
         db.execute("ALTER TABLE users ADD COLUMN phone_verified INTEGER NOT NULL DEFAULT 0")
+    if "account_type" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN account_type TEXT NOT NULL DEFAULT 'owner'")
+    if "plan_id" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN plan_id TEXT NOT NULL DEFAULT 'free'")
+    if "plan_expires_at" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN plan_expires_at TEXT")
+    if "agency_slug" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN agency_slug TEXT")
+    db.execute(
+        "UPDATE users SET account_type = 'owner' WHERE account_type IS NULL OR account_type NOT IN ('owner', 'realtor')"
+    )
+    db.execute(
+        "UPDATE users SET plan_id = CASE WHEN account_type = 'realtor' THEN 'realtor_free' ELSE 'free' END"
+        " WHERE plan_id IS NULL OR plan_id = ''"
+    )
 
     agency_columns = {
         row[1] for row in db.execute("PRAGMA table_info(agency_profiles)").fetchall()
@@ -3157,6 +3352,8 @@ def register():
     name  = strip(data.get("name"),  100)
     email = strip(data.get("email"), 254).lower()
     pw    = strip(data.get("password"), 128)
+    account_type = normalize_account_type(data.get("accountType") or data.get("account_type"))
+    plan_id = default_plan_for(account_type)
 
     if not name:
         return jsonify(error="Вкажіть ім'я"), 422
@@ -3169,8 +3366,8 @@ def register():
     db = get_db()
     try:
         cur = db.execute(
-            "INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
-            (name, email, hashed),
+            "INSERT INTO users (name, email, password, account_type, plan_id) VALUES (?, ?, ?, ?, ?)",
+            (name, email, hashed, account_type, plan_id),
         )
         db.commit()
     except sqlite3.IntegrityError:
@@ -3192,7 +3389,15 @@ def register():
 
     return jsonify(
         token=make_token(user_id, email),
-        user={"id": user_id, "name": name, "email": email, "email_verified": 0},
+        user={
+            "id": user_id,
+            "name": name,
+            "email": email,
+            "email_verified": 0,
+            "account_type": account_type,
+            "plan_id": plan_id,
+            "plan": plan_public_dict(plan_id),
+        },
         verify_email_sent=verify_email_sent,
     ), 201
 
@@ -3214,9 +3419,17 @@ def login():
     if not row or not bcrypt.checkpw(candidate, stored):
         return jsonify(error="Невірний email або пароль"), 401
 
+    plan_id, _plan = resolve_user_plan(row)
     return jsonify(
         token=make_token(row["id"], row["email"]),
-        user={"id": row["id"], "name": row["name"], "email": row["email"]},
+        user={
+            "id": row["id"],
+            "name": row["name"],
+            "email": row["email"],
+            "account_type": normalize_account_type(row["account_type"] if _has_key(row, "account_type") else None),
+            "plan_id": plan_id,
+            "plan": plan_public_dict(plan_id),
+        },
     )
 
 
@@ -3230,12 +3443,38 @@ def me():
         if not name:
             return jsonify(error="Вкажіть ім'я"), 422
         db.execute("UPDATE users SET name = ? WHERE id = ?", (name, g.user_id))
+
+        raw_account_type = data.get("accountType", data.get("account_type"))
+        if raw_account_type is not None:
+            account_type = normalize_account_type(raw_account_type)
+            current = db.execute("SELECT plan_id FROM users WHERE id = ?", (g.user_id,)).fetchone()
+            current_plan = str((current["plan_id"] if current else "") or "").strip()
+            # A plan belongs to a single audience, so switching cabinets resets it.
+            if SUBSCRIPTION_PLANS.get(current_plan, {}).get("audience") != account_type:
+                db.execute(
+                    "UPDATE users SET account_type = ?, plan_id = ?, plan_expires_at = NULL WHERE id = ?",
+                    (account_type, default_plan_for(account_type), g.user_id),
+                )
+            else:
+                db.execute("UPDATE users SET account_type = ? WHERE id = ?", (account_type, g.user_id))
         db.commit()
 
-    row = db.execute("SELECT id, name, email, email_verified, phone_verified, phone FROM users WHERE id = ?", (g.user_id,)).fetchone()
+    row = db.execute(
+        "SELECT id, name, email, email_verified, phone_verified, phone,"
+        " account_type, plan_id, plan_expires_at, agency_slug"
+        " FROM users WHERE id = ?",
+        (g.user_id,),
+    ).fetchone()
     if not row:
         return jsonify(error="Користувача не знайдено"), 404
-    return jsonify(user=dict(row))
+
+    user = dict(row)
+    plan_id, plan = resolve_user_plan(row)
+    user["account_type"] = normalize_account_type(user.get("account_type"))
+    user["plan_id"] = plan_id
+    user["plan"] = plan_public_dict(plan_id)
+    user["usage"] = listing_usage(db, g.user_id, plan)
+    return jsonify(user=user)
 
 
 @app.route("/api/auth/verify-email", methods=["GET"])
@@ -4107,8 +4346,26 @@ def create_listing():
         return jsonify(error="Невалідні дані", fields=errors), 422
 
     db = get_db()
-    actor = db.execute("SELECT role FROM users WHERE id = ?", (g.user_id,)).fetchone()
+    actor = db.execute(
+        "SELECT role, account_type, plan_id, plan_expires_at FROM users WHERE id = ?",
+        (g.user_id,),
+    ).fetchone()
     is_admin = bool(actor and actor["role"] == "admin")
+
+    if actor and not is_admin:
+        plan_id, plan = resolve_user_plan(actor)
+        usage = listing_usage(db, g.user_id, plan)
+        if usage["listings_remaining"] == 0:
+            return jsonify(
+                error=(
+                    f"Ліміт тарифу «{plan['name']}» вичерпано "
+                    f"({usage['listings_used']}/{usage['listings_limit']} оголошень). "
+                    "Оновіть тариф, щоб додати більше."
+                ),
+                code="plan_limit_reached",
+                plan=plan_public_dict(plan_id),
+                usage=usage,
+            ), 402
 
     publish_now = data.get("publishNow", True)
     if isinstance(publish_now, str):
@@ -6455,11 +6712,14 @@ def _liqpay_encode(payload: dict) -> tuple[str, str]:
     return data_b64, signature
 
 
-LIQPAY_PLANS = {
-    "standard": {"price": 299, "name": "Стандарт"},
-    "premium":  {"price": 699, "name": "Преміум"},
-    "agent":    {"price": 1499, "name": "Топ-агент"},
-}
+LEGACY_PLAN_ALIASES = {"agent": "realtor_pro"}
+
+
+def resolve_plan_id(raw) -> str | None:
+    """Map an incoming plan id (including legacy ids) to a known paid plan."""
+    candidate = str(raw or "").strip()
+    candidate = LEGACY_PLAN_ALIASES.get(candidate, candidate)
+    return candidate if candidate in PAID_PLAN_IDS else None
 
 
 @app.route("/api/payment/liqpay/create", methods=["POST"])
@@ -6467,12 +6727,14 @@ LIQPAY_PLANS = {
 def payment_liqpay_create():
     """Create LiqPay payment: return data + signature for checkout form."""
     body = request.get_json(silent=True) or {}
-    plan_id = str(body.get("plan_id", "")).strip()
+    plan_id = resolve_plan_id(body.get("plan_id"))
 
-    if plan_id not in LIQPAY_PLANS:
+    if not plan_id:
         return jsonify(error="Unknown plan"), 400
 
-    plan = LIQPAY_PLANS[plan_id]
+    plan = SUBSCRIPTION_PLANS[plan_id]
+    db = get_db()
+    actor_id, _is_admin = get_optional_actor(db)
     LIQPAY_PUBLIC  = os.environ.get("LIQPAY_PUBLIC_KEY", "").strip()
     LIQPAY_PRIVATE = os.environ.get("LIQPAY_PRIVATE_KEY", "").strip()
 
@@ -6482,6 +6744,17 @@ def payment_liqpay_create():
 
     public_url = os.environ.get("UA_HOMES_PUBLIC_URL", "https://ua-dim.com").rstrip("/")
     order_id = f"uadim-{plan_id}-{int(time.time())}-{secrets.token_hex(4)}"
+
+    # Persist the order up front so the callback can attribute it to a user.
+    try:
+        db.execute(
+            "INSERT INTO premium_orders (order_id, plan_id, amount, currency, status, user_id)"
+            " VALUES (?, ?, ?, ?, 'pending', ?)",
+            (order_id, plan_id, plan["price"], "UAH", actor_id),
+        )
+        db.commit()
+    except Exception as exc:
+        app.logger.warning(f"LiqPay: could not persist pending order {order_id}: {exc}")
 
     payload = {
         "public_key":  LIQPAY_PUBLIC,
@@ -6529,19 +6802,33 @@ def payment_liqpay_callback():
     app.logger.info(f"LiqPay callback: order={order_id} status={status} amount={amount} {currency}")
 
     if status in ("success", "sandbox"):
-        # TODO: persist premium status to database per user
-        # For now: log confirmed payment
         db = get_db()
+        plan_id = resolve_plan_id(order_id.split("-")[1] if "-" in order_id else "")
         try:
-            db.execute(
-                "INSERT OR IGNORE INTO premium_orders (order_id, plan_id, amount, currency, status, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (order_id,
-                 order_id.split("-")[1] if "-" in order_id else "unknown",
-                 amount, currency, status,
-                 datetime.datetime.utcnow().isoformat()),
-            )
+            existing = db.execute(
+                "SELECT user_id, plan_id FROM premium_orders WHERE order_id = ?", (order_id,)
+            ).fetchone()
+            if existing:
+                plan_id = resolve_plan_id(existing["plan_id"]) or plan_id
+                db.execute(
+                    "UPDATE premium_orders SET status = ?, amount = ?, currency = ? WHERE order_id = ?",
+                    (status, amount, currency, order_id),
+                )
+            else:
+                db.execute(
+                    "INSERT INTO premium_orders (order_id, plan_id, amount, currency, status, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (order_id, plan_id or "unknown", amount, currency, status,
+                     datetime.datetime.utcnow().isoformat()),
+                )
             db.commit()
+
+            user_id = existing["user_id"] if existing else None
+            if user_id and plan_id:
+                apply_plan_to_user(db, int(user_id), plan_id)
+                db.commit()
+            elif plan_id:
+                app.logger.warning(f"LiqPay: order {order_id} has no linked user, plan not applied")
         except Exception as e:
             app.logger.warning(f"LiqPay: DB write failed (table may not exist yet): {e}")
 
@@ -6550,11 +6837,16 @@ def payment_liqpay_callback():
 
 @app.route("/api/payment/plans", methods=["GET"])
 def payment_plans():
-    """Public endpoint: return available plans."""
-    return jsonify([
-        {"id": k, "name": v["name"], "price": v["price"], "currency": "UAH"}
-        for k, v in LIQPAY_PLANS.items()
-    ])
+    """Public endpoint: return available plans grouped by audience."""
+    audience = str(request.args.get("audience", "")).strip().lower()
+    plans = [plan_public_dict(plan_id) for plan_id in SUBSCRIPTION_PLANS]
+    if audience in ACCOUNT_TYPES:
+        plans = [plan for plan in plans if plan["audience"] == audience]
+    return jsonify(
+        plans=plans,
+        owner=[plan for plan in plans if plan["audience"] == "owner"],
+        realtor=[plan for plan in plans if plan["audience"] == "realtor"],
+    )
 
 
 # ─── Register Blueprints ──────────────────────────────────────────────────
