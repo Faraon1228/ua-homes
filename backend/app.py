@@ -2225,18 +2225,56 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
     elif CLOUDINARY_URL:
         import cloudinary
         import cloudinary.uploader
+        import cloudinary.utils
         
         try:
             cloudinary.config(secure=True)
-            # Generate unsigned upload endpoint + session token
-            # This is simpler than AWS but requires cloudinary SDK
-            # Real implementation would use cloudinary.uploader.unsigned_upload_url()
-            return {
-                'uploadUrl': f"https://api.cloudinary.com/v1_1/{os.environ.get('CLOUDINARY_CLOUD_NAME', 'dummycloud')}/image/upload",
-                'method': 'POST',
-                'storage': 'cloudinary',
-                'expiresIn': expires_in
-            }
+            cloud_name = getattr(cloudinary.config(), "cloud_name", None) or ""
+            api_key = getattr(cloudinary.config(), "api_key", None) or os.environ.get("CLOUDINARY_API_KEY", "").strip()
+            api_secret = getattr(cloudinary.config(), "api_secret", None) or os.environ.get("CLOUDINARY_API_SECRET", "").strip()
+            upload_preset = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "").strip()
+            if not cloud_name:
+                return None
+
+            public_id = f"listings/{g.user_id}/{unique_id}/{os.path.splitext(filename)[0]}"
+            upload_url = f"https://api.cloudinary.com/v1_1/{cloud_name}/image/upload"
+
+            if api_key and api_secret:
+                timestamp = int(datetime.datetime.utcnow().timestamp())
+                signature_params = {
+                    "timestamp": timestamp,
+                    "public_id": public_id,
+                    "resource_type": "image",
+                }
+                signature = cloudinary.utils.api_sign_request(signature_params, api_secret)
+                return {
+                    "uploadUrl": upload_url,
+                    "method": "POST",
+                    "storage": "cloudinary",
+                    "expiresIn": expires_in,
+                    "cloudName": cloud_name,
+                    "authType": "signed",
+                    "apiKey": api_key,
+                    "timestamp": timestamp,
+                    "signature": signature,
+                    "publicId": public_id,
+                    "resourceType": "image",
+                }
+
+            if upload_preset:
+                return {
+                    "uploadUrl": upload_url,
+                    "method": "POST",
+                    "storage": "cloudinary",
+                    "expiresIn": expires_in,
+                    "cloudName": cloud_name,
+                    "authType": "unsigned",
+                    "uploadPreset": upload_preset,
+                    "publicId": public_id,
+                    "resourceType": "image",
+                }
+
+            return None
         except Exception as e:
             print(f"Error generating Cloudinary upload URL: {e}")
             return None
@@ -2305,39 +2343,67 @@ def confirm_uploaded_image():
     data = request.get_json(silent=True) or {}
     s3_key = str(data.get("key", "")).strip()
     etag = str(data.get("etag", "")).strip()  # For verification
+    cloudinary_url = str(data.get("url", "")).strip()
+    public_id = str(data.get("publicId", "")).strip()
     
-    if not s3_key:
-        return jsonify(error="Missing S3 key"), 400
-    
-    # Verify key belongs to current user (prevent arbitrary file access)
-    if not s3_key.startswith(f"listings/{g.user_id}/"):
-        return jsonify(error="Unauthorized: file does not belong to you"), 403
-    
-    # Security: Verify file actually exists in S3 before returning URL
-    if S3_BUCKET and S3_ACCESS_KEY:
-        try:
-            import boto3
-            s3 = boto3.client(
-                's3',
-                region_name=S3_REGION,
-                aws_access_key_id=S3_ACCESS_KEY,
-                aws_secret_access_key=S3_SECRET_KEY,
-                endpoint_url=S3_ENDPOINT
-            )
-            response = s3.head_object(Bucket=S3_BUCKET, Key=s3_key)
-            
-            if etag and response.get('ETag', '').strip('"') != etag:
-                return jsonify(error="ETag mismatch - file may be corrupted"), 400
-        except s3.exceptions.NoSuchKey:
-            return jsonify(error="File not found in S3"), 404
-        except Exception as e:
-            print(f"Error verifying S3 upload: {e}")
-            return jsonify(error="Failed to verify upload"), 500
-    
-    # Generate CDN URL (can be CloudFront, direct S3, or custom CDN)
-    cdn_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}" if S3_BUCKET else f"https://cdn.ua-dim.com/{s3_key}"
-    
-    return jsonify({"url": cdn_url})
+    if not s3_key and not public_id and not cloudinary_url:
+        return jsonify(error="Missing upload reference"), 400
+
+    if s3_key:
+        # Verify key belongs to current user (prevent arbitrary file access)
+        if not s3_key.startswith(f"listings/{g.user_id}/"):
+            return jsonify(error="Unauthorized: file does not belong to you"), 403
+
+        # Security: Verify file actually exists in S3 before returning URL
+        if S3_BUCKET and S3_ACCESS_KEY:
+            try:
+                import boto3
+                s3 = boto3.client(
+                    's3',
+                    region_name=S3_REGION,
+                    aws_access_key_id=S3_ACCESS_KEY,
+                    aws_secret_access_key=S3_SECRET_KEY,
+                    endpoint_url=S3_ENDPOINT
+                )
+                response = s3.head_object(Bucket=S3_BUCKET, Key=s3_key)
+                
+                if etag and response.get('ETag', '').strip('"') != etag:
+                    return jsonify(error="ETag mismatch - file may be corrupted"), 400
+            except s3.exceptions.NoSuchKey:
+                return jsonify(error="File not found in S3"), 404
+            except Exception as e:
+                print(f"Error verifying S3 upload: {e}")
+                return jsonify(error="Failed to verify upload"), 500
+
+        # Generate CDN URL (can be CloudFront, direct S3, or custom CDN)
+        cdn_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}" if S3_BUCKET else f"https://cdn.ua-dim.com/{s3_key}"
+        return jsonify({"url": cdn_url})
+
+    # Cloudinary confirmation path
+    if public_id:
+        if not public_id.startswith(f"listings/{g.user_id}/"):
+            return jsonify(error="Unauthorized: file does not belong to you"), 403
+
+        cloud_name = ""
+        if CLOUDINARY_URL:
+            import cloudinary
+            cloudinary.config(secure=True)
+            cloud_name = getattr(cloudinary.config(), "cloud_name", None) or ""
+
+        if cloudinary_url:
+            if cloud_name and f"/{cloud_name}/" not in cloudinary_url:
+                return jsonify(error="Cloudinary URL does not match configured cloud"), 400
+            return jsonify({"url": cloudinary_url})
+
+        if cloud_name:
+            return jsonify({"url": f"https://res.cloudinary.com/{cloud_name}/image/upload/{public_id}"})
+
+        return jsonify(error="Cloudinary not configured"), 503
+
+    if cloudinary_url:
+        return jsonify({"url": cloudinary_url})
+
+    return jsonify(error="Missing upload reference"), 400
 
 
 @app.route("/api/images/abort-upload", methods=["POST"])
