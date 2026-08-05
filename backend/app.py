@@ -2235,6 +2235,11 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
             api_secret = parsed.password or os.environ.get("CLOUDINARY_API_SECRET", "").strip()
             upload_preset = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "").strip()
             
+            # Debug logging
+            print(f"[Cloudinary Debug] CLOUDINARY_URL present: {bool(CLOUDINARY_URL)}")
+            print(f"[Cloudinary Debug] Parsed - hostname: {cloud_name}, username: {bool(parsed.username)}, password: {bool(parsed.password)}")
+            print(f"[Cloudinary Debug] Extracted - api_key: {api_key[:20] if api_key else 'EMPTY'}, api_secret: {api_secret[:20] if api_secret else 'EMPTY'}")
+            
             if not cloud_name:
                 return None
 
