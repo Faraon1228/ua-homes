@@ -140,12 +140,13 @@
 [[headers]]
   for = "/launch.html"
   [headers.values]
-    Cache-Control = "public, max-age=300"
+    Cache-Control = "public, max-age=3600, must-revalidate"
 
 [[headers]]
   for = "/real-estate-demo.html"
   [headers.values]
-    Cache-Control = "public, max-age=300"
+    Cache-Control = "public, max-age=3600, must-revalidate"
+    Vary = "Accept-Encoding"
 
 [[headers]]
   for = "/*.js"
@@ -166,3 +167,10 @@
   for = "/sw.js"
   [headers.values]
     Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/api-backend/*"
+  [headers.values]
+    Cache-Control = "public, max-age=20, must-revalidate"
+    Vary = "Accept-Encoding"
+    X-Cache-Control = "public, s-maxage=20"
