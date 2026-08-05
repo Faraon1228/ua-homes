@@ -13,3 +13,7 @@ limits>=3.6.0
 boto3>=1.26.0
 # Cloudinary support (optional — alternative to S3)
 cloudinary>=1.33.0
+# Image optimization (WebP/AVIF conversion + resizing)
+Pillow>=10.0.0
+# AVIF support (optional but recommended)
+pillow-heif>=0.14.0

@@ -30,6 +30,14 @@ from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
+# Optional: Image optimization (Pillow)
+try:
+    from PIL import Image
+    import io
+    HAS_IMAGE_OPTIMIZATION = True
+except ImportError:
+    HAS_IMAGE_OPTIMIZATION = False
+
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -2371,8 +2379,153 @@ def abort_multipart_upload():
     return jsonify(status="ok")
 
 
+@app.route("/api/images/optimize", methods=["POST"])
+@require_auth
+@limiter.limit("100 per hour")
+def optimize_image():
+    """
+    Optimize uploaded image: convert to WebP/AVIF + create 3 sizes (thumbnail, medium, large).
+    
+    This endpoint processes the already-uploaded image from S3 and creates optimized variants.
+    
+    Request:
+     POST /api/images/optimize
+     { "key": "listings/123/abc123/photo.jpg" }
+    
+    Response:
+     {
+       "thumbnail_webp": "https://cdn/.../photo-thumb.webp",
+       "medium_webp": "https://cdn/.../photo-medium.webp",
+       "large_webp": "https://cdn/.../photo-large.webp",
+       "metadata": {
+         "original_size": 1234567,
+         "optimized_size": 345678,
+         "compression_ratio": 72
+       }
+     }
+    
+    Architecture:
+    1. Frontend uploads original image to S3 (presigned URL)
+    2. Frontend calls /api/images/confirm-upload to verify
+    3. **Frontend calls /api/images/optimize to create variants**
+    4. Frontend stores all URLs in listing
+    
+    Benefits:
+    - Original preserved for archival
+    - WebP = 50% smaller than JPEG
+    - AVIF = 30% smaller than WebP
+    - 3 sizes = faster page load (no 1200px image for thumbnail)
+    """
+    
+    if not HAS_IMAGE_OPTIMIZATION:
+       return jsonify(error="Image optimization not available (Pillow not installed)"), 503
+    
+    data = request.get_json(silent=True) or {}
+    s3_key = str(data.get("key", "")).strip()
+    
+    if not s3_key:
+       return jsonify(error="Missing S3 key"), 400
+    
+    if not s3_key.startswith(f"listings/{g.user_id}/"):
+       return jsonify(error="Unauthorized: image does not belong to you"), 403
+    
+    if not S3_BUCKET or not S3_ACCESS_KEY:
+       return jsonify(error="S3 not configured"), 503
+    
+    try:
+       import boto3
+       s3_client = boto3.client(
+           's3',
+           region_name=S3_REGION,
+           aws_access_key_id=S3_ACCESS_KEY,
+           aws_secret_access_key=S3_SECRET_KEY,
+           endpoint_url=S3_ENDPOINT
+       )
+        
+       # Download original image
+       response = s3_client.get_object(Bucket=S3_BUCKET, Key=s3_key)
+       image_bytes = response['Body'].read()
+       original_size = len(image_bytes)
+        
+       # Parse image
+       img = Image.open(io.BytesIO(image_bytes))
+       if img.mode not in ('RGB', 'RGBA'):
+           img = img.convert('RGB')
+        
+       # Image sizes: (width, height)
+       sizes = {
+           'thumbnail': (150, 100),
+           'medium': (400, 300),
+           'large': (1200, 800)
+       }
+        
+       results = {}
+       total_optimized = 0
+        
+       # Create all variants
+       for size_name, (width, height) in sizes.items():
+           # Resize with aspect ratio
+           resized = img.copy()
+           resized.thumbnail((width, height), Image.Resampling.LANCZOS)
+            
+           # Pad to exact size
+           padded = Image.new('RGB', (width, height), (255, 255, 255))
+           offset = ((width - resized.width) // 2, (height - resized.height) // 2)
+           padded.paste(resized, offset)
+            
+           # Convert to WebP
+           webp_buffer = io.BytesIO()
+           padded.save(webp_buffer, format='WEBP', quality=80, method=6)
+           webp_data = webp_buffer.getvalue()
+           total_optimized += len(webp_data)
+            
+           # Upload WebP variant
+           output_key = s3_key.replace('.jpg', f'-{size_name}.webp').replace('.png', f'-{size_name}.webp')
+           s3_client.put_object(
+               Bucket=S3_BUCKET,
+               Key=output_key,
+               Body=webp_data,
+               ContentType='image/webp',
+               CacheControl='public, max-age=31536000, immutable'
+           )
+            
+           results[f'{size_name}_webp'] = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{output_key}"
+            
+           # Try AVIF if supported
+           try:
+               avif_buffer = io.BytesIO()
+               padded.save(avif_buffer, format='AVIF', quality=75)
+               avif_data = avif_buffer.getvalue()
+               total_optimized += len(avif_data)
+                
+               avif_key = output_key.replace('.webp', '.avif')
+               s3_client.put_object(
+                   Bucket=S3_BUCKET,
+                   Key=avif_key,
+                   Body=avif_data,
+                   ContentType='image/avif',
+                   CacheControl='public, max-age=31536000, immutable'
+               )
+                
+               results[f'{size_name}_avif'] = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{avif_key}"
+           except Exception as e:
+               print(f"AVIF conversion skipped: {e}")
+        
+       results['metadata'] = {
+           'original_size': original_size,
+           'optimized_total': total_optimized,
+           'compression_ratio': round((1 - total_optimized / (original_size * 3)) * 100),
+           'message': f'Created 3 WebP variants + AVIF. Compression: {results["metadata"]["compression_ratio"]}%'
+       }
+        
+       return jsonify(results)
+    
+    except Exception as e:
+       print(f"Image optimization error: {e}")
+       return jsonify(error=f"Failed to optimize image: {str(e)}"), 500
 
-def demo_image(seed: str):
+
+@app.route("/api/demo-images/<path:seed>.svg", methods=["GET"])
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
     palette = [
         ("#0f172a", "#1d4ed8"),
