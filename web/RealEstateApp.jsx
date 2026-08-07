@@ -216,17 +216,19 @@ function getStoredJSON(key, fallback) {
 }
 
 function getApiBaseUrl() {
-  if (typeof window === "undefined") return "/api-backend";
+  if (typeof window === "undefined") return "/api";
+  const configured = (window.UA_HOMES_API || "").trim();
+  if (configured) return configured.replace(/\/+$/, "");
   const hostname = window.location.hostname || "";
   if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0") {
-    return "http://127.0.0.1:5050/api";
+    return "http://127.0.0.1:5050";
   }
-  return "/api-backend";
+  return window.location.origin;
 }
 
 function getApiUrl(path) {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  return `${getApiBaseUrl()}${normalizedPath}`;
+  return `${getApiBaseUrl()}/api${normalizedPath}`;
 }
 
 function allowMockCatalogFallback() {

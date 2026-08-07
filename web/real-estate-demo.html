@@ -35,13 +35,11 @@
   <link rel="preconnect" href="https://images.unsplash.com" crossorigin/>
   <link rel="preconnect" href="https://picsum.photos"/>
   <link rel="preconnect" href="https://fastly.picsum.photos"/>
-  <link rel="preconnect" href="https://backend-production-51964.up.railway.app" crossorigin/>
   <link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin/>
   <link rel="dns-prefetch" href="https://unpkg.com"/>
   <link rel="dns-prefetch" href="https://images.unsplash.com"/>
   <link rel="dns-prefetch" href="https://picsum.photos"/>
   <link rel="dns-prefetch" href="https://fastly.picsum.photos"/>
-  <link rel="dns-prefetch" href="https://backend-production-51964.up.railway.app"/>
   <link rel="dns-prefetch" href="https://tile.openstreetmap.org"/>
   <script>
     (function () {
@@ -138,7 +136,7 @@
       if (!host || location.protocol === "file:") return "http://localhost:5050";
       if (host === "localhost" || host === "127.0.0.1") return "http://localhost:5050";
       if (!host.includes("192.168") && !/^\d+\.\d+/.test(host)) {
-        return `https://${host.replace(/^www\./, "")}`.replace(/\/$/, "") + "/api-backend";
+        return location.origin;
       }
       return `http://${host}:5050`;
     };

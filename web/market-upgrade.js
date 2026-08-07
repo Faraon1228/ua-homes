@@ -198,7 +198,7 @@
     if (!host || window.location.protocol === "file:") return "http://localhost:5050";
     if (host === "localhost" || host === "127.0.0.1") return "http://localhost:5050";
     if (!host.includes("192.168") && !/^\d+\.\d+/.test(host)) {
-      return `https://${host.replace(/^www\./, "")}`.replace(/\/$/, "") + "/api-backend";
+      return location.origin;
     }
     return `http://${host}:5050`;
   }

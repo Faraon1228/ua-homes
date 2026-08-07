@@ -238,7 +238,7 @@
     if (location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(location.hostname)) {
       return 'http://localhost:5050';
     }
-    return `${location.origin}/api-backend`;
+    return location.origin;
   })();
 
   const PUBLIC_SITE = (() => {

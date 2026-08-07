@@ -5,9 +5,22 @@
 (function () {
   'use strict';
 
-  var API_BASE = (typeof UA_HOMES_API !== 'undefined' && UA_HOMES_API && UA_HOMES_API !== '__UA_HOMES_API__')
-    ? UA_HOMES_API
-    : 'https://backend-production-51964.up.railway.app';
+  var resolveApiBase = function () {
+    var configured = (typeof window !== 'undefined' && window.UA_HOMES_API ? window.UA_HOMES_API : '').toString().trim();
+    if (configured && configured !== '__UA_HOMES_API__') return configured.replace(/\/+$/, '');
+    if (typeof window !== 'undefined' && (window.location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(window.location.hostname))) {
+      return 'http://localhost:5050';
+    }
+    if (typeof window !== 'undefined') {
+      return window.location.origin;
+    }
+    return 'http://localhost:5050';
+  };
+
+  var API_BASE = resolveApiBase();
+  var buildApiUrl = function (path) {
+    return `${API_BASE}/api${path}`;
+  };
 
   // ── Тарифи ────────────────────────────────────────────────────────────────
   // Ідентифікатори мають збігатися з SUBSCRIPTION_PLANS у backend/app.py.
@@ -392,10 +405,10 @@
       currency: 'UAH',
       description: 'UA-Dim ' + plan.name + ' — ' + plan.price + ' UAH/міс',
       result_url: window.location.origin + '/real-estate-demo.html?payment=success&plan=' + plan.id,
-      server_url: API_BASE + '/api/payment/liqpay/callback',
+      server_url: buildApiUrl('/payment/liqpay/callback'),
     };
 
-    fetch(API_BASE + '/api/payment/liqpay/create', {
+    fetch(buildApiUrl('/payment/liqpay/create'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',

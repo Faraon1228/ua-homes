@@ -209,6 +209,6 @@ class S3Uploader {
 window.S3Uploader = S3Uploader;
 
 // Helper for easy integration
-window.createS3Uploader = (apiUrl = '/api-backend') => new S3Uploader(apiUrl);
+window.createS3Uploader = (apiUrl = '/api') => new S3Uploader(apiUrl);
 
 export { S3Uploader };

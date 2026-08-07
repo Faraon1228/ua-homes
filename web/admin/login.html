@@ -131,9 +131,15 @@
     </div>
 
     <script>
-        const BACKEND_ORIGIN = window.UA_HOMES_API || (window.location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(window.location.hostname)
-            ? 'http://localhost:5050'
-            : 'https://backend-production-51964.up.railway.app');
+        const resolveBackendBase = () => {
+            const configured = (window.UA_HOMES_API || '').trim();
+            if (configured) return configured.replace(/\/+$/, '');
+            if (window.location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+                return 'http://localhost:5050';
+            }
+            return window.location.origin;
+        };
+        const BACKEND_ORIGIN = resolveBackendBase();
         const ADMIN_BASE_PATH = window.location.protocol === 'file:'
             ? '.'
             : (window.location.pathname.startsWith('/admin/') ? '/admin' : '');
