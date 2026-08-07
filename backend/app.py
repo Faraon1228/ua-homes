@@ -107,6 +107,16 @@ S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "").strip() or None
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "").strip() or None  # For MinIO or custom S3
 CLOUDINARY_URL: str | None = os.environ.get("CLOUDINARY_URL", "").strip() or None
 
+
+def _cloudinary_upload_preset() -> str | None:
+    preset = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "").strip()
+    if not preset:
+        return None
+    if re.fullmatch(r"[A-Za-z0-9_-]+", preset):
+        return preset
+    print("[Cloudinary] Ignoring invalid CLOUDINARY_UPLOAD_PRESET value")
+    return None
+
 # Image upload limits
 MAX_UPLOAD_SIZE = 10_485_760  # 10 MB per image
 MAX_IMAGES_PER_LISTING = 8
@@ -3033,7 +3043,7 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
             cloud_name = parsed.hostname or ""
             api_key = parsed.username or os.environ.get("CLOUDINARY_API_KEY", "").strip()
             api_secret = parsed.password or os.environ.get("CLOUDINARY_API_SECRET", "").strip()
-            upload_preset = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "").strip()
+            upload_preset = _cloudinary_upload_preset()
             
             # Debug logging
             print(f"[Cloudinary] cloud_name={cloud_name}, preset={upload_preset}, has_api_key={bool(api_key)}")
