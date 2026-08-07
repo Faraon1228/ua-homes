@@ -5,6 +5,9 @@ Security: bcrypt passwords, JWT auth, rate limiting, CORS, parameterised queries
 Environment variables:
   UA_HOMES_SECRET     — JWT signing secret (required in production; auto-generated only for local/dev fallback)
   UA_HOMES_PUBLIC_URL — Canonical public URL for SEO/CORS
+  UA_HOMES_DB_PATH    — Absolute path to the SQLite file. Point it at a mounted
+                        persistent volume in production, otherwise the database is
+                        wiped on every redeploy. Defaults to ./ua_homes.db.
   DATABASE_URL        — PostgreSQL DSN (e.g. postgres://user:pass@host/db).
                         If absent, falls back to local SQLite ua_homes.db.
   REDIS_URL           — Redis DSN for rate-limiter shared state across workers.
@@ -41,7 +44,10 @@ except ImportError:
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH  = os.path.join(BASE_DIR, "ua_homes.db")
+# Keep the SQLite file on a persistent volume in production — the container
+# filesystem is recreated on every deploy, which would wipe all user data.
+DB_PATH = os.environ.get("UA_HOMES_DB_PATH", "").strip() or os.path.join(BASE_DIR, "ua_homes.db")
+os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
 # PostgreSQL DSN — if set, the app uses psycopg2 instead of SQLite.
 DATABASE_URL: str | None = os.environ.get("DATABASE_URL", "").strip() or None
