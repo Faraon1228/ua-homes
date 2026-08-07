@@ -11,14 +11,25 @@ jobs:
   deploy-backend:
     name: Deploy backend to Railway
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_SERVICE_ID: 7e0830d5-3069-4447-95b6-8faec9a0c190
+      RAILWAY_PROJECT_ID: d1e64b28-213b-4b55-b3e3-0eff6a977c96
     steps:
       - uses: actions/checkout@v4
-      - name: Deploy backend with Git
+      - name: Check Railway token
         run: |
-          git config user.email "actions@github.com"
-          git config user.name "GitHub Actions"
-          git remote add railway "https://git.railway.app/${{ secrets.RAILWAY_GIT_URL }}.git" 2>/dev/null || true
-          git push railway agents/real-estate-filtering-feature:main --force 2>&1 || echo "Railway Git deploy not configured yet. Backend files are committed to GitHub."
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::RAILWAY_TOKEN secret is missing. Add it in Settings → Secrets → Actions."
+            exit 1
+          fi
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+      # The service sets Root Directory to "backend", so the upload must start
+      # from the repository root or nixpacks looks for "backend/backend".
+      - name: Deploy backend
+        run: railway up --ci --service "$RAILWAY_SERVICE_ID" --project "$RAILWAY_PROJECT_ID" --environment production
 
 
   deploy-frontend:
