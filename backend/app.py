@@ -906,10 +906,10 @@ def _init_postgres_db():
         """)
         cur.execute(
             "UPDATE users SET account_type = 'owner'"
-            " WHERE account_type IS NULL OR account_type NOT IN ('owner', 'realtor')"
+            " WHERE account_type IS NULL OR account_type NOT IN ('owner', 'realtor', 'developer')"
         )
         cur.execute(
-            "UPDATE users SET plan_id = CASE WHEN account_type = 'realtor' THEN 'realtor_free' ELSE 'free' END"
+            "UPDATE users SET plan_id = CASE WHEN account_type = 'realtor' THEN 'realtor_free' WHEN account_type = 'developer' THEN 'developer_free' ELSE 'free' END"
             " WHERE plan_id IS NULL OR plan_id = ''"
         )
         _seed_postgres(cur)
@@ -1568,11 +1568,11 @@ SEED_RENT_LISTINGS = [
 VERIFICATION_STATES = {"unverified", "pending", "verified", "rejected"}
 MODERATION_STATES = {"pending_review", "in_review", "approved", "changes_requested", "rejected"}
 
-ACCOUNT_TYPES = {"owner", "realtor"}
+ACCOUNT_TYPES = {"owner", "realtor", "developer"}
 DEFAULT_ACCOUNT_TYPE = "owner"
 
 # Subscription catalog. `listing_limit = None` means unlimited.
-# `audience` decides which cabinet (owner / realtor) offers the plan.
+# `audience` decides which cabinet (owner / realtor / developer) offers the plan.
 SUBSCRIPTION_PLANS: dict[str, dict] = {
     "free": {
         "name": "Базовий",
@@ -1630,9 +1630,17 @@ SUBSCRIPTION_PLANS: dict[str, dict] = {
         "duration_days": 30,
         "features": ["Необмежено оголошень", "Брендинг агентства", "API доступ", "CRM-інтеграція", "Верифікація агентства", "Особистий менеджер"],
     },
+    "developer_free": {
+        "name": "Забудовник Базовий",
+        "audience": "developer",
+        "price": 0,
+        "listing_limit": 3,
+        "duration_days": 30,
+        "features": ["3 оголошення", "30 днів активності", "Профіль забудовника", "Новобудови в каталозі"],
+    },
 }
 
-DEFAULT_PLAN_BY_ACCOUNT_TYPE = {"owner": "free", "realtor": "realtor_free"}
+DEFAULT_PLAN_BY_ACCOUNT_TYPE = {"owner": "free", "realtor": "realtor_free", "developer": "developer_free"}
 PAID_PLAN_IDS = {plan_id for plan_id, plan in SUBSCRIPTION_PLANS.items() if plan["price"] > 0}
 
 

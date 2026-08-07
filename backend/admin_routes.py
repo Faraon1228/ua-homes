@@ -76,6 +76,14 @@ def parse_csv_images(value):
     return [part.strip() for part in text.split(",") if part.strip()][:10]
 
 
+def _cutoff_date(days: int) -> str:
+    return (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+
+
+def _cutoff_datetime(hours: int) -> str:
+    return (datetime.datetime.utcnow() - datetime.timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def parse_csv_row(row, row_number):
     required = ["title", "city", "district", "price", "rooms", "area"]
     missing = [field for field in required if not str(row.get(field, "")).strip()]
@@ -647,7 +655,7 @@ def admin_duplicate_listing(listing_id):
 @require_auth_admin
 def admin_publish_listing(listing_id):
     """Publish/unpublish listing"""
-    from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, db_now_expr, get_db
     
     db = get_db()
     data = request.get_json() or {}
@@ -656,12 +664,12 @@ def admin_publish_listing(listing_id):
     status = 'published' if published else 'draft'
     
     db.execute(
-        """
+        f"""
         UPDATE listings
         SET status = ?,
             moderation_status = ?,
-            moderation_updated_at = datetime('now'),
-            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, datetime('now')) ELSE published_at END
+            moderation_updated_at = {db_now_expr()},
+            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, {db_now_expr()}) ELSE published_at END
         WHERE id = ?
         """,
         (status, "approved" if published else "pending_review", status, listing_id)
@@ -677,7 +685,7 @@ def admin_publish_listing(listing_id):
 @admin_bp.route("/import/csv", methods=["POST"])
 @require_auth_admin
 def admin_import_csv():
-    from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, db_now_expr, get_db
 
     db = get_db()
     upload = request.files.get("file") or request.files.get("csv")
@@ -700,13 +708,13 @@ def admin_import_csv():
             continue
 
         cur = db.execute(
-            """
+            f"""
             INSERT INTO listings (
                 user_id, title, city, district, property_type, condition_type,
                 price, rooms, area, floor, total_floors, year_built, e_oselya,
                 views, images, status, latitude, longitude, description,
                 moderation_status, moderation_updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {db_now_expr()})
             """,
             (
                 admin_id,
@@ -797,7 +805,7 @@ def admin_moderation_logs():
 @admin_bp.route("/listings/<int:listing_id>/moderate", methods=["POST"])
 @require_auth_admin
 def admin_moderate_listing(listing_id):
-    from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, db_now_expr, get_db
 
     db = get_db()
     data = request.get_json() or {}
@@ -831,13 +839,13 @@ def admin_moderate_listing(listing_id):
     next_phone_verification_status = phone_verification_status or listing["phone_verification_status"] or "unverified"
 
     db.execute(
-        """
+        f"""
         UPDATE listings
         SET status = ?,
             moderation_status = ?,
             moderation_reason = ?,
-            moderation_updated_at = datetime('now'),
-            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, datetime('now')) ELSE published_at END,
+            moderation_updated_at = {db_now_expr()},
+            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, {db_now_expr()}) ELSE published_at END,
             owner_verification_status = ?,
             phone_verification_status = ?,
             verified_owner = CASE WHEN ? = 'verified' THEN 1 ELSE 0 END,
@@ -873,7 +881,7 @@ def admin_moderate_listing(listing_id):
 @admin_bp.route("/listings/bulk-moderate", methods=["POST"])
 @require_auth_admin
 def admin_bulk_moderate():
-    from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, db_now_expr, get_db
 
     db = get_db()
     data = request.get_json() or {}
@@ -905,13 +913,13 @@ def admin_bulk_moderate():
 
     for listing_id in ids:
         db.execute(
-            """
+            f"""
             UPDATE listings
             SET status = ?,
                 moderation_status = ?,
                 moderation_reason = ?,
-                moderation_updated_at = datetime('now'),
-                published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, datetime('now')) ELSE published_at END
+                moderation_updated_at = {db_now_expr()},
+                published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, {db_now_expr()}) ELSE published_at END
             WHERE id = ?
             """,
             (new_status, moderation_status, reason, new_status, listing_id)
@@ -1253,12 +1261,15 @@ def admin_report_user_growth():
     
     db = get_db()
     
-    rows = db.execute("""
+    rows = db.execute(
+        """
         SELECT day AS date, user_count AS count
         FROM user_growth_daily
-        WHERE day >= date('now', '-30 days')
+        WHERE day >= ?
         ORDER BY day ASC
-    """).fetchall()
+        """,
+        (_cutoff_date(30),),
+    ).fetchall()
     data = [dict(row) for row in rows]
     cached_json_set(cache_key, data, 300)
     return jsonify(data=data)
@@ -1279,15 +1290,15 @@ def _build_observability_report(db, hours: int):
     if cached is not None:
         return cached
 
-    window_start = f"-{hours} hours"
+    window_cutoff = _cutoff_datetime(hours)
     summary_rows = db.execute(
         """
         SELECT event_type, COUNT(*) AS count
         FROM client_observability_events
-        WHERE created_at >= datetime('now', ?)
+        WHERE created_at >= ?
         GROUP BY event_type
         """,
-        (window_start,),
+        (window_cutoff,),
     ).fetchall()
     summary_map = {row["event_type"]: int(row["count"] or 0) for row in summary_rows}
 
@@ -1295,12 +1306,12 @@ def _build_observability_report(db, hours: int):
         """
         SELECT id, event_type, message, source, page_url, created_at
         FROM client_observability_events
-        WHERE created_at >= datetime('now', ?)
+        WHERE created_at >= ?
           AND event_type IN ('runtime_error', 'unhandled_rejection')
         ORDER BY created_at DESC
         LIMIT 12
         """,
-        (window_start,),
+        (window_cutoff,),
     ).fetchall()
 
     vitals_rows = db.execute(
@@ -1313,25 +1324,25 @@ def _build_observability_report(db, hours: int):
             SUM(CASE WHEN rating = 'needs-improvement' THEN 1 ELSE 0 END) AS needs_improvement_count,
             SUM(CASE WHEN rating = 'poor' THEN 1 ELSE 0 END) AS poor_count
         FROM client_observability_events
-        WHERE created_at >= datetime('now', ?)
+        WHERE created_at >= ?
           AND event_type = 'web_vital'
           AND metric_name IS NOT NULL
         GROUP BY metric_name
         ORDER BY metric_name ASC
         """,
-        (window_start,),
+        (window_cutoff,),
     ).fetchall()
 
     recent_vitals_rows = db.execute(
         """
         SELECT metric_name, metric_value, rating, source, page_url, created_at
         FROM client_observability_events
-        WHERE created_at >= datetime('now', ?)
+        WHERE created_at >= ?
           AND event_type = 'web_vital'
         ORDER BY created_at DESC
         LIMIT 15
         """,
-        (window_start,),
+        (window_cutoff,),
     ).fetchall()
 
     report = {
@@ -1372,8 +1383,8 @@ def _build_lead_funnel_report(db, days_int: int):
     if cached is not None:
         return cached
 
-    window_start = f"-{days_int} days"
-    prev_window_start = f"-{days_int * 2} days"
+    window_cutoff = _cutoff_date(days_int)
+    prev_window_cutoff = _cutoff_date(days_int * 2)
 
     source_rows = db.execute(
         """
@@ -1383,11 +1394,11 @@ def _build_lead_funnel_report(db, days_int: int):
                SUM(CASE WHEN event = 'lead_redirect' THEN event_count ELSE 0 END) AS redirects,
                SUM(CASE WHEN event = 'detail_view' THEN event_count ELSE 0 END) AS views
         FROM lead_funnel_daily_metrics
-        WHERE day >= date('now', ?)
+        WHERE day >= ?
         GROUP BY source
         ORDER BY intents DESC, submits DESC
         """,
-        (window_start,),
+        (window_cutoff,),
     ).fetchall()
 
     listing_type_rows = db.execute(
@@ -1398,11 +1409,11 @@ def _build_lead_funnel_report(db, days_int: int):
                SUM(CASE WHEN event = 'lead_redirect' THEN event_count ELSE 0 END) AS redirects,
                SUM(CASE WHEN event = 'detail_view' THEN event_count ELSE 0 END) AS views
         FROM lead_funnel_daily_metrics
-        WHERE day >= date('now', ?)
+        WHERE day >= ?
         GROUP BY listing_type
         ORDER BY intents DESC, submits DESC
         """,
-        (window_start,),
+        (window_cutoff,),
     ).fetchall()
 
     popular_route_rows = db.execute(
@@ -1413,11 +1424,11 @@ def _build_lead_funnel_report(db, days_int: int):
             COUNT(*) AS sessions,
             SUM(CASE WHEN submit_at IS NOT NULL AND submit_at >= first_route_at THEN 1 ELSE 0 END) AS submit_sessions
         FROM lead_funnel_session_rollups
-        WHERE first_route_at >= datetime('now', ?)
+        WHERE first_route_at >= ?
         GROUP BY source
         ORDER BY route_applies DESC, submit_sessions DESC, source ASC
         """,
-        (window_start,),
+        (window_cutoff,),
     ).fetchall()
 
     daily_rows = db.execute(
@@ -1426,11 +1437,11 @@ def _build_lead_funnel_report(db, days_int: int):
                SUM(CASE WHEN event = 'lead_intent' THEN event_count ELSE 0 END) AS intents,
                SUM(CASE WHEN event = 'lead_submit' THEN event_count ELSE 0 END) AS submits
         FROM lead_funnel_daily_metrics
-        WHERE day >= date('now', ?)
+        WHERE day >= ?
         GROUP BY day
         ORDER BY day ASC
         """,
-        (window_start,),
+        (window_cutoff,),
     ).fetchall()
 
     top_listing_rows = db.execute(
@@ -1444,13 +1455,13 @@ def _build_lead_funnel_report(db, days_int: int):
             SUM(CASE WHEN lfm.event = 'lead_redirect' THEN lfm.event_count ELSE 0 END) AS redirects
         FROM lead_funnel_listing_metrics lfm
         LEFT JOIN listings l ON l.id = lfm.listing_id
-        WHERE lfm.day >= date('now', ?)
+        WHERE lfm.day >= ?
         GROUP BY lfm.listing_id
         HAVING intents > 0 OR submits > 0 OR redirects > 0
         ORDER BY submits DESC, intents DESC, redirects DESC
         LIMIT 8
         """,
-        (window_start,),
+        (window_cutoff,),
     ).fetchall()
 
     current_row = db.execute(
@@ -1461,9 +1472,9 @@ def _build_lead_funnel_report(db, days_int: int):
             SUM(CASE WHEN event = 'lead_submit' THEN event_count ELSE 0 END) AS submits,
             SUM(CASE WHEN event = 'lead_redirect' THEN event_count ELSE 0 END) AS redirects
         FROM lead_funnel_daily_metrics
-        WHERE day >= date('now', ?)
+        WHERE day >= ?
         """,
-        (window_start,),
+        (window_cutoff,),
     ).fetchone()
 
     previous_row = db.execute(
@@ -1474,10 +1485,10 @@ def _build_lead_funnel_report(db, days_int: int):
             SUM(CASE WHEN event = 'lead_submit' THEN event_count ELSE 0 END) AS submits,
             SUM(CASE WHEN event = 'lead_redirect' THEN event_count ELSE 0 END) AS redirects
         FROM lead_funnel_daily_metrics
-        WHERE day >= date('now', ?)
-          AND day < date('now', ?)
+        WHERE day >= ?
+          AND day < ?
         """,
-        (prev_window_start, window_start),
+        (prev_window_cutoff, window_cutoff),
     ).fetchone()
 
     current_totals = {

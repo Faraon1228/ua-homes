@@ -99,10 +99,13 @@ const INITIAL_LISTING_IMAGE_FIELDS = ["", "", ""];
 const ACCOUNT_TYPE_OPTIONS = [
   { id: "owner", label: "🏠 Власник", hint: "Продаю або здаю власне житло" },
   { id: "realtor", label: "🤝 Ріелтор", hint: "Працюю з клієнтами та об'єктами" },
+  { id: "developer", label: "🏗️ Забудовник", hint: "Публікую новобудови та проєкти" },
 ];
 
 function accountTypeOf(user) {
-  return user?.account_type === "realtor" ? "realtor" : "owner";
+  if (user?.account_type === "developer") return "developer";
+  if (user?.account_type === "realtor") return "realtor";
+  return "owner";
 }
 
 function formatPlanQuota(usage) {
@@ -113,7 +116,7 @@ function formatPlanQuota(usage) {
   return `${usage.listings_used} / ${usage.listings_limit} оголошень`;
 }
 
-function createInitialListingForm() {
+function createInitialListingForm(initialValues = {}) {
   return {
     title: "",
     city: "Київ",
@@ -130,6 +133,7 @@ function createInitialListingForm() {
     eOselya: false,
     description: "",
     images: [...INITIAL_LISTING_IMAGE_FIELDS],
+    ...initialValues,
   };
 }
 
@@ -628,27 +632,41 @@ export default function RealEstateApp() {
   );
 
   const isRealtorCabinet = accountTypeOf(currentUser) === "realtor";
+  const isDeveloperCabinet = accountTypeOf(currentUser) === "developer";
   const planUsage = currentUser?.usage || null;
-  const planName = currentUser?.plan?.name || (isRealtorCabinet ? "Ріелтор Free" : "Базовий");
-  const planIsFree = !currentUser?.plan_id || currentUser.plan_id === "free" || currentUser.plan_id === "realtor_free";
+  const planName =
+    currentUser?.plan?.name ||
+    (isDeveloperCabinet ? "Забудовник Базовий" : isRealtorCabinet ? "Ріелтор Free" : "Базовий");
+  const planIsFree =
+    !currentUser?.plan_id ||
+    currentUser.plan_id === "free" ||
+    currentUser.plan_id === "realtor_free" ||
+    currentUser.plan_id === "developer_free";
   const planQuota = formatPlanQuota(planUsage);
   const planLimitReached = planUsage ? planUsage.listings_remaining === 0 : false;
-  const cabinet = isRealtorCabinet
+  const cabinet = isDeveloperCabinet
     ? {
-        eyebrow: "Кабінет ріелтора",
-        badge: "Ріелтор",
-        intro: "Ведіть портфель об'єктів клієнтів, стежте за лімітом тарифу та піднімайте оголошення в ТОП.",
-        profileHint: "У кабінеті ріелтора видно портфель об'єктів, статус кожного та ліміт вашого пакета.",
+        eyebrow: "Кабінет забудовника",
+        badge: "Забудовник",
+        intro: "Публікуйте новобудови, тримайте їх окремо в каталозі та швидко оновлюйте оголошення проєктів.",
+        profileHint: "У кабінеті забудовника видно новобудови, їх статус і доступний ліміт для публікацій.",
       }
-    : {
-        eyebrow: "Кабінет власника",
-        badge: "Власник",
-        intro: "Створюйте оголошення з профілю, одразу публікуйте їх на сайті та редагуйте без переходу в адмінку.",
-        profileHint: "У профілі видно активні оголошення, їх статус і доступне швидке редагування.",
-      };
+    : isRealtorCabinet
+      ? {
+          eyebrow: "Кабінет ріелтора",
+          badge: "Ріелтор",
+          intro: "Ведіть портфель об'єктів клієнтів, стежте за лімітом тарифу та піднімайте оголошення в ТОП.",
+          profileHint: "У кабінеті ріелтора видно портфель об'єктів, статус кожного та ліміт вашого пакета.",
+        }
+      : {
+          eyebrow: "Кабінет власника",
+          badge: "Власник",
+          intro: "Створюйте оголошення з профілю, одразу публікуйте їх на сайті та редагуйте без переходу в адмінку.",
+          profileHint: "У профілі видно активні оголошення, їх статус і доступне швидке редагування.",
+        };
 
   const openPlansModal = (audience) => {
-    const target = audience || (isRealtorCabinet ? "realtor" : "owner");
+    const target = audience || (isDeveloperCabinet ? "developer" : isRealtorCabinet ? "realtor" : "owner");
     if (window.uaPremium?.open) {
       window.uaPremium.open(target);
     } else {
@@ -658,7 +676,7 @@ export default function RealEstateApp() {
 
   const switchAccountType = async () => {
     if (!authToken || accountTypeSwitching) return;
-    const nextType = isRealtorCabinet ? "owner" : "realtor";
+    const nextType = isDeveloperCabinet ? "owner" : isRealtorCabinet ? "developer" : "realtor";
     setAccountTypeSwitching(true);
     setAuthError("");
     setAuthSuccess("");
@@ -671,7 +689,13 @@ export default function RealEstateApp() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Не вдалося змінити тип кабінету");
       setCurrentUser(result.user || null);
-      setAuthSuccess(nextType === "realtor" ? "Увімкнено кабінет ріелтора" : "Увімкнено кабінет власника");
+      setAuthSuccess(
+        nextType === "realtor"
+          ? "Увімкнено кабінет ріелтора"
+          : nextType === "developer"
+            ? "Увімкнено кабінет забудовника"
+            : "Увімкнено кабінет власника"
+      );
     } catch (error) {
       setAuthError(error.message || "Не вдалося змінити тип кабінету");
     } finally {
@@ -1079,7 +1103,15 @@ export default function RealEstateApp() {
 
   const openCreateListingModal = () => {
     setEditingListingId(null);
-    setListingForm(createInitialListingForm());
+    const developerDefaults = isDeveloperCabinet
+      ? {
+          conditionType: "новобудова",
+          propertyType: "квартира",
+          listingType: "sale",
+          description: "Оголошення новобудови від забудовника",
+        }
+      : {};
+    setListingForm(createInitialListingForm(developerDefaults));
     setSelectedListingFiles([]);
     setSelectedListingFilePreviews([]);
     setListingMessage("");
@@ -1289,7 +1321,7 @@ export default function RealEstateApp() {
         eOselya: Boolean(listingForm.eOselya),
         description: listingForm.description.trim(),
         listingStatus: "active",
-        source: isRealtorCabinet ? "agent" : "owner",
+        source: isDeveloperCabinet ? "developer" : isRealtorCabinet ? "agent" : "owner",
         publishNow: true,
         images: [...uploadedStorageUrls, ...imageUrls].slice(0, 8),
       };
@@ -1636,7 +1668,7 @@ export default function RealEstateApp() {
               <p className="mt-2 text-sm text-slate-600">
                 {currentUser
                   ? cabinet.intro
-                  : "Створіть кабінет власника або ріелтора, щоб публікувати оголошення просто з сайту."}
+                  : "Створіть кабінет власника, ріелтора або забудовника, щоб публікувати оголошення просто з сайту."}
               </p>
 
               {authError ? <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{authError}</div> : null}
@@ -1648,7 +1680,7 @@ export default function RealEstateApp() {
                   {authMode === "register" ? (
                     <div className="space-y-2">
                       <p className="text-xs font-black uppercase tracking-wide text-slate-500">Тип кабінету</p>
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                         {ACCOUNT_TYPE_OPTIONS.map((option) => (
                           <button
                             key={option.id}
@@ -1763,13 +1795,22 @@ export default function RealEstateApp() {
                     </div>
                   ) : null}
 
+                  {isDeveloperCabinet ? (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
+                      <p className="text-[11px] font-black uppercase tracking-wide text-amber-700">Новобудови</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">
+                        Публікуйте новобудови як окремий формат оголошень для забудовника.
+                      </p>
+                    </div>
+                  ) : null}
+
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
                       onClick={openCreateListingModal}
                       className="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
                     >
-                      + Створити оголошення
+                      {isDeveloperCabinet ? "+ Додати новобудову" : "+ Створити оголошення"}
                     </button>
                     <button
                       type="button"
@@ -1779,9 +1820,11 @@ export default function RealEstateApp() {
                     >
                       {accountTypeSwitching
                         ? "Перемикаємо…"
-                        : isRealtorCabinet
+                        : isDeveloperCabinet
                           ? "Кабінет власника"
-                          : "Кабінет ріелтора"}
+                          : isRealtorCabinet
+                            ? "Кабінет забудовника"
+                            : "Кабінет ріелтора"}
                     </button>
                     <button
                       type="button"
