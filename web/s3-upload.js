@@ -53,77 +53,103 @@ class S3Uploader {
     if (errors) throw new Error(errors.join('; '));
 
     try {
-      const response = await fetch(`${this.apiUrl}/images/presigned-url`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          filename: file.name,
-          contentType: file.type
-        })
-      });
+     const authToken = typeof window !== 'undefined' ? window.localStorage.getItem('uaDim.authToken') || '' : '';
+     const response = await fetch(`${this.apiUrl}/images/presigned-url`, {
+       method: 'POST',
+       headers: {
+         'Content-Type': 'application/json',
+         ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
+       },
+       credentials: 'include',
+       body: JSON.stringify({
+         filename: file.name,
+         contentType: file.type
+       })
+     });
 
-      if (!response.ok) {
-        if (response.status === 503) {
-          // S3 not configured, fallback to base64
-          return { fallback: true };
-        }
-        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-      }
+     if (!response.ok) {
+       if (response.status === 503) {
+         // Storage not configured, fallback to base64
+         return { fallback: true };
+       }
+       throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+     }
 
-      return await response.json();
-    } catch (error) {
-      console.error('Failed to get presigned URL:', error);
-      throw error;
-    }
+     return await response.json();
+   } catch (error) {
+     console.error('Failed to get presigned URL:', error);
+     throw error;
+   }
   }
 
   /**
-   * Upload file directly to S3 using presigned URL
+   * Upload file directly to storage using presigned URL
    */
   async uploadToPresignedUrl(file, presignedData, onProgress) {
-    if (!presignedData.uploadUrl) {
-      throw new Error('No upload URL provided');
-    }
+   if (!presignedData.uploadUrl) {
+     throw new Error('No upload URL provided');
+   }
 
-    try {
-      const xhr = new XMLHttpRequest();
+   if (presignedData.storage === 'cloudinary' && presignedData.method === 'POST') {
+     const formData = new FormData();
+     formData.append('file', file);
+     formData.append('resource_type', presignedData.resourceType || 'image');
+     if (presignedData.publicId) formData.append('public_id', presignedData.publicId);
+     if (presignedData.uploadPreset) formData.append('upload_preset', presignedData.uploadPreset);
+     if (presignedData.apiKey) formData.append('api_key', presignedData.apiKey);
+     if (presignedData.timestamp) formData.append('timestamp', String(presignedData.timestamp));
+     if (presignedData.signature) formData.append('signature', presignedData.signature);
 
-      // Track progress
-      if (onProgress) {
-        xhr.upload.addEventListener('progress', (e) => {
-          if (e.lengthComputable) {
-            onProgress({
-              loaded: e.loaded,
-              total: e.total,
-              percent: Math.round((e.loaded / e.total) * 100)
-            });
-          }
-        });
-      }
+     const response = await fetch(presignedData.uploadUrl, {
+       method: 'POST',
+       body: formData
+     });
 
-      return new Promise((resolve, reject) => {
-        xhr.addEventListener('load', () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve({
-              etag: xhr.getResponseHeader('ETag'),
-              versionId: xhr.getResponseHeader('x-amz-version-id'),
-              url: presignedData.uploadUrl
-            });
-          } else {
-            reject(new Error(`Upload failed: ${xhr.status}`));
-          }
-        });
+     if (!response.ok) {
+       throw new Error(`Cloudinary upload failed: ${await response.text()}`);
+     }
 
-        xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
-        xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
+     return await response.json();
+   }
 
-        xhr.open('PUT', presignedData.uploadUrl);
-        xhr.setRequestHeader('Content-Type', file.type);
-        xhr.send(file);
-      });
+   try {
+     const xhr = new XMLHttpRequest();
+
+     // Track progress
+     if (onProgress) {
+       xhr.upload.addEventListener('progress', (e) => {
+         if (e.lengthComputable) {
+           onProgress({
+             loaded: e.loaded,
+             total: e.total,
+             percent: Math.round((e.loaded / e.total) * 100)
+           });
+         }
+       });
+     }
+
+     return new Promise((resolve, reject) => {
+       xhr.addEventListener('load', () => {
+         if (xhr.status >= 200 && xhr.status < 300) {
+           resolve({
+             etag: xhr.getResponseHeader('ETag'),
+             versionId: xhr.getResponseHeader('x-amz-version-id'),
+             url: presignedData.uploadUrl
+           });
+         } else {
+           reject(new Error(`Upload failed: ${xhr.status}`));
+         }
+       });
+
+       xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
+       xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
+
+       xhr.open('PUT', presignedData.uploadUrl);
+       xhr.setRequestHeader('Content-Type', file.type);
+       xhr.send(file);
+     });
     } catch (error) {
-      console.error('S3 upload failed:', error);
+     console.error('Storage upload failed:', error);
       throw error;
     }
   }
@@ -132,26 +158,37 @@ class S3Uploader {
    * Confirm upload with backend and get final CDN URL
    */
   async confirmUpload(presignedData, uploadResult) {
-    try {
-      const response = await fetch(`${this.apiUrl}/images/confirm-upload`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          key: presignedData.key,
-          etag: uploadResult.etag
-        })
-      });
+   try {
+     const authToken = typeof window !== 'undefined' ? window.localStorage.getItem('uaDim.authToken') || '' : '';
+     const response = await fetch(`${this.apiUrl}/images/confirm-upload`, {
+       method: 'POST',
+       headers: {
+         'Content-Type': 'application/json',
+         ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
+       },
+       credentials: 'include',
+       body: JSON.stringify(
+         presignedData.storage === 'cloudinary'
+           ? {
+               url: uploadResult.secure_url || uploadResult.url || '',
+               publicId: uploadResult.public_id || presignedData.publicId || ''
+             }
+           : {
+               key: presignedData.key,
+               etag: uploadResult.etag
+             }
+       )
+     });
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-      }
+     if (!response.ok) {
+       throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+     }
 
-      return await response.json();
-    } catch (error) {
-      console.error('Failed to confirm upload:', error);
-      throw error;
-    }
+     return await response.json();
+   } catch (error) {
+     console.error('Failed to confirm upload:', error);
+     throw error;
+   }
   }
 
   /**

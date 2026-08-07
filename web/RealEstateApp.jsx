@@ -1151,6 +1151,115 @@ export default function RealEstateApp() {
     });
   };
 
+  const uploadListingFilesToStorage = async (files) => {
+    if (!files.length) return [];
+
+    const uploadedImageUrls = [];
+    for (const file of files) {
+      try {
+        const presignResponse = await fetch(getApiUrl("/images/presigned-url"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({ filename: file.name, contentType: file.type }),
+        });
+
+        if (!presignResponse.ok) {
+          const presignPayload = await presignResponse.json().catch(() => ({}));
+          if (presignResponse.status === 503) {
+            throw new Error(presignPayload.error || "Сховище для фото не налаштоване");
+          }
+          throw new Error(presignPayload.error || "Не вдалося підготувати фото для завантаження");
+        }
+
+        const presigned = await presignResponse.json();
+        let finalUrl = "";
+
+        if (presigned?.storage === "cloudinary" && presigned?.method === "POST") {
+          const formData = new FormData();
+          formData.append("file", file);
+          formData.append("resource_type", presigned.resourceType || "image");
+          if (presigned.publicId) formData.append("public_id", presigned.publicId);
+          if (presigned.uploadPreset) formData.append("upload_preset", presigned.uploadPreset);
+          if (presigned.apiKey) formData.append("api_key", presigned.apiKey);
+          if (presigned.timestamp) formData.append("timestamp", String(presigned.timestamp));
+          if (presigned.signature) formData.append("signature", presigned.signature);
+
+          const uploadResponse = await fetch(presigned.uploadUrl, { method: "POST", body: formData });
+          if (!uploadResponse.ok) {
+            const uploadText = await uploadResponse.text();
+            throw new Error(uploadText || "Не вдалося відправити фото в хмарне сховище");
+          }
+
+          const uploadResult = await uploadResponse.json().catch(() => ({}));
+          finalUrl = uploadResult.secure_url || uploadResult.url || "";
+          if (!finalUrl) {
+            throw new Error("Сховище не повернуло URL для фото");
+          }
+
+          const confirmResponse = await fetch(getApiUrl("/images/confirm-upload"), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${authToken}`,
+            },
+            body: JSON.stringify({
+              url: finalUrl,
+              publicId: uploadResult.public_id || presigned.publicId,
+            }),
+          });
+
+          if (!confirmResponse.ok) {
+            const confirmPayload = await confirmResponse.json().catch(() => ({}));
+            throw new Error(confirmPayload.error || "Не вдалося підтвердити фото");
+          }
+
+          const confirmPayload = await confirmResponse.json().catch(() => ({}));
+          finalUrl = confirmPayload.url || finalUrl;
+        } else if (presigned?.method === "PUT") {
+          const uploadResponse = await fetch(presigned.uploadUrl, {
+            method: "PUT",
+            headers: { "Content-Type": file.type },
+            body: file,
+          });
+
+          if (!uploadResponse.ok) {
+            const uploadText = await uploadResponse.text();
+            throw new Error(uploadText || "Не вдалося відправити фото в сховище");
+          }
+
+          const confirmResponse = await fetch(getApiUrl("/images/confirm-upload"), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${authToken}`,
+            },
+            body: JSON.stringify({ key: presigned.key, etag: uploadResponse.headers.get("etag") || "" }),
+          });
+
+          if (!confirmResponse.ok) {
+            const confirmPayload = await confirmResponse.json().catch(() => ({}));
+            throw new Error(confirmPayload.error || "Не вдалося підтвердити фото");
+          }
+
+          const confirmPayload = await confirmResponse.json().catch(() => ({}));
+          finalUrl = confirmPayload.url || "";
+        } else {
+          throw new Error("Сховище не підтримує пряме завантаження фото");
+        }
+
+        uploadedImageUrls.push(finalUrl || (await readListingFileAsDataUrl(file)));
+      } catch (error) {
+        console.error("Listing image upload failed", error);
+        uploadedImageUrls.push(await readListingFileAsDataUrl(file));
+      }
+    }
+
+    return uploadedImageUrls;
+  };
+
   const handleCreateListing = async (event) => {
     event.preventDefault();
     if (!authToken) {
@@ -1161,8 +1270,8 @@ export default function RealEstateApp() {
     setListingMessage("");
     try {
       const imageUrls = listingForm.images.filter(Boolean).slice(0, 8);
-      const uploadedImageDataUrls = selectedListingFiles.length
-        ? await Promise.all(selectedListingFiles.map((file) => readListingFileAsDataUrl(file)))
+      const uploadedStorageUrls = selectedListingFiles.length
+        ? await uploadListingFilesToStorage(selectedListingFiles)
         : [];
       const payload = {
         title: listingForm.title.trim(),
@@ -1182,7 +1291,7 @@ export default function RealEstateApp() {
         listingStatus: "active",
         source: isRealtorCabinet ? "agent" : "owner",
         publishNow: true,
-        images: [...uploadedImageDataUrls, ...imageUrls].slice(0, 8),
+        images: [...uploadedStorageUrls, ...imageUrls].slice(0, 8),
       };
 
       const isEditing = Boolean(editingListingId);
