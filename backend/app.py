@@ -4726,6 +4726,7 @@ def update_listing(listing_id: int):
     from app import _refresh_listing_city_summary, cache_delete_prefix
 
     db = get_db()
+    now_expr = db_now_expr()
     listing = db.execute(
         """
         SELECT id, user_id, status, published_at,
@@ -4774,7 +4775,7 @@ def update_listing(listing_id: int):
         verified_docs = bool(listing_payload["verified_docs"])
 
     db.execute(
-        """
+        f"""
         UPDATE listings
         SET title = ?,
             city = ?,
@@ -4793,7 +4794,7 @@ def update_listing(listing_id: int):
             longitude = ?,
             description = ?,
             status = ?,
-            published_at = COALESCE(published_at, db_now_expr()),
+            published_at = COALESCE(published_at, {now_expr}),
             listing_type = ?,
             source = ?,
             agency_slug = ?,
@@ -4807,7 +4808,7 @@ def update_listing(listing_id: int):
             phone_verification_status = ?,
             moderation_status = ?,
             moderation_reason = ?,
-            moderation_updated_at = db_now_expr()
+            moderation_updated_at = {now_expr}
         WHERE id = ?
         """,
         (
