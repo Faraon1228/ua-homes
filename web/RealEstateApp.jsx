@@ -1233,6 +1233,39 @@ export default function RealEstateApp() {
     }
   };
 
+  const handleDeleteListing = async () => {
+    if (!authToken || !editingListingId) {
+      return;
+    }
+    const confirmed = window.confirm("Видалити це оголошення? Дію не можна скасувати.");
+    if (!confirmed) {
+      return;
+    }
+
+    setListingSubmitting(true);
+    setListingMessage("");
+    try {
+      const response = await fetch(getApiUrl(`/listings/${editingListingId}`), {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+        },
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || "Не вдалося видалити оголошення");
+      }
+
+      closeListingModal();
+      setListingMessage("Оголошення видалено.");
+      await Promise.all([loadMyListings(), loadCatalogListings()]);
+    } catch (error) {
+      setListingMessage(error.message || "Не вдалося видалити оголошення");
+    } finally {
+      setListingSubmitting(false);
+    }
+  };
+
   if (smartSearchMode) {
     return React.createElement(SmartSearchPage, {
       keywordInputRef,
@@ -2534,6 +2567,16 @@ export default function RealEstateApp() {
                 >
                   {listingSubmitting ? "Зберігаємо…" : editingListingId ? "Зберегти зміни" : "Публікувати оголошення"}
                 </button>
+                {editingListingId ? (
+                  <button
+                    type="button"
+                    onClick={handleDeleteListing}
+                    disabled={listingSubmitting}
+                    className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-bold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    Видалити оголошення
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => {
