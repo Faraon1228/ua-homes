@@ -52,6 +52,10 @@ os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 # PostgreSQL DSN — if set, the app uses psycopg2 instead of SQLite.
 DATABASE_URL: str | None = os.environ.get("DATABASE_URL", "").strip() or None
 PUBLIC_SITE_URL = os.environ.get("UA_HOMES_PUBLIC_URL", "").strip().rstrip("/")
+API_ORIGIN = os.environ.get("UA_HOMES_API", "").strip().rstrip("/")
+BOOTSTRAP_ADMIN_EMAIL = os.environ.get("UA_HOMES_BOOTSTRAP_ADMIN_EMAIL", "").strip()
+BOOTSTRAP_ADMIN_PASSWORD = os.environ.get("UA_HOMES_BOOTSTRAP_ADMIN_PASSWORD", "").strip()
+BOOTSTRAP_ADMIN_NAME = os.environ.get("UA_HOMES_BOOTSTRAP_ADMIN_NAME", "Admin").strip() or "Admin"
 
 
 def _production_secret_required() -> bool:
@@ -140,20 +144,61 @@ SECURITY_HEADERS = {
     "Cross-Origin-Resource-Policy": "same-origin",
 }
 
-HTML_CSP = (
-    "default-src 'self'; "
-    "base-uri 'self'; "
-    "object-src 'none'; "
-    "frame-ancestors 'none'; "
-    "form-action 'self'; "
-    "img-src 'self' data: blob: https://images.unsplash.com https://picsum.photos https://fastly.picsum.photos https://*.tile.openstreetmap.org; "
-    "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.tailwindcss.com; "
-    "style-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; "
-    "connect-src 'self' https://backend-production-51964.up.railway.app; "
-    "font-src 'self' data:; "
-    "worker-src 'self' blob:; "
-    "manifest-src 'self';"
-)
+def _build_html_csp() -> str:
+    connect_sources = ["'self'"]
+    if PUBLIC_SITE_URL:
+        parsed_public_url = urlsplit(PUBLIC_SITE_URL)
+        if parsed_public_url.scheme and parsed_public_url.netloc:
+            connect_sources.append(f"{parsed_public_url.scheme}://{parsed_public_url.netloc}")
+    if API_ORIGIN:
+        connect_sources.append(API_ORIGIN)
+
+    return (
+        "default-src 'self'; "
+        "base-uri 'self'; "
+        "object-src 'none'; "
+        "frame-ancestors 'none'; "
+        "form-action 'self'; "
+        "img-src 'self' data: blob: https://images.unsplash.com https://picsum.photos https://fastly.picsum.photos https://*.tile.openstreetmap.org; "
+        "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.tailwindcss.com; "
+        "style-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; "
+        f"connect-src {' '.join(connect_sources)}; "
+        "font-src 'self' data:; "
+        "worker-src 'self' blob:; "
+        "manifest-src 'self';"
+    )
+
+
+HTML_CSP = _build_html_csp()
+
+
+def _bootstrap_admin_user(db) -> None:
+    if not BOOTSTRAP_ADMIN_EMAIL or not BOOTSTRAP_ADMIN_PASSWORD:
+        return
+
+    email = BOOTSTRAP_ADMIN_EMAIL
+    password = BOOTSTRAP_ADMIN_PASSWORD
+    name = BOOTSTRAP_ADMIN_NAME
+
+    if db.execute("SELECT 1 FROM users WHERE email = ? LIMIT 1", (email,)).fetchone():
+        db.execute(
+            "UPDATE users SET name = ?, password = ?, password_hash = ?, role = 'admin', status = 'active' WHERE email = ?",
+            (
+                name,
+                password,
+                bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8"),
+                email,
+            ),
+        )
+        db.commit()
+        return
+
+    password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+    db.execute(
+        "INSERT INTO users (name, email, password, password_hash, role, status) VALUES (?, ?, ?, ?, 'admin', 'active')",
+        (name, email, password, password_hash),
+    )
+    db.commit()
 
 # ─── Database adapter ────────────────────────────────────────────────────────
 # Thin compatibility shim so the rest of the app never needs to know which DB
@@ -422,37 +467,33 @@ def _refresh_lead_funnel_summaries(db) -> None:
 def _refresh_listing_city_summary(db) -> None:
     db.execute("DELETE FROM listing_city_summary")
     db.execute(
-        """
+        f"""
         INSERT INTO listing_city_summary (city, published_count, price_sum, avg_price, updated_at)
         SELECT
             city,
             COUNT(*) AS published_count,
             COALESCE(SUM(price), 0) AS price_sum,
             COALESCE(ROUND(AVG(price)), 0) AS avg_price,
-            ?
+            {db_now_expr()}
         FROM listings
         WHERE status = 'published'
         GROUP BY city
         """
-        ,
-        (db_now_expr(),)
     )
 
 
 def _refresh_user_growth_summary(db) -> None:
     db.execute("DELETE FROM user_growth_daily")
     db.execute(
-        """
+        f"""
         INSERT INTO user_growth_daily (day, user_count, updated_at)
         SELECT
             DATE(created_at) AS day,
             COUNT(*) AS user_count,
-            ?
+            {db_now_expr()}
         FROM users
         GROUP BY DATE(created_at)
         """
-        ,
-        (db_now_expr(),)
     )
 
 
@@ -531,9 +572,25 @@ def db_placeholder() -> str:
     return "%s" if _is_postgres() else "?"
 
 
-def db_now_expr() -> str:
-    """Return the current-time SQL expression for the active DB driver."""
-    return "to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')" if _is_postgres() else "datetime('now')"
+def db_now_expr(offset_days: int | None = None) -> str:
+    """Return a DB-safe SQL expression for the current timestamp."""
+    if _is_postgres():
+        if offset_days is None:
+            return "CURRENT_TIMESTAMP"
+        suffix = "day" if abs(offset_days) == 1 else "days"
+        return f"CURRENT_TIMESTAMP - INTERVAL '{abs(offset_days)} {suffix}'"
+    if offset_days is None:
+        return "datetime('now')"
+    sign = "-" if offset_days >= 0 else "+"
+    return f"datetime('now', '{sign}{abs(offset_days)} days')"
+
+
+def _is_db_integrity_error(exc: Exception) -> bool:
+    if isinstance(exc, sqlite3.IntegrityError):
+        return True
+    pgcode = getattr(exc, "pgcode", None)
+    sqlstate = getattr(exc, "sqlstate", None)
+    return pgcode in {"23505", "23503", "23502"} or sqlstate in {"23505", "23503", "23502"}
 
 
 _PG_MIGRATION_LOCK_ID = 8_140_713_559_001
@@ -923,6 +980,36 @@ def _seed_postgres(cur):
         """,
         ("demo@ua-dim.com",),
     )
+
+    # Bootstrap admin separately so a fresh production database can be
+    # initialized with a real admin account when the env vars are present.
+    if BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD:
+        password_hash = bcrypt.hashpw(
+            BOOTSTRAP_ADMIN_PASSWORD.encode("utf-8"),
+            bcrypt.gensalt(rounds=12),
+        ).decode("utf-8")
+        cur.execute("SELECT id FROM users WHERE email = %s LIMIT 1", (BOOTSTRAP_ADMIN_EMAIL,))
+        existing = cur.fetchone()
+        if existing:
+            cur.execute(
+                "UPDATE users SET name = %s, password = %s, password_hash = %s, role = 'admin', status = 'active' WHERE email = %s",
+                (
+                    BOOTSTRAP_ADMIN_NAME,
+                    BOOTSTRAP_ADMIN_PASSWORD,
+                    password_hash,
+                    BOOTSTRAP_ADMIN_EMAIL,
+                ),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO users (name, email, password, password_hash, role, status) VALUES (%s, %s, %s, %s, 'admin', 'active')",
+                (
+                    BOOTSTRAP_ADMIN_NAME,
+                    BOOTSTRAP_ADMIN_EMAIL,
+                    BOOTSTRAP_ADMIN_PASSWORD,
+                    password_hash,
+                ),
+            )
 
 
 # ─── App setup ───────────────────────────────────────────────────────────────
@@ -1664,7 +1751,7 @@ def init_db():
     db = sqlite3.connect(DB_PATH)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA foreign_keys=ON")
-    db.executescript("""
+    db.executescript(f"""
         CREATE TABLE IF NOT EXISTS users (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             name            TEXT    NOT NULL,
@@ -1677,7 +1764,7 @@ def init_db():
             plan_expires_at TEXT,
             agency_slug     TEXT,
             status          TEXT    NOT NULL DEFAULT 'active',
-            created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+            created_at      TEXT    NOT NULL DEFAULT (db_now_expr())
         );
 
         CREATE TABLE IF NOT EXISTS listings (
@@ -1718,7 +1805,7 @@ def init_db():
             latitude       REAL,
             longitude      REAL,
             description    TEXT    NOT NULL DEFAULT '',
-            created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+            created_at     TEXT    NOT NULL DEFAULT (db_now_expr())
         );
 
         CREATE TABLE IF NOT EXISTS reviews (
@@ -1728,7 +1815,7 @@ def init_db():
             user_name  TEXT    NOT NULL,
             rating     INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
             comment    TEXT    NOT NULL,
-            created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT    NOT NULL DEFAULT (db_now_expr())
         );
 
         CREATE INDEX IF NOT EXISTS idx_listings_city      ON listings(city);
@@ -1749,7 +1836,7 @@ def init_db():
             listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
             image_url  TEXT    NOT NULL,
             'order'    INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT    NOT NULL DEFAULT (db_now_expr())
         );
         
         CREATE TABLE IF NOT EXISTS moderation_log (
@@ -1758,7 +1845,7 @@ def init_db():
             admin_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
             action     TEXT    NOT NULL,
             reason     TEXT,
-            created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT    NOT NULL DEFAULT (db_now_expr())
         );
         
         CREATE INDEX IF NOT EXISTS idx_listing_images ON listing_images(listing_id);
@@ -1775,7 +1862,7 @@ def init_db():
             filters      TEXT    NOT NULL,
             is_active    INTEGER NOT NULL DEFAULT 1,
             last_sent_at TEXT,
-            created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+            created_at   TEXT    NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_listing_alerts_user ON listing_alerts(user_id);
         CREATE INDEX IF NOT EXISTS idx_listing_alerts_email ON listing_alerts(email);
@@ -1792,7 +1879,7 @@ def init_db():
             push_sent    INTEGER NOT NULL DEFAULT 0,
             success      INTEGER NOT NULL DEFAULT 0,
             error_text   TEXT,
-            started_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+            started_at   TEXT    NOT NULL DEFAULT (db_now_expr()),
             finished_at  TEXT,
             duration_ms  INTEGER
         );
@@ -1808,7 +1895,7 @@ def init_db():
             listing_type TEXT,
             price        INTEGER,
             session_id   TEXT,
-            created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+            created_at   TEXT    NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_lead_funnel_created ON lead_funnel_events(created_at);
         CREATE INDEX IF NOT EXISTS idx_lead_funnel_created_source_event ON lead_funnel_events(created_at, source, event);
@@ -1845,7 +1932,7 @@ def init_db():
             route_applies INTEGER NOT NULL DEFAULT 0,
             first_route_at TEXT,
             submit_at TEXT,
-            last_event_at TEXT NOT NULL DEFAULT (datetime('now'))
+            last_event_at TEXT NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_lead_funnel_session_rollups_source ON lead_funnel_session_rollups(source);
         CREATE INDEX IF NOT EXISTS idx_lead_funnel_session_rollups_first_route ON lead_funnel_session_rollups(first_route_at);
@@ -1869,7 +1956,7 @@ def init_db():
             message TEXT,
             listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL,
             session_id TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_lead_requests_created_at ON lead_requests(created_at);
         CREATE INDEX IF NOT EXISTS idx_lead_requests_type_created ON lead_requests(lead_type, created_at DESC);
@@ -1889,7 +1976,7 @@ def init_db():
             session_id   TEXT,
             user_agent   TEXT,
             payload_json TEXT,
-            created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+            created_at   TEXT    NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_client_observability_created ON client_observability_events(created_at);
         CREATE INDEX IF NOT EXISTS idx_client_observability_type_created ON client_observability_events(event_type, created_at DESC);
@@ -1900,14 +1987,14 @@ def init_db():
             published_count INTEGER NOT NULL DEFAULT 0,
             price_sum INTEGER NOT NULL DEFAULT 0,
             avg_price INTEGER NOT NULL DEFAULT 0,
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            updated_at TEXT NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_listing_city_summary_count ON listing_city_summary(published_count DESC, city ASC);
 
         CREATE TABLE IF NOT EXISTS user_growth_daily (
             day TEXT PRIMARY KEY,
             user_count INTEGER NOT NULL DEFAULT 0,
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            updated_at TEXT NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_user_growth_daily_day ON user_growth_daily(day);
 
@@ -1925,7 +2012,7 @@ def init_db():
             team_size             INTEGER,
             completed_deals       INTEGER NOT NULL DEFAULT 0,
             last_verified_at      TEXT,
-            created_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+            created_at            TEXT    NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_agency_profiles_verified ON agency_profiles(is_verified);
         CREATE INDEX IF NOT EXISTS idx_agency_profiles_city ON agency_profiles(city);
@@ -1938,7 +2025,7 @@ def init_db():
             currency   TEXT    NOT NULL DEFAULT 'UAH',
             status     TEXT    NOT NULL DEFAULT 'pending',
             user_id    INTEGER,
-            created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT    NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_premium_orders_status ON premium_orders(status);
     """)
@@ -2067,6 +2154,7 @@ def init_db():
     )
     _refresh_listing_city_summary(db)
     _refresh_user_growth_summary(db)
+    _bootstrap_admin_user(db)
     db.commit()
 
     if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
@@ -2077,29 +2165,29 @@ def init_db():
         )
         demo_id = cur.lastrowid
         db.executemany(
-            """INSERT INTO listings
+            f"""INSERT INTO listings
                (user_id,title,city,district,property_type,condition_type,price,rooms,area,
                 floor,total_floors,year_built,e_oselya,images,description,latitude,longitude,
                 status,published_at,verified_owner,verified_phone,verified_docs,source,listing_type)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',datetime('now'),1,1,1,'seed','sale')""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',{db_now_expr()},1,1,1,'seed','sale')""",
             [(demo_id, *row) for row in SEED_LISTINGS],
         )
         db.executemany(
-            """INSERT INTO listings
+            f"""INSERT INTO listings
                (user_id,title,city,district,property_type,condition_type,price,rooms,area,
                 floor,total_floors,year_built,e_oselya,images,description,latitude,longitude,
                 status,published_at,verified_owner,verified_phone,verified_docs,source,listing_type)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',datetime('now'),1,1,1,'seed','rent')""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',{db_now_expr()},1,1,1,'seed','rent')""",
             [(demo_id, *row) for row in SEED_RENT_LISTINGS],
         )
         db.commit()
 
     if db.execute("SELECT COUNT(*) FROM agency_profiles").fetchone()[0] == 0:
         db.executemany(
-            """
+            f"""
             INSERT INTO agency_profiles
             (slug, name, kind, city, specialization, is_verified, avg_response_minutes, team_size, completed_deals, last_verified_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, {db_now_expr()})
             """,
             [
                 ("capital-alliance", "Capital Alliance", "agency", "Київ", "Преміум квартири та будинки", 1, 32, 24, 460),
@@ -2558,8 +2646,8 @@ def dispatch_saved_alerts(db, listing_id: int | None = None, dry_run: bool = Fal
 
         if sent_any and not dry_run:
             db.execute(
-                "UPDATE listing_alerts SET last_sent_at = ? WHERE id = ?",
-                (db_now_expr(), alert["id"]),
+                f"UPDATE listing_alerts SET last_sent_at = {db_now_expr()} WHERE id = ?",
+                (alert["id"],),
             )
 
     if not dry_run:
@@ -3389,12 +3477,12 @@ def _content_articles(db: sqlite3.Connection) -> list[dict]:
     agency_rows = _agency_metrics(db, sort_by="reputation", limit=4)
     
     # Single aggregated query instead of 5 separate COUNT queries (performance: -600ms)
-    stats_row = db.execute("""
+    stats_row = db.execute(f"""
         SELECT 
           COUNT(*) as total_count,
           SUM(CASE WHEN e_oselya = 1 THEN 1 ELSE 0 END) as e_oselya_count,
           SUM(CASE WHEN listing_status = 'active' THEN 1 ELSE 0 END) as active_count,
-          SUM(CASE WHEN published_at >= datetime('now', '-14 days') THEN 1 ELSE 0 END) as freshness_count
+          SUM(CASE WHEN published_at >= {db_now_expr(-14)} THEN 1 ELSE 0 END) as freshness_count
         FROM listings WHERE status='published'
     """).fetchone()
     
@@ -3574,7 +3662,9 @@ def register():
             (name, email, hashed, account_type, plan_id),
         )
         db.commit()
-    except sqlite3.IntegrityError:
+    except Exception as exc:
+        if not _is_db_integrity_error(exc):
+            raise
         return jsonify(error="Цей email вже зареєстровано"), 409
 
     user_id = cur.lastrowid
@@ -4701,7 +4791,7 @@ def update_listing(listing_id: int):
             longitude = ?,
             description = ?,
             status = ?,
-            published_at = COALESCE(published_at, datetime('now')),
+            published_at = COALESCE(published_at, db_now_expr()),
             listing_type = ?,
             source = ?,
             agency_slug = ?,
@@ -4715,7 +4805,7 @@ def update_listing(listing_id: int):
             phone_verification_status = ?,
             moderation_status = ?,
             moderation_reason = ?,
-            moderation_updated_at = datetime('now')
+            moderation_updated_at = db_now_expr()
         WHERE id = ?
         """,
         (
@@ -4868,7 +4958,7 @@ def update_listing_verification(listing_id: int):
     if is_admin:
         if moderation_status == "approved":
             next_status = "published"
-            published_at_sql = "COALESCE(published_at, datetime('now'))"
+            published_at_sql = f"COALESCE(published_at, {db_now_expr()})"
         elif moderation_status == "rejected":
             next_status = "rejected"
         else:
@@ -4886,7 +4976,7 @@ def update_listing_verification(listing_id: int):
             phone_verification_status = ?,
             moderation_status = ?,
             moderation_reason = ?,
-            moderation_updated_at = datetime('now'),
+            moderation_updated_at = {db_now_expr()},
             status = ?,
             published_at = {published_at_sql}
         WHERE id = ?
@@ -5042,6 +5132,7 @@ def dispatch_listing_alerts_health():
         LIMIT 1
         """
     ).fetchone()
+    cutoff_24h = (datetime.datetime.utcnow() - datetime.timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
     summary_24h = db.execute(
         """
         SELECT
@@ -5053,8 +5144,9 @@ def dispatch_listing_alerts_health():
             SUM(email_sent) AS email_sent,
             SUM(push_sent) AS push_sent
         FROM alert_dispatch_runs
-        WHERE datetime(started_at) >= datetime('now', '-24 hours')
-        """
+        WHERE datetime(started_at) >= ?
+        """,
+        (cutoff_24h,),
     ).fetchone()
     history_rows = db.execute(
         """
