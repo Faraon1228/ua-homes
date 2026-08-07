@@ -159,6 +159,121 @@ HTML_CSP = (
 # Thin compatibility shim so the rest of the app never needs to know which DB
 # engine is being used.  Both sqlite3.Row and psycopg2's DictRow support dict().
 
+class _DbCursorProxy:
+    def __init__(self, connection_proxy, cursor, is_postgres: bool):
+        self._connection_proxy = connection_proxy
+        self._cursor = cursor
+        self._is_postgres = is_postgres
+        self._lastrowid = None
+
+    def _translate_query(self, query: str) -> str:
+        if not self._is_postgres or not isinstance(query, str):
+            return query
+        return re.sub(r"(?<!\?)\?(?!\?)", "%s", query)
+
+    def execute(self, query, params=None):
+        translated = self._translate_query(query)
+        if params is None:
+            self._cursor.execute(translated)
+        else:
+            self._cursor.execute(translated, params)
+        if self._is_postgres and self._looks_like_insert(translated):
+            try:
+                self._cursor.execute("SELECT LASTVAL()")
+                row = self._cursor.fetchone()
+                self._lastrowid = int(row[0]) if row and row[0] is not None else None
+            except Exception:
+                self._lastrowid = None
+        return self
+
+    def executemany(self, query, params):
+        translated = self._translate_query(query)
+        self._cursor.executemany(translated, params)
+        return self
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    def fetchmany(self, size=None):
+        if size is None:
+            return self._cursor.fetchmany()
+        return self._cursor.fetchmany(size)
+
+    @property
+    def description(self):
+        return self._cursor.description
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+    @property
+    def lastrowid(self):
+        return getattr(self._cursor, "lastrowid", self._lastrowid)
+
+    def close(self):
+        self._cursor.close()
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+    @staticmethod
+    def _looks_like_insert(query: str) -> bool:
+        if not query:
+            return False
+        return query.lstrip().upper().startswith("INSERT")
+
+
+class _DbConnectionProxy:
+    def __init__(self, conn, is_postgres: bool):
+        self._conn = conn
+        self._is_postgres = is_postgres
+        self._row_factory = None
+
+    def cursor(self):
+        if self._is_postgres:
+            import psycopg2.extras
+            cursor = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        else:
+            cursor = self._conn.cursor()
+        return _DbCursorProxy(self, cursor, self._is_postgres)
+
+    def execute(self, query, params=None):
+        cursor = self.cursor()
+        cursor.execute(query, params)
+        return cursor
+
+    def executemany(self, query, params):
+        cursor = self.cursor()
+        cursor.executemany(query, params)
+        return cursor
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+    @property
+    def row_factory(self):
+        return self._row_factory
+
+    @row_factory.setter
+    def row_factory(self, value):
+        self._row_factory = value
+        if not self._is_postgres:
+            self._conn.row_factory = value
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
 def _is_postgres() -> bool:
     return DATABASE_URL is not None
 
@@ -169,20 +284,21 @@ def get_db():
         if _is_postgres():
             try:
                 import psycopg2
-                import psycopg2.extras
-                conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+                conn = psycopg2.connect(DATABASE_URL)
                 conn.autocommit = False
             except ImportError:
                 raise RuntimeError(
                     "psycopg2 is not installed. "
                     "Add 'psycopg2-binary' to requirements.txt or unset DATABASE_URL."
                 )
+            wrapped = _DbConnectionProxy(conn, True)
         else:
             conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
-        g.db = conn
+            wrapped = _DbConnectionProxy(conn, False)
+        g.db = wrapped
     return g.db
 
 
