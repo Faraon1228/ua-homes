@@ -1106,7 +1106,7 @@ export default function RealEstateApp() {
     setEditingListingId(null);
     const developerDefaults = isDeveloperCabinet
       ? {
-          conditionType: "новобудова",
+          conditionType: "нова будова",
           propertyType: "квартира",
           listingType: "sale",
           description: "Оголошення новобудови від забудовника",
@@ -1153,7 +1153,13 @@ export default function RealEstateApp() {
 
   const handleListingFileSelection = (event) => {
     const files = Array.from(event.target.files || []).filter((file) => file.type.startsWith("image/"));
-    setSelectedListingFiles(files);
+    setSelectedListingFiles((prev) => [...prev, ...files]);
+    // Reset input so selecting the same file again still triggers onChange
+    event.target.value = "";
+  };
+
+  const removeSelectedListingFile = (index) => {
+    setSelectedListingFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
   useEffect(() => {
@@ -2660,33 +2666,49 @@ export default function RealEstateApp() {
                   <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-6 text-center text-sm font-semibold text-slate-700 transition hover:border-blue-300 hover:bg-blue-50">
                     <span className="text-lg font-black text-blue-600">⬆</span>
                     <span>Виберіть фото з комп'ютера</span>
-                    <span className="text-xs font-medium text-slate-500">PNG, JPG, WEBP. Декілька файлів за раз.</span>
+                    <span className="text-xs font-medium text-slate-500">PNG, JPG, WEBP. Декілька файлів за раз. Можна додавати по черзі.</span>
                     <input type="file" multiple accept="image/*" onChange={handleListingFileSelection} className="hidden" />
                   </label>
                   {selectedListingFiles.length ? (
                     <div className="mt-3 space-y-3">
-                      <div className="flex flex-wrap gap-2">
-                        {selectedListingFiles.map((file) => (
-                          <span
-                            key={`${file.name}-${file.size}-${file.lastModified}`}
-                            className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700"
-                          >
-                            {file.name}
-                          </span>
-                        ))}
-                      </div>
                       {selectedListingFilePreviews.length ? (
                         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-                          {selectedListingFilePreviews.map((preview) => (
-                            <div key={preview.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                          {selectedListingFilePreviews.map((preview, previewIndex) => (
+                            <div key={preview.id} className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                               <img src={preview.src} alt={preview.name} className="h-28 w-full object-cover" />
-                              <div className="border-t border-slate-100 px-3 py-2 text-xs font-medium text-slate-600">
+                              <div className="border-t border-slate-100 px-3 py-1.5 text-xs font-medium text-slate-600 truncate">
                                 {preview.name}
                               </div>
+                              <button
+                                type="button"
+                                onClick={() => removeSelectedListingFile(previewIndex)}
+                                className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white text-xs font-bold hover:bg-red-600 transition"
+                                title="Видалити фото"
+                              >
+                                ✕
+                              </button>
                             </div>
                           ))}
                         </div>
-                      ) : null}
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {selectedListingFiles.map((file, fileIndex) => (
+                            <span
+                              key={`${file.name}-${file.size}-${file.lastModified}`}
+                              className="flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700"
+                            >
+                              {file.name}
+                              <button
+                                type="button"
+                                onClick={() => removeSelectedListingFile(fileIndex)}
+                                className="ml-1 text-blue-400 hover:text-red-600 font-black"
+                              >
+                                ✕
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ) : null}
                 </div>
