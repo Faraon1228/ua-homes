@@ -155,7 +155,7 @@ SECURITY_HEADERS = {
 }
 
 def _build_html_csp() -> str:
-    connect_sources = ["'self'"]
+    connect_sources = ["'self'", "https://api.cloudinary.com", "https://res.cloudinary.com"]
     if PUBLIC_SITE_URL:
         parsed_public_url = urlsplit(PUBLIC_SITE_URL)
         if parsed_public_url.scheme and parsed_public_url.netloc:
@@ -169,7 +169,7 @@ def _build_html_csp() -> str:
         "object-src 'none'; "
         "frame-ancestors 'none'; "
         "form-action 'self'; "
-        "img-src 'self' data: blob: https://images.unsplash.com https://picsum.photos https://fastly.picsum.photos https://*.tile.openstreetmap.org; "
+        "img-src 'self' data: blob: https://res.cloudinary.com https://images.unsplash.com https://picsum.photos https://fastly.picsum.photos https://*.tile.openstreetmap.org; "
         "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.tailwindcss.com; "
         "style-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; "
         f"connect-src {' '.join(connect_sources)}; "
