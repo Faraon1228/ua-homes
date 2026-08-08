@@ -10,8 +10,14 @@ import multiprocessing
 import os
 
 # ── Workers ─────────────────────────────────────────────────────────────────
-# Default: scale with CPU count, but keep a sensible floor for smaller plans.
-workers = int(os.environ.get("GUNICORN_WORKERS", max(4, multiprocessing.cpu_count() * 2)))
+# Default: use a single worker when SQLite is active to avoid lock contention;
+# allow wider fan-out only when PostgreSQL is configured.
+workers = int(
+    os.environ.get(
+        "GUNICORN_WORKERS",
+        1 if not os.environ.get("DATABASE_URL") else max(4, multiprocessing.cpu_count() * 2),
+    )
+)
 
 # Gthread is best for I/O-bound Flask + SQLite/Postgres mix.
 worker_class = "gthread"

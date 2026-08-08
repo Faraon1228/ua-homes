@@ -210,6 +210,18 @@ def _bootstrap_admin_user(db) -> None:
     )
     db.commit()
 
+
+def _password_matches(candidate: str, stored_value: str | None) -> bool:
+    if not stored_value:
+        return False
+    stored = str(stored_value)
+    if stored.startswith(("$2a$", "$2b$", "$2y$")):
+        try:
+            return bcrypt.checkpw(candidate.encode("utf-8"), stored.encode("utf-8"))
+        except ValueError:
+            return False
+    return candidate == stored
+
 # ─── Database adapter ────────────────────────────────────────────────────────
 # Thin compatibility shim so the rest of the app never needs to know which DB
 # engine is being used.  Both sqlite3.Row and psycopg2's DictRow support dict().
@@ -3726,11 +3738,11 @@ def login():
     db   = get_db()
     row  = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
 
-    dummy_hash = b"$2b$12$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    candidate  = pw.encode() if row else b""
-    stored     = row["password"].encode() if row else dummy_hash
+    stored_password = row["password_hash"] if row and _has_key(row, "password_hash") else None
+    if not stored_password and row:
+        stored_password = row["password"]
 
-    if not row or not bcrypt.checkpw(candidate, stored):
+    if not row or not _password_matches(pw, stored_password):
         return jsonify(error="Невірний email або пароль"), 401
 
     plan_id, _plan = resolve_user_plan(row)
