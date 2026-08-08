@@ -616,6 +616,18 @@ export default function RealEstateApp() {
   const [liveCatalogListings, setLiveCatalogListings] = useState([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
+  const [pwaInstallPrompt, setPwaInstallPrompt] = useState(null);
+  const [pwaInstallDismissed, setPwaInstallDismissed] = useState(
+    () => getStored("uaDim.pwaDismissed", "false") === "true"
+  );
+  const isIosSafari = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    const ua = window.navigator.userAgent;
+    const isIos = /iphone|ipad|ipod/i.test(ua);
+    const isSafari = /safari/i.test(ua) && !/chrome|crios|fxios/i.test(ua);
+    const isStandalone = window.navigator.standalone === true;
+    return isIos && isSafari && !isStandalone;
+  }, []);
 
   const catalogProperties = useMemo(() => {
     if (liveCatalogListings.length) return liveCatalogListings;
@@ -743,6 +755,15 @@ export default function RealEstateApp() {
 
   useEffect(() => {
     loadCatalogListings();
+  }, []);
+
+  useEffect(() => {
+    const handler = (e) => {
+      e.preventDefault();
+      setPwaInstallPrompt(e);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
   }, []);
 
   useEffect(() => {
@@ -1525,6 +1546,64 @@ export default function RealEstateApp() {
           </div>
         </div>
       </header>
+
+      {pwaInstallPrompt && !pwaInstallDismissed ? (
+        <div className="sticky top-[73px] z-40 border-b border-blue-100 bg-blue-600 text-white">
+          <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-2.5">
+            <div className="flex items-center gap-2.5 text-sm font-semibold">
+              <span className="text-base">📱</span>
+              <span>Встановіть UA-Dim як застосунок — швидко і без App Store</span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={async () => {
+                  pwaInstallPrompt.prompt();
+                  const { outcome } = await pwaInstallPrompt.userChoice;
+                  if (outcome === "accepted") {
+                    setPwaInstallPrompt(null);
+                  }
+                }}
+                className="rounded-xl bg-white px-3 py-1.5 text-xs font-black text-blue-700 transition hover:bg-blue-50"
+              >
+                Встановити
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPwaInstallDismissed(true);
+                  window.localStorage.setItem("uaDim.pwaDismissed", "true");
+                }}
+                className="rounded-xl border border-white/30 px-2.5 py-1.5 text-xs font-semibold text-white/80 transition hover:bg-white/10"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : isIosSafari && !pwaInstallDismissed ? (
+        <div className="sticky top-[73px] z-40 border-b border-slate-200 bg-slate-900 text-white">
+          <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-2.5">
+            <div className="flex items-center gap-2.5 text-sm font-semibold">
+              <span className="text-base">📱</span>
+              <span>
+                Додайте UA-Dim на головний екран:{" "}
+                <span className="font-normal opacity-80">натисніть <strong>Поділитись</strong> → <strong>На екран Початку</strong></span>
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setPwaInstallDismissed(true);
+                window.localStorage.setItem("uaDim.pwaDismissed", "true");
+              }}
+              className="shrink-0 rounded-xl border border-white/30 px-2.5 py-1.5 text-xs font-semibold text-white/80 transition hover:bg-white/10"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <section className="bg-[radial-gradient(circle_at_top_left,rgba(37,99,235,.16),transparent_35%),linear-gradient(180deg,#0f172a_0%,#1e293b_58%,#f8fafc_58%)]">
         <div className="mx-auto max-w-7xl px-4 pb-10 pt-10 lg:pb-14">
