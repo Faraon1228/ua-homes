@@ -139,7 +139,7 @@ function createInitialListingForm(initialValues = {}) {
 
 function normalizeImageSrc(src) {
   if (!src) return "";
-  return src.includes("images.unsplash.com") ? FALLBACK_IMAGE : src;
+  return src;
 }
 
 function mapListingToProperty(listing) {
