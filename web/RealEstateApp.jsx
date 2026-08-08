@@ -2502,7 +2502,7 @@ export default function RealEstateApp() {
             </div>
 
             {visibleProperties.length === 0 && (
-              <div className="rounded-[28px] border border-dashed border-slate-200 bg-white py-16 text-center">
+              <div className="rounded-[28px] border border-dashed border-slate-200 bg-white py-16 text-center px-6">
                 <p className="text-lg font-medium text-slate-400">
                   {catalogLoading && !catalogProperties.length
                     ? "Завантажуємо каталог..."
@@ -2510,6 +2510,14 @@ export default function RealEstateApp() {
                     ? "У вас ще немає обраних об'єктів."
                     : "За вказаними фільтрами нічого не знайдено."}
                 </p>
+                {!catalogLoading && !showFavoritesOnly && activeFilters.length > 0 && (
+                  <button
+                    onClick={resetFilters}
+                    className="mt-4 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 transition"
+                  >
+                    Скинути всі фільтри
+                  </button>
+                )}
               </div>
             )}
           </div>
