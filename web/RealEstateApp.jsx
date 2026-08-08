@@ -440,9 +440,9 @@ function SmartSearchPage({
         </div>
 
         <div className="mt-5 grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
-          {previewProperties.map((property) => (
+          {previewProperties.map((property, cardIndex) => (
             <div key={property.id} className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
-              <PhotoGallery images={property.images} title={property.title} />
+              <PhotoGallery images={property.images} title={property.title} priority={cardIndex < 3} />
               <div className="p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -474,7 +474,7 @@ function SmartSearchPage({
   );
 }
 
-function PhotoGallery({ images, title }) {
+function PhotoGallery({ images, title, priority = false }) {
   const [index, setIndex] = useState(0);
   const items = Array.isArray(images) ? images.map(normalizeImageSrc).filter(Boolean) : [];
 
@@ -536,8 +536,9 @@ function PhotoGallery({ images, title }) {
         <img 
           src={variants.original} 
           alt={title} 
-          loading="lazy" 
-          decoding="async" 
+          loading={priority ? "eager" : "lazy"} 
+          fetchPriority={priority ? "high" : "auto"} 
+          decoding={priority ? "sync" : "async"} 
           className="h-full w-full object-cover" 
         />
       </picture>
@@ -2323,13 +2324,13 @@ export default function RealEstateApp() {
             ) : null}
 
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-2">
-              {visibleProperties.map((property) => (
+              {visibleProperties.map((property, cardIndex) => (
                 <div
                   key={property.id}
                   className="group overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-xl"
                 >
                   <div className="relative">
-                    <PhotoGallery images={property.images} title={property.title} />
+                    <PhotoGallery images={property.images} title={property.title} priority={cardIndex < 4} />
                     <div className="absolute left-3 top-3 flex flex-col gap-2">
                       {property.eOselya && (
                         <span className="rounded-full bg-blue-600 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-white shadow-md">
