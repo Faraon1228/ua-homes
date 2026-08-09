@@ -219,6 +219,12 @@ function getStoredJSON(key, fallback) {
   }
 }
 
+function formatCurrency(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return "0 ₴";
+  return `${numericValue.toLocaleString("uk-UA", { maximumFractionDigits: 0 })} ₴`;
+}
+
 function getApiBaseUrl() {
   if (typeof window === "undefined") return "/api";
   const configured = (window.UA_HOMES_API || "").trim();
@@ -540,6 +546,11 @@ function PhotoGallery({ images, title, priority = false }) {
           fetchPriority={priority ? "high" : "auto"} 
           decoding={priority ? "sync" : "async"} 
           className="h-full w-full object-cover" 
+          onError={(event) => {
+            if (event.currentTarget.getAttribute("src") !== FALLBACK_IMAGE) {
+              event.currentTarget.setAttribute("src", FALLBACK_IMAGE);
+            }
+          }}
         />
       </picture>
       
@@ -571,6 +582,7 @@ export default function RealEstateApp() {
   const [onlyEOselya, setOnlyEOselya] = useState(
     () => getStored("re.onlyEOselya", "false") === "true"
   );
+  const [activePanel, setActivePanel] = useState("search");
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(
     () => getStored("re.showFavoritesOnly", "false") === "true"
   );
@@ -605,6 +617,8 @@ export default function RealEstateApp() {
   const [accountTypeSwitching, setAccountTypeSwitching] = useState(false);
   const [planLimitPrompt, setPlanLimitPrompt] = useState(null);
   const [showCreateListingModal, setShowCreateListingModal] = useState(false);
+  const [showEOselyaCalculator, setShowEOselyaCalculator] = useState(false);
+  const [eOselyaCalcPrice, setEOselyaCalcPrice] = useState("");
   const [editingListingId, setEditingListingId] = useState(null);
   const [listingForm, setListingForm] = useState(() => createInitialListingForm());
   const [listingSubmitting, setListingSubmitting] = useState(false);
@@ -917,6 +931,34 @@ export default function RealEstateApp() {
   );
   const smartSearchMode =
     typeof window !== "undefined" && window.location.pathname.endsWith(SMART_SEARCH_PATH);
+  const eOselyaCalcValue = useMemo(() => {
+    const price = Number(String(eOselyaCalcPrice).replace(/[^\d.]/g, ""));
+    if (!Number.isFinite(price) || price <= 0) return null;
+    return {
+      threePercent: price * 0.03,
+      sevenPercent: price * 0.07,
+    };
+  }, [eOselyaCalcPrice]);
+  const quickActions = [
+    { label: "Пошук", icon: "🔎", href: "#search", panel: "search", hint: "Фільтри, місто, бюджет, сценарії" },
+    { label: "Обране", icon: "♡", href: "#favorites", panel: "favorites", hint: "Порівняння та збережені варіанти" },
+    { label: "Профіль", icon: "👤", href: "#auth", panel: "profile", hint: "Вхід, тариф, мої оголошення" },
+    { label: "Публікація", icon: "➕", href: "#publish", panel: "publish", hint: "Опублікувати новий об'єкт" },
+  ];
+  const sectionTabs = [
+    { id: "search", label: "Пошук", icon: "🔎", badge: "Фільтри" },
+    { id: "profile", label: "Профіль", icon: "👤", badge: "Кабінет" },
+    { id: "publish", label: "Публікація", icon: "➕", badge: "Оголошення" },
+  ];
+  const activatePanel = (panelId) => {
+    setActivePanel(panelId);
+    if (typeof document === "undefined") return;
+    const targetId = panelId === "publish" ? "publish" : panelId;
+    const target = document.getElementById(targetId);
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
   const activeFilters = useMemo(() => {
     const items = [];
     if (cityFilter !== "Всі") items.push({ key: "cityFilter", label: `Місто: ${cityFilter}` });
@@ -1512,14 +1554,27 @@ export default function RealEstateApp() {
           </div>
 
           <nav className="hidden items-center gap-2 lg:flex">
-            {["Купити", "Орендувати", "Новобудови", "єОселя"].map((item) => (
-              <span
-                key={item}
-                className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm font-semibold text-slate-700"
-              >
-                {item}
-              </span>
-            ))}
+            {quickActions.map((item) => {
+              const isActive = activePanel === item.panel;
+              return (
+                <a
+                  key={item.label}
+                  href={item.href}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    activatePanel(item.panel);
+                  }}
+                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-semibold transition ${
+                    isActive
+                      ? "border-blue-600 bg-blue-600 text-white shadow-sm"
+                      : "border-slate-200 bg-slate-50 text-slate-700 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                  }`}
+                >
+                  <span className="text-base">{item.icon}</span>
+                  <span>{item.label}</span>
+                </a>
+              );
+            })}
           </nav>
 
           <div className="flex items-center gap-2">
@@ -1534,13 +1589,13 @@ export default function RealEstateApp() {
               onClick={() => setShowFavoritesOnly((current) => !current)}
               className="hidden rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-bold text-rose-700 transition hover:bg-rose-100 sm:inline-flex"
             >
-              Обрані {favoriteIds.length}
+              Тільки обрані ({favoriteIds.length})
             </button>
             <a
               href="#auth"
               className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
             >
-              Увійти / Зареєструватися
+              Вхід / реєстрація
             </a>
           </div>
         </div>
@@ -1623,9 +1678,13 @@ export default function RealEstateApp() {
                 <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white">
                   Пошук відразу по всій Україні
                 </span>
-                <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white">
+                <button
+                  type="button"
+                  onClick={() => setShowEOselyaCalculator(true)}
+                  className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20"
+                >
                   єОселя 3% / 7%
-                </span>
+                </button>
                 <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white">
                   Порівняння обраних
                 </span>
@@ -1648,6 +1707,36 @@ export default function RealEstateApp() {
                   </div>
                 ))}
               </div>
+
+              <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {quickActions.map((item) => {
+                  const isActive = activePanel === item.panel;
+                  return (
+                    <a
+                      key={item.label}
+                      href={item.href}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        activatePanel(item.panel);
+                      }}
+                     className={`rounded-[24px] border px-4 py-3 text-left backdrop-blur-sm transition ${
+                        isActive
+                          ? "border-white/40 bg-white/25 shadow-lg shadow-slate-950/20"
+                          : "border-white/15 bg-white/10 hover:bg-white/20"
+                      }`}
+                    >
+                     <div className="flex items-center justify-between gap-2">
+                       <div className="flex items-center gap-2 text-sm font-black text-white">
+                         <span className="text-base">{item.icon}</span>
+                         <span>{item.label}</span>
+                       </div>
+                       {isActive ? <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-white">Активно</span> : null}
+                     </div>
+                     <div className="mt-2 text-[11px] font-semibold leading-relaxed text-slate-300">{item.hint}</div>
+                   </a>
+                 );
+               })}
+              </div>
             </div>
 
             <div className="rounded-[32px] border border-slate-200 bg-white p-5 shadow-xl shadow-slate-200/70 lg:col-span-5">
@@ -1661,7 +1750,7 @@ export default function RealEstateApp() {
                   onClick={clearKeywordSearch}
                   className="rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 transition hover:bg-blue-100"
                 >
-                  Очистити слово
+                  ✕ Очистити слово
                 </button>
               </div>
 
@@ -1717,14 +1806,14 @@ export default function RealEstateApp() {
                   onClick={saveCurrentSearch}
                   className="min-h-[44px] rounded-2xl bg-slate-900 px-4 text-sm font-bold text-white transition hover:bg-blue-700"
                 >
-                  Зберегти поточний пошук
+                  💾 Зберегти запит
                 </button>
                 <button
                   type="button"
                   onClick={resetFilters}
                   className="min-h-[44px] rounded-2xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition hover:bg-slate-50"
                 >
-                  Скинути фільтри
+                  ↺ Скинути фільтри
                 </button>
               </div>
             </div>
@@ -1732,10 +1821,129 @@ export default function RealEstateApp() {
         </div>
       </section>
 
+      <section className="mx-auto max-w-7xl px-4 pb-6">
+        <div className="rounded-[32px] border border-slate-200 bg-white p-3 shadow-sm">
+          <div className="flex flex-wrap gap-2">
+            {sectionTabs.map((tab) => {
+              const isActive = activePanel === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => activatePanel(tab.id)}
+                  className={`flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-bold transition ${
+                    isActive
+                      ? "border-blue-600 bg-blue-600 text-white shadow-lg shadow-blue-200"
+                      : "border-slate-200 bg-slate-50 text-slate-700 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                  }`}
+                >
+                  <span className="text-base">{tab.icon}</span>
+                  <span>{tab.label}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide ${
+                    isActive ? "bg-white/20 text-white" : "bg-white text-slate-500"
+                  }`}>{tab.badge}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {showEOselyaCalculator ? (
+       <div
+         className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/70 px-4 py-6 backdrop-blur-sm"
+         onClick={() => setShowEOselyaCalculator(false)}
+       >
+         <div
+           className="w-full max-w-lg rounded-[28px] border border-slate-200 bg-white p-5 shadow-2xl shadow-slate-950/20"
+           onClick={(event) => event.stopPropagation()}
+         >
+           <div className="flex items-start justify-between gap-3">
+             <div>
+               <p className="text-[11px] font-black uppercase tracking-[0.28em] text-blue-700">Калькулятор єОселя</p>
+               <h3 className="mt-1 text-2xl font-black text-slate-900">Розрахунок комісії</h3>
+             </div>
+             <button
+               type="button"
+               onClick={() => setShowEOselyaCalculator(false)}
+               className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100"
+             >
+               ✕ Закрити
+             </button>
+           </div>
+
+           <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 p-4">
+             <label className="block text-xs font-black uppercase tracking-wide text-blue-700">Вартість об’єкта, ₴</label>
+             <input
+               type="number"
+               min="0"
+               inputMode="numeric"
+               value={eOselyaCalcPrice}
+               onChange={(event) => setEOselyaCalcPrice(event.target.value)}
+               placeholder="Наприклад, 1250000"
+               className="mt-2 w-full rounded-2xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+             />
+           </div>
+
+           <div className="mt-4 grid gap-3 sm:grid-cols-2">
+             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+               <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">3%</p>
+               <p className="mt-2 text-2xl font-black text-slate-900">
+                 {eOselyaCalcValue ? formatCurrency(eOselyaCalcValue.threePercent) : "—"}
+               </p>
+               <p className="mt-1 text-sm text-slate-600">Комісія за ставкою 3%</p>
+             </div>
+             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+               <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">7%</p>
+               <p className="mt-2 text-2xl font-black text-slate-900">
+                 {eOselyaCalcValue ? formatCurrency(eOselyaCalcValue.sevenPercent) : "—"}
+               </p>
+               <p className="mt-1 text-sm text-slate-600">Комісія за ставкою 7%</p>
+             </div>
+           </div>
+
+           <p className="mt-4 text-sm text-slate-600">
+             Введіть вартість об’єкта, щоб миттєво побачити розмір комісії для єОселя за тарифами 3% або 7%.
+           </p>
+         </div>
+       </div>
+      ) : null}
+
       <section className="mx-auto max-w-7xl px-4 pb-12">
-        <div className="grid gap-6 lg:grid-cols-12">
+       <div className="grid gap-6 lg:grid-cols-12">
           <aside id="add" className="space-y-6 lg:col-span-4 lg:sticky lg:top-24 self-start">
-            <div id="auth" className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div id="publish" className="scroll-mt-28 rounded-[28px] border border-amber-200 bg-gradient-to-br from-amber-50 via-white to-orange-50 p-5 shadow-sm">
+              <div className="mb-4 h-1.5 rounded-full bg-gradient-to-r from-amber-500 to-orange-500" />
+              <div className="flex items-center gap-3">
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-amber-600 text-lg text-white shadow-lg shadow-amber-200">
+                  ➕
+                </div>
+                <div>
+                  <p className="text-[11px] font-black uppercase tracking-wide text-amber-700">Публікація</p>
+                  <h3 className="text-lg font-black text-slate-900">Створіть оголошення за 2 хвилини</h3>
+                </div>
+              </div>
+              <p className="mt-3 text-sm text-slate-600">Публікуйте новий об'єкт, додавайте фото і одразу розміщуйте його в каталозі.</p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={openCreateListingModal}
+                  className="rounded-2xl bg-amber-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-amber-700"
+                >
+                  ➕ Створити оголошення
+                </button>
+              </div>
+            </div>
+
+            <div id="auth" className="scroll-mt-28 rounded-[28px] border border-violet-200 bg-gradient-to-br from-violet-50 via-white to-fuchsia-50 p-5 shadow-sm">
+              <div className="mb-4 h-1.5 rounded-full bg-gradient-to-r from-violet-600 to-fuchsia-500" />
+              <div className="mb-3 flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+                <span className="text-base">👤</span>
+                <div>
+                  <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">Профіль</p>
+                  <p className="text-sm font-semibold text-slate-700">Керуйте входом, тарифом і оголошеннями</p>
+                </div>
+              </div>
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-xs font-black uppercase tracking-wide text-slate-500">
@@ -1895,7 +2103,7 @@ export default function RealEstateApp() {
                       onClick={openCreateListingModal}
                       className="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
                     >
-                      {isDeveloperCabinet ? "+ Додати новобудову" : "+ Створити оголошення"}
+                      {isDeveloperCabinet ? "➕ Додати новобудову" : "➕ Створити оголошення"}
                     </button>
                     <button
                       type="button"
@@ -1906,17 +2114,17 @@ export default function RealEstateApp() {
                       {accountTypeSwitching
                         ? "Перемикаємо…"
                         : isDeveloperCabinet
-                          ? "Кабінет власника"
+                          ? "🔁 Кабінет власника"
                           : isRealtorCabinet
-                            ? "Кабінет забудовника"
-                            : "Кабінет ріелтора"}
+                            ? "🔁 Кабінет забудовника"
+                            : "🔁 Кабінет ріелтора"}
                     </button>
                     <button
                       type="button"
                       onClick={logoutProfile}
                       className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
                     >
-                      Вийти
+                      🚪 Вийти
                     </button>
                   </div>
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
@@ -1966,18 +2174,25 @@ export default function RealEstateApp() {
               )}
             </div>
 
-            <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div id="search" className="scroll-mt-28 rounded-[28px] border border-blue-200 bg-gradient-to-br from-blue-50 via-white to-cyan-50 p-5 shadow-sm">
+              <div className="mb-4 h-1.5 rounded-full bg-gradient-to-r from-blue-600 to-cyan-500" />
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Фільтри</p>
-                  <h2 className="mt-1 text-xl font-black text-slate-900">Пошук</h2>
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">🔎</span>
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-wide text-slate-500">Фільтри</p>
+                      <h2 className="mt-0.5 text-xl font-black text-slate-900">Пошук</h2>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-sm text-slate-500">Оберіть місто, бюджет, кімнати та збережіть запит для наступного разу.</p>
                 </div>
                 <button
                   type="button"
                   onClick={resetFilters}
                   className="rounded-2xl bg-slate-900 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700"
                 >
-                  Скинути
+                  Скинути фільтри
                 </button>
               </div>
 
@@ -2036,7 +2251,7 @@ export default function RealEstateApp() {
                     onClick={applyKeywordSearch}
                     className="rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700"
                   >
-                    Застосувати
+                    🔎 Застосувати
                   </button>
                 </div>
               </div>
@@ -2049,7 +2264,7 @@ export default function RealEstateApp() {
                     onClick={saveCurrentSearch}
                     className="text-sm font-semibold text-blue-600 underline transition hover:text-blue-700"
                   >
-                    Зберегти пошук
+                    Зберегти запит
                   </button>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -2189,18 +2404,28 @@ export default function RealEstateApp() {
                 </div>
               </div>
 
-              <div className="mt-5 flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                <label className="flex items-center gap-3">
-                  <input
-                    type="checkbox"
-                    checked={onlyEOselya}
-                    onChange={(e) => setOnlyEOselya(e.target.checked)}
-                    className="h-5 w-5"
-                  />
-                  <span className="font-medium text-slate-700">
-                    Тільки об&apos;єкти під <span className="font-bold text-blue-600">єОселя</span>
-                  </span>
-                </label>
+              <div className="mt-5 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <label className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={onlyEOselya}
+                      onChange={(e) => setOnlyEOselya(e.target.checked)}
+                      className="h-5 w-5"
+                    />
+                    <span className="font-medium text-slate-700">
+                      Тільки об&apos;єкти під <span className="font-bold text-blue-600">єОселя</span>
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowEOselyaCalculator(true)}
+                    className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700 transition hover:bg-blue-100"
+                  >
+                    Калькулятор 3% / 7%
+                  </button>
+                </div>
+                <p className="mt-2 text-xs text-slate-500">Розрахуйте комісію для об’єкта за ставками 3% або 7%.</p>
               </div>
 
               <div className="mt-4 flex flex-wrap gap-3">
@@ -2372,7 +2597,7 @@ export default function RealEstateApp() {
                     onClick={resetFilters}
                     className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-100"
                   >
-                    Скинути
+                    Скинути фільтри
                   </button>
                   <select
                     value={sortBy}
@@ -2407,7 +2632,7 @@ export default function RealEstateApp() {
              </div>
             ) : null}
 
-            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-2">
+            <div id="favorites" className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-2">
               {visibleProperties.map((property, cardIndex) => (
                 <div
                   key={property.id}

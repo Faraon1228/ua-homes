@@ -1177,11 +1177,43 @@ PLACEHOLDER_LISTING_IMAGE = (
 IMG = PLACEHOLDER_LISTING_IMAGE
 
 
+def _cloudinary_fallback_image_url() -> str | None:
+    cloud_name = os.environ.get("CLOUDINARY_CLOUD_NAME", "").strip()
+    if not cloud_name:
+        match = re.search(r"cloudinary://[^@]+@([A-Za-z0-9_-]+)", CLOUDINARY_URL or "", re.IGNORECASE)
+        if match:
+            cloud_name = match.group(1)
+    if not cloud_name:
+        return None
+    return f"https://res.cloudinary.com/{cloud_name}/image/upload/v1786173903/listings/6/62114b6a0810/real-photo-test.jpg"
+
+
+def _svg_data_uri_for_seed(seed: str) -> str:
+    seed_label = escape(seed or "listing", quote=True)
+    svg = (
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 800'>"
+        "<rect width='1200' height='800' fill='#0f172a'/>"
+        "<rect width='1200' height='140' fill='#2563eb'/>"
+        f"<text x='60' y='88' fill='white' font-family='Arial,sans-serif' font-size='54' font-weight='700'>UA-Dim</text>"
+        f"<text x='60' y='230' fill='#f8fafc' font-family='Arial,sans-serif' font-size='42' font-weight='700'>Оголошення</text>"
+        f"<text x='60' y='300' fill='#cbd5e1' font-family='Arial,sans-serif' font-size='26'>{seed_label}</text>"
+        "<rect x='60' y='360' width='320' height='18' rx='9' fill='#334155'/>"
+        "<rect x='60' y='395' width='240' height='18' rx='9' fill='#475569'/>"
+        "</svg>"
+    )
+    return f"data:image/svg+xml;charset=utf-8,{quote(svg, safe='')}"
+
+
 def demo_image_url(seed: str) -> str:
+    cloudinary_url = _cloudinary_fallback_image_url()
+    if cloudinary_url:
+        return cloudinary_url
+
     if isinstance(seed, str) and seed.strip():
         seed_key = seed.strip()
         if re.fullmatch(r"[a-z0-9-]+", seed_key):
-            return f"https://images.unsplash.com/photo-{seed_key}?auto=format&fit=crop&w=900&q=80"
+            return _svg_data_uri_for_seed(seed_key)
+
     base = (PUBLIC_SITE_URL or "").rstrip("/")
     try:
         host = (urlsplit(base).hostname or "").lower()
@@ -1221,8 +1253,12 @@ def normalize_listing_images(raw_images) -> list[str]:
         if url.startswith("data:image/"):
             normalized.append(url)
             continue
+        lowered_url = url.lower()
         if legacy_demo_image_seed(url):
             normalized.append(demo_image_url(legacy_demo_image_seed(url)))
+            continue
+        if any(domain in lowered_url for domain in ("images.unsplash.com", "source.unsplash.com", "picsum.photos", "fastly.picsum.photos")):
+            normalized.append(demo_image_url("listing"))
             continue
         try:
             parsed = urlsplit(url)
