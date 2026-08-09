@@ -1194,6 +1194,17 @@ def demo_image_url(seed: str) -> str:
     return f"{base}/demo-images/{quote(seed, safe='')}.svg"
 
 
+def legacy_demo_image_seed(url: str) -> str | None:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    if parsed.scheme in {"http", "https"} and parsed.hostname:
+        return None
+    match = re.search(r"/(?:api/)?demo-images/([^/]+)\.svg$", parsed.path or "")
+    return match.group(1) if match else None
+
+
 def imgs(*ids):
     """Return a JSON array of first-party demo image URLs for deterministic seed media."""
     return json.dumps([demo_image_url(uid) for uid in ids])
@@ -1209,6 +1220,9 @@ def normalize_listing_images(raw_images) -> list[str]:
         # Keep data URIs (base64 uploads) and valid http(s) URLs as-is
         if url.startswith("data:image/"):
             normalized.append(url)
+            continue
+        if legacy_demo_image_seed(url):
+            normalized.append(demo_image_url(legacy_demo_image_seed(url)))
             continue
         try:
             parsed = urlsplit(url)
