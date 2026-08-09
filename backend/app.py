@@ -22,6 +22,7 @@ import sqlite3
 import secrets
 import datetime
 import time
+import sys
 from html import escape
 from functools import wraps
 from urllib.parse import quote, urlencode, urlsplit
@@ -1177,6 +1178,10 @@ IMG = PLACEHOLDER_LISTING_IMAGE
 
 
 def demo_image_url(seed: str) -> str:
+    if isinstance(seed, str) and seed.strip():
+        seed_key = seed.strip()
+        if re.fullmatch(r"[a-z0-9-]+", seed_key):
+            return f"https://images.unsplash.com/photo-{seed_key}?auto=format&fit=crop&w=900&q=80"
     base = (PUBLIC_SITE_URL or "").rstrip("/")
     try:
         host = (urlsplit(base).hostname or "").lower()
@@ -1783,7 +1788,11 @@ def init_db():
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA foreign_keys=ON")
     db.execute("PRAGMA busy_timeout=30000")
-    db.executescript(f"""
+    now_expr = db_now_expr()
+    
+    # print("[init_db] Creating tables...", file=sys.stderr)
+    try:
+        schema_sql = """
         CREATE TABLE IF NOT EXISTS users (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             name            TEXT    NOT NULL,
@@ -2060,7 +2069,14 @@ def init_db():
             created_at TEXT    NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_premium_orders_status ON premium_orders(status);
-    """)
+    """
+        schema_sql = schema_sql.replace("db_now_expr()", now_expr)
+        db.executescript(schema_sql)
+    except Exception as e:
+        print(f"[init_db] CREATE TABLE error: {e}")
+        raise
+    
+    # print("[init_db] Tables created OK")
 
     # Backward-compatible migration for existing databases.
     listing_columns = {
@@ -2201,7 +2217,7 @@ def init_db():
                (user_id,title,city,district,property_type,condition_type,price,rooms,area,
                 floor,total_floors,year_built,e_oselya,images,description,latitude,longitude,
                 status,published_at,verified_owner,verified_phone,verified_docs,source,listing_type)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',{db_now_expr()},1,1,1,'seed','sale')""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',{now_expr},1,1,1,'seed','sale')""",
             [(demo_id, *row) for row in SEED_LISTINGS],
         )
         db.executemany(
@@ -2209,7 +2225,7 @@ def init_db():
                (user_id,title,city,district,property_type,condition_type,price,rooms,area,
                 floor,total_floors,year_built,e_oselya,images,description,latitude,longitude,
                 status,published_at,verified_owner,verified_phone,verified_docs,source,listing_type)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',{db_now_expr()},1,1,1,'seed','rent')""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',{now_expr},1,1,1,'seed','rent')""",
             [(demo_id, *row) for row in SEED_RENT_LISTINGS],
         )
         db.commit()
@@ -2219,7 +2235,7 @@ def init_db():
             f"""
             INSERT INTO agency_profiles
             (slug, name, kind, city, specialization, is_verified, avg_response_minutes, team_size, completed_deals, last_verified_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, {db_now_expr()})
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, {now_expr})
             """,
             [
                 ("capital-alliance", "Capital Alliance", "agency", "Київ", "Преміум квартири та будинки", 1, 32, 24, 460),
