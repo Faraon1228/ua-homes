@@ -16,6 +16,7 @@ Environment variables:
 import base64
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import sqlite3
@@ -121,7 +122,53 @@ def _cloudinary_upload_preset() -> str | None:
 # Image upload limits
 MAX_UPLOAD_SIZE = 10_485_760  # 10 MB per image
 MAX_IMAGES_PER_LISTING = 8
-ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/webp",
+    "image/avif",
+    "image/heic",
+    "image/heif",
+    "image/gif",
+    "image/bmp",
+    "image/tiff",
+    "image/svg+xml",
+}
+
+
+def normalize_image_content_type(filename: str, content_type: str | None) -> str:
+    normalized = (content_type or "").strip().lower()
+    if normalized in {"image/jpg", "image/jpe"}:
+        return "image/jpeg"
+    if normalized in ALLOWED_IMAGE_TYPES:
+        return normalized
+    if normalized.startswith("image/"):
+        return normalized
+
+    guessed = (mimetypes.guess_type(filename or "")[0] or "").strip().lower()
+    if guessed in {"image/jpg", "image/jpe"}:
+        return "image/jpeg"
+    if guessed in ALLOWED_IMAGE_TYPES:
+        return guessed
+
+    extension = (os.path.splitext(filename or "")[1] or "").lower()
+    extension_map = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".avif": "image/avif",
+        ".heic": "image/heic",
+        ".heif": "image/heif",
+        ".gif": "image/gif",
+        ".bmp": "image/bmp",
+        ".tif": "image/tiff",
+        ".tiff": "image/tiff",
+        ".svg": "image/svg+xml",
+    }
+    return extension_map.get(extension, "image/jpeg")
+
 
 _DEFAULT_CORS_ORIGINS: list[str | re.Pattern[str]] = [
     re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"),
@@ -1314,7 +1361,9 @@ def parse_listing_request_payload() -> tuple[dict, list[str]]:
         for upload in request.files.getlist("images"):
             if not getattr(upload, "filename", None):
                 continue
-            if not (upload.mimetype or "").startswith("image/"):
+
+            detected_mimetype = normalize_image_content_type(getattr(upload, "filename", ""), upload.mimetype or "")
+            if not detected_mimetype.startswith("image/"):
                 continue
             
             # Size check
@@ -1328,7 +1377,7 @@ def parse_listing_request_payload() -> tuple[dict, list[str]]:
             # Only base64 encode if S3 is NOT available (fallback mode)
             try:
                 encoded = base64.b64encode(image_bytes).decode("ascii")
-                uploaded_images.append(f"data:{upload.mimetype};base64,{encoded}")
+                uploaded_images.append(f"data:{detected_mimetype};base64,{encoded}")
             except Exception as e:
                 print(f"Error encoding image: {e}")
                 continue
@@ -3217,11 +3266,12 @@ def get_presigned_upload_url():
     
     if not filename:
         return jsonify(error="Missing filename"), 400
-    
-    if content_type not in ALLOWED_IMAGE_TYPES:
+
+    normalized_content_type = normalize_image_content_type(filename, content_type)
+    if normalized_content_type not in ALLOWED_IMAGE_TYPES:
         return jsonify(error=f"Unsupported image type. Allowed: {', '.join(ALLOWED_IMAGE_TYPES)}"), 400
     
-    presigned = generate_presigned_upload_url(filename, content_type)
+    presigned = generate_presigned_upload_url(filename, normalized_content_type)
     if not presigned:
         return jsonify(error="S3 not configured. Upload backend not available.", fallback="base64"), 503
     

@@ -142,6 +142,30 @@ function normalizeImageSrc(src) {
   return src;
 }
 
+function getFileContentType(file) {
+  if (!file) return "image/jpeg";
+  if (file.type && file.type.startsWith("image/")) return file.type;
+
+  const fileName = (file.name || "").toLowerCase();
+  const extension = fileName.match(/\.([a-z0-9]+)$/)?.[1] || "";
+  const extensionMap = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    webp: "image/webp",
+    avif: "image/avif",
+    heic: "image/heic",
+    heif: "image/heif",
+    gif: "image/gif",
+    bmp: "image/bmp",
+    tif: "image/tiff",
+    tiff: "image/tiff",
+    svg: "image/svg+xml",
+  };
+
+  return extensionMap[extension] || "image/jpeg";
+}
+
 function mapListingToProperty(listing) {
   const images = Array.isArray(listing?.images)
     ? listing.images.filter(Boolean)
@@ -641,6 +665,11 @@ export default function RealEstateApp() {
     const isSafari = /safari/i.test(ua) && !/chrome|crios|fxios/i.test(ua);
     const isStandalone = window.navigator.standalone === true;
     return isIos && isSafari && !isStandalone;
+  }, []);
+  const isMobileDevice = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    const ua = window.navigator.userAgent || "";
+    return /android|iphone|ipad|ipod|mobile/i.test(ua);
   }, []);
 
   const catalogProperties = useMemo(() => {
@@ -1215,7 +1244,10 @@ export default function RealEstateApp() {
   };
 
   const handleListingFileSelection = (event) => {
-    const files = Array.from(event.target.files || []).filter((file) => file.type.startsWith("image/"));
+    const files = Array.from(event.target.files || []).filter((file) => {
+      const contentType = getFileContentType(file);
+      return contentType.startsWith("image/");
+    });
     setSelectedListingFiles((prev) => [...prev, ...files]);
     // Reset input so selecting the same file again still triggers onChange
     event.target.value = "";
@@ -1259,13 +1291,14 @@ export default function RealEstateApp() {
     const uploadedImageUrls = [];
     for (const file of files) {
       try {
+        const contentType = getFileContentType(file);
         const presignResponse = await fetch(getApiUrl("/images/presigned-url"), {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${authToken}`,
           },
-          body: JSON.stringify({ filename: file.name, contentType: file.type }),
+          body: JSON.stringify({ filename: file.name, contentType }),
         });
 
         if (!presignResponse.ok) {
@@ -1323,7 +1356,7 @@ export default function RealEstateApp() {
         } else if (presigned?.method === "PUT") {
           const uploadResponse = await fetch(presigned.uploadUrl, {
             method: "PUT",
-            headers: { "Content-Type": file.type },
+            headers: { "Content-Type": contentType },
             body: file,
           });
 
@@ -2977,8 +3010,15 @@ export default function RealEstateApp() {
                   <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-6 text-center text-sm font-semibold text-slate-700 transition hover:border-blue-300 hover:bg-blue-50">
                     <span className="text-lg font-black text-blue-600">⬆</span>
                     <span>Виберіть фото з комп'ютера</span>
-                    <span className="text-xs font-medium text-slate-500">PNG, JPG, WEBP. Декілька файлів за раз. Можна додавати по черзі.</span>
-                    <input type="file" multiple accept="image/*" onChange={handleListingFileSelection} className="hidden" />
+                    <span className="text-xs font-medium text-slate-500">PNG, JPG, WEBP, AVIF, HEIC/HEIF. Підтримка камери/галереї на телефоні й кілька файлів за раз.</span>
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*,.heic,.heif,.avif,.webp,.jpeg,.jpg,.png,.gif,.bmp,.tiff"
+                      capture={isMobileDevice ? "environment" : undefined}
+                      onChange={handleListingFileSelection}
+                      className="hidden"
+                    />
                   </label>
                   {selectedListingFiles.length ? (
                     <div className="mt-3 space-y-3">
