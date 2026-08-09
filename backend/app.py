@@ -1199,10 +1199,10 @@ def legacy_demo_image_seed(url: str) -> str | None:
         parsed = urlsplit(url)
     except ValueError:
         return None
-    if parsed.scheme in {"http", "https"} and parsed.hostname:
-        return None
     match = re.search(r"/(?:api/)?demo-images/([^/]+)\.svg$", parsed.path or "")
-    return match.group(1) if match else None
+    if match:
+        return match.group(1)
+    return None
 
 
 def imgs(*ids):
