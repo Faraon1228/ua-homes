@@ -153,7 +153,9 @@
   }
 
   function decorateListingCardsWithEffects() {
-    const cards = document.querySelectorAll("article.group, .listing-card, article[data-listing-id]");
+    const cards = [...document.querySelectorAll("article.group, .listing-card, article[data-listing-id]")].filter(
+      (card) => !card.matches('[data-role="listing-card"]')
+    );
     cards.forEach((card) => {
       card.classList.add("market-card");
       card.querySelectorAll("img.gallery-img").forEach((img) => {
@@ -1433,7 +1435,11 @@
   }
 
   function installMapFirstMode(filters, panel) {
-    if (!panel || document.querySelector('[data-role="map-first-mode"]')) return;
+    if (
+      !panel ||
+      document.querySelector('[data-role="map-first-mode"]') ||
+      document.querySelector('[data-role="results-view-toggle"]')
+    ) return;
     const section = document.createElement("section");
     section.setAttribute("data-role", "map-first-mode");
     section.className = "max-w-7xl mx-auto px-4 mb-4";
@@ -1650,7 +1656,9 @@
   }
 
   function attachTrustBadgesToCards() {
-    const listingLinks = [...document.querySelectorAll('a[href*="/listing/"]')];
+    const listingLinks = [...document.querySelectorAll('a[href*="/listing/"]')].filter(
+      (link) => !link.closest('[data-role="listing-card"]')
+    );
     if (!listingLinks.length) return;
     const listingIds = [...new Set(listingLinks
       .map((link) => {

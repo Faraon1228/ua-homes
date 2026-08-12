@@ -39,7 +39,7 @@ fi
 echo "🔨 Compiling JSX → real-estate-app.js ..."
 "$ESBUILD" "$WEB_DIR/RealEstateApp.jsx" 2>/dev/null \
   --bundle --format=iife --jsx=transform --jsx-factory=React.createElement \
-  --jsx-fragment=React.Fragment --target=es2020 --minify-whitespace \
+  --jsx-fragment=React.Fragment --target=es2020 --minify \
   --charset=utf8 --outfile="$WEB_DIR/real-estate-app.js" && echo "   ✅ real-estate-app.js compiled ($(wc -c < "$WEB_DIR/real-estate-app.js" | tr -d ' ') bytes)"
 
 # ── generate purged Tailwind CSS ──
@@ -49,6 +49,7 @@ cat > /tmp/tw-input.css <<'CSS'
 @tailwind components;
 @tailwind utilities;
 CSS
+cat "$WEB_DIR/ua-dim-modern.css" >> /tmp/tw-input.css
 
 cat > /tmp/tw-config.js <<JS
 module.exports = {

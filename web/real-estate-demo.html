@@ -31,16 +31,6 @@
   <link rel="manifest" href="ua-homes-manifest.json"/>
   <link rel="apple-touch-icon" href="icons/Icon-192.png"/>
   <title>UA-Dim.com — нерухомість в Україні</title>
-  <link rel="preconnect" href="https://unpkg.com" crossorigin/>
-  <link rel="preconnect" href="https://images.unsplash.com" crossorigin/>
-  <link rel="preconnect" href="https://picsum.photos"/>
-  <link rel="preconnect" href="https://fastly.picsum.photos"/>
-  <link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin/>
-  <link rel="dns-prefetch" href="https://unpkg.com"/>
-  <link rel="dns-prefetch" href="https://images.unsplash.com"/>
-  <link rel="dns-prefetch" href="https://picsum.photos"/>
-  <link rel="dns-prefetch" href="https://fastly.picsum.photos"/>
-  <link rel="dns-prefetch" href="https://tile.openstreetmap.org"/>
   <script>
     (function () {
       const configured = window.UA_HOMES_API || "__UA_HOMES_API__";
@@ -58,21 +48,21 @@
       } catch (_err) {}
     })();
   </script>
-  <link rel="preload" as="style" href="ua-homes.css?v=ua25-20260809"/>
-  <link rel="preload" as="script" href="real-estate-app.js?v=ua25-20260809"/>
+  <link rel="preload" as="style" href="ua-homes.css?v=ua35-20260812"/>
+  <link rel="preload" as="script" href="real-estate-app.js?v=ua35-20260812"/>
   <link rel="preload" as="script" href="vendor/react.production.min.js?v=e7ca5f4"/>
   <link rel="preload" as="script" href="vendor/react-dom.production.min.js?v=e7ca5f4"/>
-  <link rel="preload" as="script" href="react-fallback.js?v=1"/>
-  <link rel="stylesheet" href="ua-homes.css?v=ua25-20260809"/>
-  <link rel="stylesheet" href="ua-dim-modern.css?v=ua-modern-02"/>
+  <link rel="stylesheet" href="ua-homes.css?v=ua35-20260812"/>
   <script defer src="vendor/react.production.min.js?v=e7ca5f4"></script>
   <script defer src="vendor/react-dom.production.min.js?v=e7ca5f4"></script>
-  <script defer src="react-fallback.js?v=1"></script>
   <style>
     :root{color-scheme:light}
     html{-webkit-text-size-adjust:100%}
     body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
-    button,input,select,textarea{min-height:44px;touch-action:manipulation;font:inherit}
+    h1,h2,h3,h4,h5,h6,button,[role="button"],a.font-bold,a.font-black,[class~="text-2xl"][class~="font-black"],[class~="text-3xl"][class~="font-black"],[class~="text-4xl"][class~="font-black"],[class~="text-5xl"][class~="font-black"]{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+    button,[role="button"]{font-weight:700}
+    button,input,select,textarea{min-height:44px;touch-action:manipulation}
+    input,select,textarea{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
     textarea{min-height:auto}
     @supports(padding:max(0px)){body{padding-bottom:max(1rem,env(safe-area-inset-bottom))}}
     .modal-backdrop{animation:fadeIn .15s ease}
@@ -103,23 +93,64 @@
     ::-webkit-scrollbar-track{background:#f1f5f9}
     ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:9999px}
   </style>
-  <!-- Google Tag Manager — замініть GTM-KVWMVQGM на ваш ID після реєстрації -->
-  <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','GTM-KVWMVQGM');</script>
 </head>
 <body class="min-h-screen bg-slate-100 text-slate-900">
 <!-- Google Tag Manager (noscript) -->
 <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-KVWMVQGM" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
-<div id="root">
-  <div class="app-shell-skeleton" aria-hidden="true">
-    <div class="app-shell-shimmer" style="height:72px;border-radius:28px"></div>
-    <div class="app-shell-shimmer" style="height:220px;border-radius:32px;margin-top:24px"></div>
-    <div style="display:grid;gap:24px;margin-top:24px">
-      <div class="app-shell-shimmer" style="height:320px;border-radius:28px"></div>
-      <div class="app-shell-shimmer" style="height:320px;border-radius:28px"></div>
-      <div class="app-shell-shimmer" style="height:320px;border-radius:28px"></div>
+<header class="sticky top-0 z-50 border-b border-slate-200 bg-white/95 backdrop-blur">
+  <div class="mx-auto flex max-w-7xl items-center px-4 py-3">
+    <div class="flex items-center gap-3">
+      <div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-blue-700 text-sm font-black text-white shadow-lg shadow-slate-900/20">UA</div>
+      <div>
+        <div class="bg-gradient-to-r from-slate-950 via-blue-700 to-cyan-500 bg-clip-text text-lg font-black tracking-tight text-transparent">UA-Dim</div>
+        <div class="text-xs font-semibold text-blue-700">Пошук нерухомості</div>
+      </div>
     </div>
   </div>
-</div>
+</header>
+<section data-role="homepage-hero" class="flex min-h-[calc(100svh-69px)] items-center overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(37,99,235,.28),transparent_42%),linear-gradient(145deg,#0f172a_0%,#1e3a8a_52%,#0f766e_100%)]">
+  <div class="mx-auto w-full max-w-5xl px-4 py-12 sm:py-16">
+    <div class="mx-auto max-w-3xl text-center">
+      <div class="mx-auto flex h-20 w-20 items-center justify-center rounded-[28px] border border-white/20 bg-white/10 text-2xl font-black text-white shadow-2xl shadow-slate-950/30 backdrop-blur sm:h-24 sm:w-24 sm:text-3xl">UA</div>
+      <p class="mt-5 text-sm font-black uppercase tracking-[0.3em] text-blue-200">UA-Dim</p>
+      <h1 class="mt-3 text-4xl font-black leading-tight text-white sm:text-5xl lg:text-6xl">Знайдіть житло в Україні</h1>
+      <p class="mx-auto mt-4 max-w-2xl text-base leading-relaxed text-slate-200 sm:text-lg">Введіть місто, район, житловий комплекс або важливу для вас характеристику.</p>
+      <form id="hero-property-form" role="search" aria-label="Пошук житла" class="mx-auto mt-8 flex max-w-3xl flex-col gap-3 rounded-[28px] border border-white/20 bg-white/95 p-3 text-left shadow-2xl shadow-slate-950/30 sm:flex-row sm:items-center sm:rounded-[32px]">
+        <label for="hero-property-search" class="sr-only">Пошук за містом, районом або ключовими словами</label>
+        <input id="hero-property-search" type="search" placeholder="Наприклад, Київ, Печерськ або єОселя" class="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-base text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-200"/>
+        <button type="submit" class="w-full shrink-0 rounded-2xl bg-blue-600 px-6 py-3.5 text-base font-black text-white shadow-lg shadow-blue-600/25 transition hover:bg-blue-700 sm:w-auto">Знайти житло</button>
+      </form>
+    </div>
+  </div>
+</section>
+<script>
+  (function () {
+    const form = document.getElementById('hero-property-form');
+    const input = document.getElementById('hero-property-search');
+    try {
+      input.value = localStorage.getItem('re.keywordSearch') || '';
+    } catch (_err) {}
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const detail = { query: input.value };
+      window.dataLayer = window.dataLayer || [];
+      window.dataLayer.push({
+        event: 'ua_search_performed',
+        event_source: 'hero',
+        search_query: detail.query,
+      });
+      window.__UA_ANALYTICS_PENDING_EVENTS__ = window.__UA_ANALYTICS_PENDING_EVENTS__ || [];
+      window.__UA_ANALYTICS_PENDING_EVENTS__.push({
+        name: 'search_performed',
+        params: { event_source: 'hero', search_query: detail.query },
+      });
+      window.__UA_PENDING_HERO_SEARCH__ = detail;
+      window.dispatchEvent(new CustomEvent('uah:hero-search', { detail }));
+      window.dispatchEvent(new CustomEvent('uah:meaningful-interaction', { detail: { source: 'hero-search' } }));
+    });
+  })();
+</script>
+<div id="root"></div>
 
 <script>
   try {
@@ -284,44 +315,111 @@
     window.addEventListener("beforeunload", flushFinalVitals);
   })();
 </script>
-<script defer src="analytics.js?v=ua-ga4-01"></script>
-<script defer src="real-estate-app.js?v=ua25-20260809"></script>
-<script defer src="premium.js?v=ua-premium-02"></script>
-<script defer src="marketplace-extensions.js?v=ua-marketplace-extensions-01"></script>
+<script defer src="real-estate-app.js?v=ua35-20260812"></script>
 <script>
   (function () {
+    window.dataLayer = window.dataLayer || [];
     let loaded = false;
-    const loadUpgrade = () => {
+    const loadAnalytics = () => {
       if (loaded) return;
       loaded = true;
       const script = document.createElement('script');
-      script.src = 'market-upgrade.js?v=ua09-20260802';
-      script.defer = true;
+      script.src = 'analytics.js?v=ua-ga4-02';
+      script.async = true;
+      document.body.appendChild(script);
+    };
+    const loadOnIntent = () => {
+      window.__UA_ANALYTICS_INTENT__ = true;
+      loadAnalytics();
+    };
+    window.addEventListener('uah:meaningful-interaction', loadOnIntent, { once: true });
+    ['pointerdown', 'keydown', 'touchstart'].forEach((name) => {
+      window.addEventListener(name, loadOnIntent, { once: true, capture: true, passive: true });
+    });
+    window.addEventListener('load', () => {
+      if ('requestIdleCallback' in window) {
+        requestIdleCallback(loadAnalytics, { timeout: 2000 });
+      } else {
+        setTimeout(loadAnalytics, 0);
+      }
+    }, { once: true });
+  })();
+</script>
+<script>
+  (function () {
+    let loadPromise = null;
+    const premiumStub = {
+      open: (...args) => loadPremium()
+        .then(() => window.uaPremium.open(...args))
+        .catch(() => {
+          window.location.href = 'premium.html';
+        }),
+    };
+    window.uaPremium = premiumStub;
+
+    function loadPremium() {
+      if (loadPromise) return loadPromise;
+      loadPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'premium.js?v=ua-premium-06';
+        script.async = true;
+        script.onload = resolve;
+        script.onerror = () => {
+          loadPromise = null;
+          reject(new Error('Не вдалося завантажити тарифи'));
+        };
+        document.body.appendChild(script);
+      });
+      return loadPromise;
+    }
+
+    window.addEventListener('uah:meaningful-interaction', (event) => {
+      const detail = event.detail;
+      loadPremium().then(() => {
+        window.dispatchEvent(new CustomEvent('uah:meaningful-interaction', { detail }));
+      }).catch(() => {});
+    }, { once: true });
+    const loadPremiumAfterScroll = () => {
+      if (window.scrollY < Math.max(320, window.innerHeight * 0.55)) return;
+      window.removeEventListener('scroll', loadPremiumAfterScroll);
+      loadPremium().catch(() => {});
+    };
+    window.addEventListener('scroll', loadPremiumAfterScroll, { passive: true });
+  })();
+</script>
+<div id="marketplace-extensions-root" aria-live="polite">
+  <div id="marketplace-extensions-sentinel" style="height:1px" aria-hidden="true"></div>
+</div>
+<script>
+  (function () {
+    let loaded = false;
+    const sentinel = document.getElementById('marketplace-extensions-sentinel');
+    const loadExtensions = () => {
+      if (loaded) return;
+      loaded = true;
+      sentinel?.remove();
+      const script = document.createElement('script');
+      script.src = 'marketplace-extensions.js?v=ua-marketplace-extensions-02';
+      script.async = true;
       script.crossOrigin = 'anonymous';
       document.body.appendChild(script);
     };
 
-    const scheduleIdleLoad = () => {
-      if ('requestIdleCallback' in window) {
-        requestIdleCallback(loadUpgrade, { timeout: 2500 });
+    const observeExtensions = () => {
+      if ('IntersectionObserver' in window) {
+        const observer = new IntersectionObserver((entries) => {
+          if (!entries.some((entry) => entry.isIntersecting)) return;
+          observer.disconnect();
+          loadExtensions();
+        }, { rootMargin: '800px 0px' });
+        observer.observe(sentinel);
       } else {
-        setTimeout(loadUpgrade, 1400);
+        window.addEventListener('scroll', loadExtensions, { once: true, passive: true });
       }
     };
-
-    const onFirstIntent = () => {
-      loadUpgrade();
-      window.removeEventListener('pointerdown', onFirstIntent, { capture: true });
-      window.removeEventListener('keydown', onFirstIntent, { capture: true });
-      window.removeEventListener('touchstart', onFirstIntent, { capture: true });
-      window.removeEventListener('scroll', onFirstIntent, { capture: true });
-    };
-
-    window.addEventListener('pointerdown', onFirstIntent, { capture: true, passive: true });
-    window.addEventListener('keydown', onFirstIntent, { capture: true, passive: true });
-    window.addEventListener('touchstart', onFirstIntent, { capture: true, passive: true });
-    window.addEventListener('scroll', onFirstIntent, { capture: true, passive: true });
-    window.addEventListener('load', scheduleIdleLoad, { once: true });
+    window.addEventListener('uah:catalog-settled', () => {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(observeExtensions));
+    }, { once: true });
   })();
 </script>
 <script>

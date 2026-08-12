@@ -3,6 +3,7 @@ export const EOSELYA_SORT = "price-asc";
 
 export const STORAGE_KEYS = [
   "re.cityFilter",
+  "re.propertyType",
   "re.onlyEOselya",
   "re.minPrice",
   "re.maxPrice",
@@ -16,6 +17,23 @@ export const STORAGE_KEYS = [
   "re.keywordSearch",
 ];
 
+export function normalizePropertyType(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["квартира", "квартири", "apartment", "apartments", "flat", "flats"].includes(normalized)) {
+    return "квартира";
+  }
+  if (["будинок", "будинки", "house", "houses", "villa"].includes(normalized)) {
+    return "будинок";
+  }
+  if (["земля", "земельна ділянка", "земельні ділянки", "land", "plot", "plots"].includes(normalized)) {
+    return "земля";
+  }
+  if (["комерція", "комерційне приміщення", "комерційні приміщення", "commercial", "commercial-space", "office", "retail"].includes(normalized)) {
+    return "комерція";
+  }
+  return "";
+}
+
 export function resolveSortByForEOselya(previousSort, onlyEOselya) {
   const isPriceSort = previousSort === "price-asc" || previousSort === "price-desc";
   if (!isPriceSort) {
@@ -27,6 +45,7 @@ export function resolveSortByForEOselya(previousSort, onlyEOselya) {
 export function filterAndSortProperties(properties, filters) {
   const {
     cityFilter = "Всі",
+    propertyType = "Всі",
     onlyEOselya = false,
     minPrice = "",
     maxPrice = "",
@@ -43,6 +62,8 @@ export function filterAndSortProperties(properties, filters) {
 
   const filtered = properties.filter((item) => {
     const matchCity = cityFilter === "Всі" || item.city === cityFilter;
+    const normalizedPropertyType = normalizePropertyType(item.propertyType);
+    const matchPropertyType = propertyType === "Всі" || normalizedPropertyType === propertyType;
     const matchEOselya = !onlyEOselya || item.eOselya;
 
     const matchMinPrice = minPrice === "" || item.price >= Number(minPrice);
@@ -59,6 +80,7 @@ export function filterAndSortProperties(properties, filters) {
 
     return (
       matchCity &&
+      matchPropertyType &&
       matchEOselya &&
       matchMinPrice &&
       matchMaxPrice &&

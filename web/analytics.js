@@ -1,17 +1,13 @@
 /**
- * UA-Dim Analytics — GTM + GA4 Integration
+ * UA-Dim Analytics — deferred GA4 integration
  *
  * ─────────────────────────────────────────────────────────────────
  * ⚙️  НАЛАШТУВАННЯ:
  *
- *  1. Зайдіть на https://tagmanager.google.com/ → "Створити акаунт"
- *     Платформа: Web | URL: ua-dim.com → Отримайте GTM-KVWMVQGM
- *
- *  2. Зайдіть на https://analytics.google.com/ → "Додати ресурс"
+ *  1. Зайдіть на https://analytics.google.com/ → "Додати ресурс"
  *     Отримайте G-LJSB794FJK (Measurement ID)
  *
- *  3. Замініть рядки нижче:
- *     GTM_CONTAINER_ID = 'GTM-KVWMVQGM'    ← ваш GTM ID
+ *  2. Замініть рядок нижче:
  *     GA4_MEASUREMENT_ID = 'G-LJSB794FJK' ← ваш GA4 ID
  *
  * ─────────────────────────────────────────────────────────────────
@@ -20,11 +16,10 @@
 (function () {
   'use strict';
 
-  // ── IDs (замініть на реальні після реєстрації в GTM/GA4) ──
-  var GTM_CONTAINER_ID  = 'GTM-KVWMVQGM';
+  // ── ID (замініть на реальний після реєстрації в GA4) ──
   var GA4_MEASUREMENT_ID = 'G-LJSB794FJK';
 
-  var IS_CONFIGURED = GTM_CONTAINER_ID.startsWith('GTM-') && GA4_MEASUREMENT_ID.startsWith('G-');
+  var IS_CONFIGURED = GA4_MEASUREMENT_ID.startsWith('G-');
   var IS_DEV = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
 
   // ── dataLayer init (GTM standard) ──────────────────────────────
@@ -36,39 +31,26 @@
   }
   window.gtag = window.gtag || gtag;
 
-  // ── Load GTM (async, non-blocking) ────────────────────────────
-  function loadGTM() {
-    if (!IS_CONFIGURED) return;
-    (function (w, d, s, l, i) {
-      w[l] = w[l] || [];
-      w[l].push({ 'gtm.start': new Date().getTime(), event: 'gtm.js' });
-      var f = d.getElementsByTagName(s)[0];
-      var j = d.createElement(s);
-      var dl = l !== 'dataLayer' ? '&l=' + l : '';
-      j.async = true;
-      j.src = 'https://www.googletagmanager.com/gtm.js?id=' + i + dl;
-      f.parentNode.insertBefore(j, f);
-    })(window, document, 'script', 'dataLayer', GTM_CONTAINER_ID);
-  }
-
-  // ── Load GA4 directly (fallback if no GTM) ───────────────────
+  // ── Load the single GA4 path (async, after critical rendering) ─
   function loadGA4() {
     if (!IS_CONFIGURED) return;
-    var s = document.createElement('script');
-    s.async = true;
-    s.src = 'https://www.googletagmanager.com/gtag/js?id=' + GA4_MEASUREMENT_ID;
-    document.head.appendChild(s);
-
+    var script = document.createElement('script');
+    script.async = true;
+    script.src = 'https://www.googletagmanager.com/gtag/js?id=' + GA4_MEASUREMENT_ID;
+    document.head.appendChild(script);
     gtag('js', new Date());
     gtag('config', GA4_MEASUREMENT_ID, {
       page_location: location.href,
       page_title: document.title,
       send_page_view: true,
       debug_mode: IS_DEV,
-      // Consent defaults (GDPR-aware)
       ads_storage: 'denied',
       analytics_storage: 'granted'
     });
+    (window.__UA_ANALYTICS_PENDING_EVENTS__ || []).forEach(function (entry) {
+      gtag('event', entry.name, entry.params || {});
+    });
+    window.__UA_ANALYTICS_PENDING_EVENTS__ = [];
   }
 
   // ── Universal event tracker ────────────────────────────────────
@@ -258,21 +240,47 @@
 
   // ── Init ──────────────────────────────────────────────────────
   function init() {
-    // Prefer GTM (manages GA4 inside); load GA4 directly only if no GTM
-    if (IS_CONFIGURED) {
-      loadGTM();
-      // GA4 direct as fallback — GTM will also fire it, but gtag config ensures
-      // events go through even before GTM container loads
-      loadGA4();
-    } else {
+    if (!IS_CONFIGURED) {
       // Not configured: still wire up dataLayer for when IDs are added
       if (IS_DEV) {
-        console.info('[UA Analytics] Not configured. Replace GTM_CONTAINER_ID and GA4_MEASUREMENT_ID in analytics.js');
+        console.info('[UA Analytics] Not configured. Replace GA4_MEASUREMENT_ID in analytics.js');
+      }
+    } else {
+      var loaded = false;
+      var loadAnalytics = function () {
+        if (loaded) return;
+        loaded = true;
+        loadGA4();
+      };
+      var intentEvents = ['pointerdown', 'keydown', 'touchstart'];
+      var onIntent = function () {
+        loadAnalytics();
+        intentEvents.forEach(function (name) {
+          window.removeEventListener(name, onIntent, true);
+        });
+      };
+      intentEvents.forEach(function (name) {
+        window.addEventListener(name, onIntent, { capture: true, passive: true });
+      });
+      window.addEventListener('uah:meaningful-interaction', onIntent, { once: true });
+      var scheduleAnalytics = function () {
+        window.setTimeout(loadAnalytics, 8000);
+      };
+      if (window.__UA_ANALYTICS_INTENT__) {
+        loadAnalytics();
+      } else if (document.readyState === 'complete') {
+        scheduleAnalytics();
+      } else {
+        window.addEventListener('load', scheduleAnalytics, { once: true });
       }
     }
 
     // Always observe vitals (data goes to backend telemetry even without GA4)
-    window.addEventListener('load', observeLCP, { once: true });
+    if (document.readyState === 'complete') {
+      observeLCP();
+    } else {
+      window.addEventListener('load', observeLCP, { once: true });
+    }
   }
 
   if (document.readyState === 'loading') {

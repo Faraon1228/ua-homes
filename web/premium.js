@@ -18,6 +18,11 @@
   };
 
   var API_BASE = resolveApiBase();
+  var PROMO_DISMISSED_UNTIL_KEY = 'ua-promo-bar-dismissed-until';
+  var PROMO_SESSION_HIDDEN_KEY = 'ua-promo-bar-hidden-session';
+  var PROMO_DISMISS_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
+  var lastFocusedElement = null;
+  var previousBodyOverflow = '';
   var buildApiUrl = function (path) {
     return `${API_BASE}/api${path}`;
   };
@@ -291,9 +296,22 @@
       cursor:pointer;transition:background .15s;
     }
     #ua-premium-bar button:hover{background:rgba(255,255,255,.35)}
+    #ua-premium-bar button:focus-visible{outline:3px solid rgba(255,255,255,.85);outline-offset:2px}
     #ua-premium-bar-close {
       position:absolute;right:12px;background:none;border:none;color:rgba(255,255,255,.6);
       font-size:18px;cursor:pointer;line-height:1;padding:0;
+    }
+    @media(max-width:640px){
+      #ua-premium-bar {
+        justify-content:flex-start;text-align:left;font-size:11px;line-height:1.35;
+        padding:7px 72px 7px 12px;gap:8px;
+      }
+      #ua-premium-bar button {
+        padding:3px 9px;font-size:10px;flex-shrink:0;
+      }
+      #ua-premium-bar-close {
+        right:8px;font-size:16px;
+      }
     }
   `;
 
@@ -467,10 +485,12 @@
       '<h2>' + (isDemo ? '⚙️ Тест-режим активовано' : '✅ Оплата успішна!') + '</h2>' +
       '<p>' + (isDemo ? 'LiqPay ключі не налаштовані — демо-режим' : 'Тариф «' + plan.name + '» підключено.') + '</p>' +
       '<p style="margin-top:8px">Деталі надіслані на вашу пошту</p>' +
-      '<button onclick="document.getElementById(\'ua-premium-backdrop\').remove()" ' +
+      '<button id="ua-pm-success-close" ' +
         'style="margin-top:24px;background:#22c55e;color:#fff;border:none;padding:12px 32px;border-radius:12px;font-weight:700;cursor:pointer;font-size:15px">Добре</button>' +
       '</div>'
     );
+    document.getElementById('ua-pm-success-close').addEventListener('click', closeModal);
+    document.getElementById('ua-pm-success-close').focus();
   }
 
   function bindCardButtons() {
@@ -493,6 +513,7 @@
       return;
     }
     injectStyle();
+    lastFocusedElement = document.activeElement;
     var modal = buildModal();
     document.body.appendChild(modal);
     bindAudienceTabs();
@@ -502,8 +523,12 @@
     modal.addEventListener('click', function (e) {
       if (e.target === modal) closeModal();
     });
-    document.addEventListener('keydown', onEsc);
+    document.addEventListener('keydown', onModalKeydown);
+    previousBodyOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    window.requestAnimationFrame(function () {
+      document.getElementById('ua-pm-close-btn').focus();
+    });
 
     // Track open
     if (window.dataLayer) {
@@ -514,37 +539,74 @@
   function closeModal() {
     var el = document.getElementById('ua-premium-backdrop');
     if (el) el.remove();
-    document.removeEventListener('keydown', onEsc);
-    document.body.style.overflow = '';
+    document.removeEventListener('keydown', onModalKeydown);
+    document.body.style.overflow = previousBodyOverflow;
+    if (lastFocusedElement && document.contains(lastFocusedElement)) lastFocusedElement.focus();
+    lastFocusedElement = null;
   }
 
-  function onEsc(e) {
-    if (e.key === 'Escape') closeModal();
+  function onModalKeydown(e) {
+    if (e.key === 'Escape') {
+      closeModal();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    var modal = document.getElementById('ua-premium-modal');
+    if (!modal) return;
+    var focusable = Array.from(
+      modal.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')
+    );
+    if (!focusable.length) return;
+    var first = focusable[0];
+    var last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
   }
 
   // ── Promo bar ──────────────────────────────────────────────────────────────
+  function promoDismissed() {
+    if (
+      sessionStorage.getItem(PROMO_SESSION_HIDDEN_KEY) ||
+      sessionStorage.getItem('ua-promo-bar-dismissed')
+    ) return true;
+    var dismissedUntil = Number(localStorage.getItem(PROMO_DISMISSED_UNTIL_KEY));
+    return Number.isFinite(dismissedUntil) && dismissedUntil > Date.now();
+  }
+
   function injectPromoBar() {
     if (document.getElementById('ua-premium-bar')) return;
-    if (sessionStorage.getItem('ua-promo-bar-dismissed')) return;
+    if (promoDismissed()) return;
+    sessionStorage.setItem(PROMO_SESSION_HIDDEN_KEY, 'shown');
 
     var bar = document.createElement('div');
     bar.id = 'ua-premium-bar';
+    bar.setAttribute('role', 'region');
+    bar.setAttribute('aria-label', 'Пропозиція тарифів UA-Dim');
     bar.innerHTML = (
       '<span>🚀 Отримайте ТОП-позицію — <strong>перший місяць зі знижкою 50%</strong></span>' +
-      '<button onclick="window.uaPremium.open()">Дивитись тарифи</button>' +
+      '<button id="ua-premium-bar-open">Дивитись тарифи</button>' +
       '<button id="ua-premium-bar-close" aria-label="Закрити">×</button>'
     );
+    bar.querySelector('#ua-premium-bar-open').addEventListener('click', function () {
+      window.uaPremium.open();
+    });
     bar.querySelector('#ua-premium-bar-close').addEventListener('click', function () {
       bar.remove();
-      sessionStorage.setItem('ua-promo-bar-dismissed', '1');
+      sessionStorage.setItem(PROMO_SESSION_HIDDEN_KEY, 'dismissed');
+      localStorage.setItem(PROMO_DISMISSED_UNTIL_KEY, String(Date.now() + PROMO_DISMISS_DURATION_MS));
     });
 
-    // Insert before root or as first child of body
+    // Keep promotional content outside the initial hero viewport.
     var root = document.getElementById('root') || document.body.firstElementChild;
     if (root && root.parentNode) {
-      root.parentNode.insertBefore(bar, root);
+      root.parentNode.insertBefore(bar, root.nextSibling);
     } else {
-      document.body.prepend(bar);
+      document.body.appendChild(bar);
     }
   }
 
@@ -600,19 +662,22 @@
   // ── Init ───────────────────────────────────────────────────────────────────
   function init() {
     injectStyle();
-    // Defer non-critical init
-    if ('requestIdleCallback' in window) {
-      requestIdleCallback(function () {
-        setTimeout(injectPromoBar, 2000);
-        injectUpgradeCTA();
-        checkPaymentResult();
-      }, { timeout: 3000 });
-    } else {
-      setTimeout(function () {
-        injectPromoBar();
-        injectUpgradeCTA();
-        checkPaymentResult();
-      }, 2000);
+    checkPaymentResult();
+    if (promoDismissed()) return;
+
+    var revealPromo = function () {
+      injectPromoBar();
+      window.removeEventListener('uah:meaningful-interaction', revealPromo);
+      window.removeEventListener('scroll', onScroll);
+    };
+    var onScroll = function () {
+      if (window.scrollY < Math.max(320, window.innerHeight * 0.55)) return;
+      revealPromo();
+    };
+    window.addEventListener('uah:meaningful-interaction', revealPromo, { once: true });
+    window.addEventListener('scroll', onScroll, { passive: true });
+    if (window.scrollY >= Math.max(320, window.innerHeight * 0.55)) {
+      revealPromo();
     }
   }
 

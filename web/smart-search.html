@@ -9,14 +9,20 @@
   <link rel="manifest" href="/ua-homes-manifest.json"/>
   <link rel="apple-touch-icon" href="/icons/Icon-192.png"/>
   <link rel="preconnect" href="https://unpkg.com" crossorigin/>
-  <link rel="preload" as="style" href="ua-homes.css?v=ua21-20260809"/>
-  <link rel="preload" as="script" href="real-estate-app.js?v=ua21-20260809"/>
-  <link rel="stylesheet" href="ua-homes.css?v=ua21-20260809"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link rel="preload" as="style" href="ua-homes.css?v=ua23-20260811"/>
+  <link rel="preload" as="script" href="real-estate-app.js?v=ua23-20260811"/>
+  <link rel="stylesheet" href="ua-homes.css?v=ua23-20260811"/>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@700;800&display=swap"/>
   <style>
     :root{color-scheme:light}
     html{-webkit-text-size-adjust:100%}
-    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
-    button,input,select,textarea{min-height:44px;touch-action:manipulation;font:inherit}
+    body{margin:0;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+    h1,h2,h3,h4,h5,h6,button,[role="button"],a.font-bold,a.font-black,[class~="text-2xl"][class~="font-black"],[class~="text-3xl"][class~="font-black"],[class~="text-4xl"][class~="font-black"],[class~="text-5xl"][class~="font-black"]{font-family:"Manrope","Inter",sans-serif}
+    button,[role="button"]{font-weight:700}
+    button,input,select,textarea{min-height:44px;touch-action:manipulation}
+    input,select,textarea{font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
     textarea{min-height:auto}
     @supports(padding:max(0px)){body{padding-bottom:max(1rem,env(safe-area-inset-bottom))}}
   </style>
@@ -30,6 +36,6 @@
       <div class="app-shell-shimmer" style="height:220px;border-radius:32px;margin-top:24px"></div>
     </div>
   </div>
-  <script defer src="real-estate-app.js?v=ua21-20260809"></script>
+  <script defer src="real-estate-app.js?v=ua23-20260811"></script>
 </body>
 </html>

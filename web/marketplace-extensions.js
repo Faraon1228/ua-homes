@@ -385,7 +385,7 @@
       </div>
     `;
 
-    const root = document.getElementById('root') || document.body;
+    const root = document.getElementById('marketplace-extensions-root') || document.body;
     root.appendChild(container);
 
     const form = container.querySelector('#ua-mortgage-form');

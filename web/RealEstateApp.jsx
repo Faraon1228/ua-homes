@@ -3,6 +3,7 @@ import {
   DEFAULT_SORT,
   STORAGE_KEYS,
   filterAndSortProperties,
+  normalizePropertyType,
   resolveSortByForEOselya,
 } from "./realEstateFilters";
 
@@ -16,6 +17,7 @@ const MOCK_PROPERTIES = [
     rooms: 2,
     area: 68,
     eOselya: true,
+    propertyType: "квартира",
     images: [
       "https://images.unsplash.com/photo-1560185007-c5ca9d2c014d?auto=format&fit=crop&w=1200&q=80",
       "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?auto=format&fit=crop&w=1200&q=80",
@@ -30,6 +32,7 @@ const MOCK_PROPERTIES = [
     rooms: 1,
     area: 32,
     eOselya: true,
+    propertyType: "квартира",
     images: [
       "https://images.unsplash.com/photo-1493809842364-78817add7ffb?auto=format&fit=crop&w=1200&q=80",
       "https://images.unsplash.com/photo-1484154218962-a197022b5858?auto=format&fit=crop&w=1200&q=80",
@@ -44,6 +47,7 @@ const MOCK_PROPERTIES = [
     rooms: 3,
     area: 85,
     eOselya: false,
+    propertyType: "будинок",
     images: [
       "https://images.unsplash.com/photo-1484154218962-a197022b5858?auto=format&fit=crop&w=1200&q=80",
       "https://images.unsplash.com/photo-1493809842364-78817add7ffb?auto=format&fit=crop&w=1200&q=80",
@@ -57,27 +61,41 @@ const FALLBACK_IMAGE =
 const KEYWORD_SEARCH_KEY = "re.keywordSearch";
 const SAVED_SEARCHES_KEY = "re.savedSearches";
 const MAX_SAVED_SEARCHES = 10;
+const RESULTS_VIEW_MODE_KEY = "ua_homes_view_mode_v1";
+const PWA_DISMISS_KEY = "uaDim.pwaDismissedUntil";
+const PWA_INSTALLED_KEY = "uaDim.pwaInstalled";
+const PWA_SESSION_HIDDEN_KEY = "uaDim.pwaHiddenForSession";
+const PWA_DISMISS_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const QUICK_SCENARIOS = [
   {
-    label: "Київ · єОселя · до $130k",
-    filters: { cityFilter: "Київ", onlyEOselya: true, maxPrice: "130000", minRooms: "1" },
+    label: "Квартири",
+    value: "квартира",
+    filters: { cityFilter: "Всі", propertyTypeFilter: "квартира" },
   },
   {
-    label: "Львів · 2+ кімнати · до $110k",
-    filters: { cityFilter: "Львів", onlyEOselya: false, maxPrice: "110000", minRooms: "2" },
+    label: "Будинки",
+    value: "будинок",
+    filters: { cityFilter: "Всі", propertyTypeFilter: "будинок" },
   },
   {
-    label: "Київ · 1-2 кімнати · 35-65 м²",
-    filters: {
-      cityFilter: "Київ",
-      onlyEOselya: false,
-      minRooms: "1",
-      maxRooms: "2",
-      minArea: "35",
-      maxArea: "65",
-    },
+    label: "Земельні ділянки",
+    value: "земля",
+    filters: { cityFilter: "Всі", propertyTypeFilter: "земля" },
   },
+  {
+    label: "Комерційні приміщення",
+    value: "комерція",
+    filters: { cityFilter: "Всі", propertyTypeFilter: "комерція" },
+  },
+];
+
+const PROPERTY_TYPE_OPTIONS = [
+  { value: "Всі", label: "Усі типи" },
+  { value: "квартира", label: "Квартири" },
+  { value: "будинок", label: "Будинки" },
+  { value: "земля", label: "Земельні ділянки" },
+  { value: "комерція", label: "Комерційні приміщення" },
 ];
 
 const KEYWORD_SUGGESTIONS = [
@@ -142,6 +160,11 @@ function normalizeImageSrc(src) {
   return src;
 }
 
+function getCloudinaryImageUrl(url, width) {
+  if (!url || !url.includes("res.cloudinary.com/") || !url.includes("/image/upload/")) return "";
+  return url.replace("/image/upload/", `/image/upload/f_auto,q_auto,c_fill,w_${width}/`);
+}
+
 function getFileContentType(file) {
   if (!file) return "image/jpeg";
   if (file.type && file.type.startsWith("image/")) return file.type;
@@ -170,20 +193,636 @@ function mapListingToProperty(listing) {
   const images = Array.isArray(listing?.images)
     ? listing.images.filter(Boolean)
     : [];
+  const latitude =
+    listing?.latitude === null || listing?.latitude === undefined || listing?.latitude === ""
+      ? null
+      : Number(listing.latitude);
+  const longitude =
+    listing?.longitude === null || listing?.longitude === undefined || listing?.longitude === ""
+      ? null
+      : Number(listing.longitude);
+
+  const normalizedPropertyType = normalizePropertyType(listing?.property_type || listing?.propertyType || "");
 
   return {
     id: listing?.id ?? 0,
     title: listing?.title || "Оголошення без назви",
-    city: listing?.city || "Київ",
+    city: listing?.city || "",
     district: listing?.district || "",
     price: Number(listing?.price || 0),
     rooms: Number(listing?.rooms || 0),
     area: Number(listing?.area || 0),
     eOselya: Boolean(listing?.e_oselya ?? listing?.eOselya),
+    propertyType: normalizedPropertyType || listing?.property_type || listing?.propertyType || "квартира",
     images,
     description: listing?.description || "",
     status: listing?.status || "published",
+    latitude: Number.isFinite(latitude) ? latitude : null,
+    longitude: Number.isFinite(longitude) ? longitude : null,
+    moderationUpdatedAt: listing?.moderation_updated_at || listing?.moderationUpdatedAt || null,
+    publishedAt: listing?.published_at || listing?.publishedAt || null,
+    createdAt: listing?.created_at || listing?.createdAt || null,
+    verifiedOwner: Boolean(listing?.verified_owner ?? listing?.verifiedOwner),
+    ownerVerificationStatus:
+      listing?.owner_verification_status || listing?.ownerVerificationStatus || "unverified",
+    listingVerificationStatus:
+      listing?.listing_verification_status || listing?.listingVerificationStatus || "unverified",
+    verifiedListing: Boolean(listing?.verified_listing ?? listing?.verifiedListing),
+    sellerType: listing?.seller_type || listing?.sellerType || "unknown",
   };
+}
+
+function isPositiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0;
+}
+
+function formatListingPrice(value) {
+  return isPositiveNumber(value) ? `$${Number(value).toLocaleString("uk-UA")}` : "Ціну не вказано";
+}
+
+function formatPricePerSquareMeter(price, area) {
+  if (!isPositiveNumber(price) || !isPositiveNumber(area)) return null;
+  const value = Math.round(Number(price) / Number(area));
+  return Number.isFinite(value) && value > 0 ? `$${value.toLocaleString("uk-UA")} / м²` : null;
+}
+
+function formatListingAddress(property) {
+  const city = String(property?.city || "").trim();
+  const district = String(property?.district || "").trim();
+  const parts = [];
+  if (city) parts.push(`м. ${city}`);
+  if (district) parts.push(/район/i.test(district) ? district : `${district} район`);
+  return parts.length ? parts.join(", ") : "Адресу не вказано";
+}
+
+function getListingDateMeta(property) {
+  const candidates = [
+    { value: property?.moderationUpdatedAt, label: "Оновлено" },
+    { value: property?.publishedAt, label: "Опубліковано" },
+    { value: property?.createdAt, label: "Створено" },
+  ];
+  const selected = candidates.find((candidate) => {
+    if (!candidate.value) return false;
+    return !Number.isNaN(new Date(candidate.value).getTime());
+  });
+  if (!selected) return null;
+  return {
+    label: selected.label,
+    value: new Intl.DateTimeFormat("uk-UA", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    }).format(new Date(selected.value)),
+  };
+}
+
+function isVerifiedSeller(property) {
+  return property?.verifiedOwner === true && property?.ownerVerificationStatus === "verified";
+}
+
+function getSellerTypeLabel(sellerType) {
+  return {
+    owner: "Власник",
+    intermediary: "Посередник",
+    agency: "Агентство",
+    developer: "Забудовник",
+  }[sellerType] || "Тип продавця не вказано";
+}
+
+function getListingVerificationLabel(status) {
+  return {
+    verified: "Перевірене оголошення",
+    pending: "Перевірка оголошення триває",
+    rejected: "Перевірку оголошення не підтверджено",
+    unverified: "Оголошення ще не перевірене",
+  }[status] || "Статус перевірки не вказано";
+}
+
+function createClientToken(prefix) {
+  const value =
+    window.crypto && typeof window.crypto.randomUUID === "function"
+      ? window.crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
+  return `${prefix}-${value}`;
+}
+
+function getReporterSessionId() {
+  const key = "uaDim.reporterSessionId";
+  const stored = window.sessionStorage.getItem(key);
+  if (stored) return stored;
+  const generated = createClientToken("reporter");
+  window.sessionStorage.setItem(key, generated);
+  return generated;
+}
+
+function formatTrustHistoryValue(fieldName, value) {
+  if (value === null || value === undefined || value === "") return "Не вказано";
+  if (fieldName === "price") {
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) ? `$${numericValue.toLocaleString("uk-UA")}` : String(value);
+  }
+  if (fieldName === "area") return `${Number(value).toLocaleString("uk-UA")} м²`;
+  if (fieldName === "status") {
+    return { published: "Опубліковано", pending: "На модерації", draft: "Чернетка", rejected: "Відхилено" }[value] || value;
+  }
+  if (fieldName === "listing_status") {
+    return { active: "Активне", sold: "Продано", removed: "Знято" }[value] || value;
+  }
+  if (fieldName === "listing_verification_status") return getListingVerificationLabel(value);
+  return String(value);
+}
+
+function TrustDialog({ property, authToken, onClose }) {
+  const dialogRef = useRef(null);
+  const closeButtonRef = useRef(null);
+  const previousFocusRef = useRef(null);
+  const [trustData, setTrustData] = useState(null);
+  const [trustLoading, setTrustLoading] = useState(true);
+  const [trustError, setTrustError] = useState("");
+  const [showReportForm, setShowReportForm] = useState(false);
+  const [reportReason, setReportReason] = useState("fraud_scam");
+  const [reportDetails, setReportDetails] = useState("");
+  const [reportStatus, setReportStatus] = useState("");
+  const [reportError, setReportError] = useState("");
+  const [reportSubmitting, setReportSubmitting] = useState(false);
+  const [idempotencyKey, setIdempotencyKey] = useState(() => createClientToken("report"));
+
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeButtonRef.current?.focus();
+
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = [
+        ...dialogRef.current.querySelectorAll(
+          'button:not([disabled]),a[href],select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+        ),
+      ];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+      previousFocusRef.current?.focus?.();
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setTrustLoading(true);
+    setTrustError("");
+    fetch(getApiUrl(`/listings/${property.id}/trust`), {
+      headers: authToken ? { Authorization: ["Bearer", authToken].join(" ") } : {},
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Не вдалося завантажити дані довіри");
+        return result;
+      })
+      .then(setTrustData)
+      .catch((error) => {
+        if (error.name !== "AbortError") setTrustError(error.message || "Не вдалося завантажити дані довіри");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setTrustLoading(false);
+      });
+    return () => controller.abort();
+  }, [authToken, property.id]);
+
+  const submitReport = async (event) => {
+    event.preventDefault();
+    const details = reportDetails.trim();
+    if (details.length < 10) {
+      setReportError("Опишіть проблему щонайменше 10 символами.");
+      return;
+    }
+    setReportSubmitting(true);
+    setReportError("");
+    setReportStatus("");
+    try {
+      const response = await fetch(getApiUrl(`/listings/${property.id}/reports`), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(authToken ? { Authorization: ["Bearer", authToken].join(" ") } : {}),
+        },
+        body: JSON.stringify({
+          reason_code: reportReason,
+          details,
+          reporter_session_id: getReporterSessionId(),
+          idempotency_key: idempotencyKey,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Не вдалося надіслати скаргу");
+      setReportStatus(
+        result.duplicate
+          ? "Цю скаргу вже отримано. Повторно надсилати її не потрібно."
+          : "Скаргу надіслано команді модерації."
+      );
+      setReportDetails("");
+      setIdempotencyKey(createClientToken("report"));
+    } catch (error) {
+      setReportError(error.message || "Не вдалося надіслати скаргу");
+    } finally {
+      setReportSubmitting(false);
+    }
+  };
+
+  const verificationStatus =
+    trustData?.listing_verification_status || property.listingVerificationStatus || "unverified";
+  const verifiedListing = trustData
+    ? trustData.verified_listing === true
+    : property.verifiedListing === true;
+  const sellerType = trustData?.seller_type || property.sellerType || "unknown";
+  const statistics = trustData?.price_statistics;
+  const history = Array.isArray(trustData?.history) ? trustData.history : [];
+  const historyLabels = {
+    price: "Ціна",
+    status: "Статус публікації",
+    listing_status: "Статус об'єкта",
+    property_type: "Тип нерухомості",
+    rooms: "Кількість кімнат",
+    area: "Площа",
+    listing_verification_status: "Перевірка оголошення",
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[120] flex items-end justify-center bg-slate-950/65 p-0 backdrop-blur-sm sm:items-center sm:p-6"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="trust-dialog-title"
+        className="max-h-[92svh] w-full overflow-y-auto rounded-t-[30px] bg-white p-5 shadow-2xl sm:max-w-2xl sm:rounded-[30px] sm:p-6"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-xs font-black uppercase tracking-[0.2em] text-blue-700">Довіра й безпека</p>
+            <h2 id="trust-dialog-title" className="mt-1 truncate text-2xl font-black text-slate-900">
+              {property.title}
+            </h2>
+          </div>
+          <button
+            ref={closeButtonRef}
+            type="button"
+            onClick={onClose}
+            aria-label="Закрити інформацію про довіру"
+            className="shrink-0 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="mt-5 grid gap-3 sm:grid-cols-2">
+          <div className={`rounded-2xl border p-4 ${verifiedListing ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-slate-50"}`}>
+            <p className="text-xs font-black uppercase tracking-wide text-slate-500">Оголошення</p>
+            <p className={`mt-1 font-black ${verifiedListing ? "text-emerald-800" : "text-slate-700"}`}>
+              {getListingVerificationLabel(verificationStatus)}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">Цей статус окремий від перевірки продавця.</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs font-black uppercase tracking-wide text-slate-500">Тип продавця</p>
+            <p className="mt-1 font-black text-slate-900">{getSellerTypeLabel(sellerType)}</p>
+            <p className="mt-1 text-xs text-slate-500">За нормалізованим типом акаунта.</p>
+          </div>
+        </div>
+
+        {trustLoading ? (
+          <p className="mt-5 rounded-2xl bg-slate-50 p-4 text-sm font-semibold text-slate-500">Завантажуємо статистику та історію…</p>
+        ) : trustError ? (
+          <p role="alert" className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-700">
+            {trustError}
+          </p>
+        ) : (
+          <>
+            <div className="mt-5 rounded-2xl border border-blue-100 bg-blue-50 p-4">
+              <p className="text-xs font-black uppercase tracking-wide text-blue-700">Статистика ціни</p>
+              {statistics?.status === "ok" ? (
+                <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <span className="block text-slate-500">Медіанна ціна</span>
+                    <b className="text-slate-900">${Number(statistics.median_price).toLocaleString("uk-UA")}</b>
+                  </div>
+                  <div>
+                    <span className="block text-slate-500">Медіана за м²</span>
+                    <b className="text-slate-900">${Number(statistics.median_price_per_sqm).toLocaleString("uk-UA")} / м²</b>
+                  </div>
+                  <p className="col-span-2 text-xs text-slate-600">
+                    Вибірка: {statistics.sample_size} активних порівнюваних оголошень у цьому районі.
+                  </p>
+                </div>
+              ) : (
+                <p className="mt-2 text-sm text-slate-600">
+                  Недостатньо даних: знайдено {statistics?.sample_size || 0} порівнюваних активних оголошень, потрібно щонайменше 3.
+                </p>
+              )}
+            </div>
+
+            <div className="mt-5">
+              <p className="text-xs font-black uppercase tracking-wide text-slate-500">Історія змін</p>
+              {history.length ? (
+                <ol className="mt-3 space-y-3">
+                  {history.map((item, index) => (
+                    <li
+                      key={`${item.field_name}-${item.created_at}-${index}`}
+                      className="rounded-2xl border border-slate-200 bg-white p-3 text-sm"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <b className="text-slate-900">{historyLabels[item.field_name] || "Зміна оголошення"}</b>
+                        <time className="text-xs text-slate-500">
+                          {new Intl.DateTimeFormat("uk-UA", { day: "numeric", month: "short", year: "numeric" }).format(
+                            new Date(item.created_at)
+                          )}
+                        </time>
+                      </div>
+                      <p className="mt-1 text-slate-600">
+                        {formatTrustHistoryValue(item.field_name, item.old_value)} →{" "}
+                        <strong>{formatTrustHistoryValue(item.field_name, item.new_value)}</strong>
+                      </p>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="mt-2 text-sm text-slate-500">Історія ще не накопичена. Ретроспективні зміни не генеруються.</p>
+              )}
+            </div>
+          </>
+        )}
+
+        <div className="mt-5 border-t border-slate-200 pt-5">
+          {!showReportForm ? (
+            <button
+              type="button"
+              onClick={() => setShowReportForm(true)}
+              className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-black text-rose-700 transition hover:bg-rose-100"
+            >
+              Повідомити про шахрайство
+            </button>
+          ) : (
+            <form onSubmit={submitReport} className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
+              <h3 className="font-black text-rose-900">Скарга на оголошення</h3>
+              <p className="mt-1 text-xs text-rose-700">Скарга потрапить у backend модерації; контактні дані публічно не показуються.</p>
+              <label className="mt-4 block text-xs font-black uppercase tracking-wide text-slate-600" htmlFor="report-reason">
+                Причина
+              </label>
+              <select
+                id="report-reason"
+                value={reportReason}
+                onChange={(event) => setReportReason(event.target.value)}
+                className="mt-1 w-full rounded-xl border border-rose-200 bg-white p-3 text-sm"
+              >
+                <option value="fraud_scam">Підозра на шахрайство</option>
+                <option value="duplicate_listing">Дублікат оголошення</option>
+                <option value="misleading_price">Неправдива ціна або опис</option>
+                <option value="sold_or_unavailable">Об'єкт уже недоступний</option>
+                <option value="spam">Спам</option>
+                <option value="other">Інша причина</option>
+              </select>
+              <label className="mt-3 block text-xs font-black uppercase tracking-wide text-slate-600" htmlFor="report-details">
+                Деталі
+              </label>
+              <textarea
+                id="report-details"
+                value={reportDetails}
+                onChange={(event) => setReportDetails(event.target.value)}
+                minLength={10}
+                maxLength={1000}
+                required
+                rows={4}
+                placeholder="Опишіть конкретні ознаки проблеми…"
+                className="mt-1 w-full rounded-xl border border-rose-200 bg-white p-3 text-sm"
+              />
+              <div aria-live="polite" className="mt-2 text-sm">
+                {reportError ? <p className="font-semibold text-rose-700">{reportError}</p> : null}
+                {reportStatus ? <p className="font-semibold text-emerald-700">{reportStatus}</p> : null}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="submit"
+                  disabled={reportSubmitting}
+                  className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-black text-white disabled:opacity-60"
+                >
+                  {reportSubmitting ? "Надсилаємо…" : "Надіслати скаргу"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowReportForm(false);
+                    setReportError("");
+                  }}
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700"
+                >
+                  Скасувати
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+let leafletLoader = null;
+
+function ensureLeafletLoaded() {
+  if (window.L?.map) return Promise.resolve(window.L);
+  if (leafletLoader) return leafletLoader;
+
+  leafletLoader = new Promise((resolve, reject) => {
+    if (!document.getElementById("uah-leaflet-css")) {
+      const link = document.createElement("link");
+      link.id = "uah-leaflet-css";
+      link.rel = "stylesheet";
+      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      document.head.appendChild(link);
+    }
+
+    const existingScript = document.getElementById("uah-leaflet-js");
+    if (existingScript) {
+      existingScript.addEventListener("load", () => resolve(window.L), { once: true });
+      existingScript.addEventListener("error", () => reject(new Error("Не вдалося завантажити карту")), {
+        once: true,
+      });
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.id = "uah-leaflet-js";
+    script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    script.async = true;
+    script.onload = () => resolve(window.L);
+    script.onerror = () => reject(new Error("Не вдалося завантажити карту"));
+    document.head.appendChild(script);
+  });
+
+  return leafletLoader;
+}
+
+function hasMapCoordinates(property) {
+  const latitude = Number(property?.latitude);
+  const longitude = Number(property?.longitude);
+  return (
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    longitude >= -180 &&
+    longitude <= 180 &&
+    !(latitude === 0 && longitude === 0)
+  );
+}
+
+function ListingsMapView({ properties, onShowList }) {
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
+  const markersLayerRef = useRef(null);
+  const [mapReady, setMapReady] = useState(false);
+  const [mapError, setMapError] = useState("");
+  const mappedProperties = useMemo(() => properties.filter(hasMapCoordinates), [properties]);
+  const missingCoordinatesCount = properties.length - mappedProperties.length;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    ensureLeafletLoaded()
+      .then((Leaflet) => {
+        if (cancelled || !mapContainerRef.current || mapRef.current) return;
+        const map = Leaflet.map(mapContainerRef.current, { zoomControl: true }).setView([49.0, 31.2], 6);
+        Leaflet.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 18,
+          attribution: "&copy; OpenStreetMap",
+        }).addTo(map);
+        mapRef.current = map;
+        markersLayerRef.current = Leaflet.layerGroup().addTo(map);
+        setMapReady(true);
+        window.requestAnimationFrame(() => map.invalidateSize());
+      })
+      .catch((error) => {
+        if (!cancelled) setMapError(error.message || "Не вдалося завантажити карту");
+      });
+
+    return () => {
+      cancelled = true;
+      mapRef.current?.remove();
+      mapRef.current = null;
+      markersLayerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || !markersLayerRef.current || !window.L) return;
+
+    const Leaflet = window.L;
+    const markersLayer = markersLayerRef.current;
+    markersLayer.clearLayers();
+    const bounds = [];
+
+    mappedProperties.forEach((property) => {
+      const point = [Number(property.latitude), Number(property.longitude)];
+      const marker = Leaflet.marker(point);
+      const popup = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = property.title;
+      const details = document.createElement("p");
+      details.style.margin = "6px 0 0";
+      details.textContent = `$${property.price.toLocaleString("uk-UA")} · ${property.city}, ${property.district}`;
+      popup.append(title, details);
+      marker.bindPopup(popup);
+      markersLayer.addLayer(marker);
+      bounds.push(point);
+    });
+
+    if (bounds.length) {
+      mapRef.current.fitBounds(bounds, { padding: [32, 32], maxZoom: 14 });
+    } else {
+      mapRef.current.setView([49.0, 31.2], 6);
+    }
+    window.requestAnimationFrame(() => mapRef.current?.invalidateSize());
+  }, [mapReady, mappedProperties]);
+
+  return (
+    <div id="listings-map" className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
+      <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-black text-slate-900">
+            На карті {mappedProperties.length} з {properties.length} об&apos;єктів
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {!properties.length
+              ? "Немає результатів для відображення."
+              : missingCoordinatesCount
+              ? `${missingCoordinatesCount} без координат залишаються доступними у списку.`
+              : "Усі результати мають координати."}
+          </p>
+        </div>
+        {missingCoordinatesCount ? (
+          <button
+            type="button"
+            onClick={onShowList}
+            className="self-start rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 transition hover:bg-blue-100 sm:self-auto"
+          >
+            Показати весь список
+          </button>
+        ) : null}
+      </div>
+      {mapError ? (
+        <div className="px-5 py-16 text-center">
+          <p className="font-bold text-rose-700">{mapError}</p>
+          <p className="mt-2 text-sm text-slate-500">Результати залишаються доступними у режимі списку.</p>
+          <button
+            type="button"
+            onClick={onShowList}
+            className="mt-4 rounded-xl bg-slate-900 px-4 py-2 text-sm font-bold text-white"
+          >
+            Повернутися до списку
+          </button>
+        </div>
+      ) : (
+        <div className="relative">
+          <div
+            ref={mapContainerRef}
+            className="h-[420px] w-full sm:h-[520px]"
+            role="region"
+            aria-label={`Карта результатів: координати мають ${mappedProperties.length} із ${properties.length}`}
+          />
+          {!mapReady ? (
+            <div className="absolute inset-0 grid place-items-center bg-slate-50">
+              <p className="text-sm font-semibold text-slate-500">Завантажуємо карту…</p>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function mapListingToForm(listing) {
@@ -218,10 +857,57 @@ function getListingStatusLabel(listing) {
   return "На модерації";
 }
 
+function getListingCompleteness(listing) {
+  const images = Array.isArray(listing?.images) ? listing.images.filter(Boolean) : [];
+  const checks = [
+    { id: "photos", label: "3+ фото", points: 30, complete: images.length >= 3 },
+    { id: "description", label: "Повний опис", points: 20, complete: String(listing?.description || "").trim().length >= 100 },
+    { id: "phone", label: "Телефон", points: 20, complete: Boolean(listing?.verified_phone || listing?.phone_verified) },
+    { id: "tour", label: "Фото або відеотур", points: 15, complete: Boolean(listing?.has_photo_tour || listing?.has_video_tour) },
+    { id: "owner", label: "Власник або документи", points: 15, complete: Boolean(listing?.verified_owner || listing?.verified_docs) },
+  ];
+  const score = checks.reduce((total, item) => total + (item.complete ? item.points : 0), 0);
+  return { score, checks, imagesCount: images.length };
+}
+
+function getListingPipeline(listing) {
+  const rejected = listing?.moderation_status === "rejected";
+  let activeStep = 0;
+  if (listing?.moderation_status === "pending_review") activeStep = 1;
+  if (listing?.status === "published" || listing?.moderation_status === "approved") activeStep = 2;
+  if (listing?.status === "archived" || ["sold", "removed"].includes(listing?.listing_status)) activeStep = 3;
+  return {
+    activeStep,
+    rejected,
+    steps: ["Чернетка", "Перевірка", "На сайті", "Завершено"],
+  };
+}
+
 function getStored(key, fallback) {
   if (typeof window === "undefined") return fallback;
   const value = window.localStorage.getItem(key);
   return value ?? fallback;
+}
+
+function hasActivePwaDismissal() {
+  if (typeof window === "undefined") return false;
+  const dismissedUntil = Number(window.localStorage.getItem(PWA_DISMISS_KEY));
+  if (Number.isFinite(dismissedUntil) && dismissedUntil > Date.now()) return true;
+
+  if (window.localStorage.getItem("uaDim.pwaDismissed") === "true") {
+    window.localStorage.removeItem("uaDim.pwaDismissed");
+    window.localStorage.setItem(PWA_DISMISS_KEY, String(Date.now() + PWA_DISMISS_DURATION_MS));
+    return true;
+  }
+  return false;
+}
+
+function isPwaRunningStandalone() {
+  if (typeof window === "undefined") return false;
+  return (
+    window.navigator.standalone === true ||
+    window.matchMedia?.("(display-mode: standalone)")?.matches === true
+  );
 }
 
 function safeParseJSON(value, fallback) {
@@ -272,7 +958,15 @@ function allowMockCatalogFallback() {
 
 function describeSearchState(filters, keywordSearch) {
   const parts = [];
-  if (filters.cityFilter && filters.cityFilter !== "Всі") parts.push(filters.cityFilter);
+  if (filters.cityFilter && filters.cityFilter !== "Всі") {
+    parts.push(filters.cityFilter);
+  } else {
+    parts.push("Вся Україна");
+  }
+  if (filters.propertyType && filters.propertyType !== "Всі") {
+    const selectedType = PROPERTY_TYPE_OPTIONS.find((option) => option.value === filters.propertyType);
+    parts.push(selectedType?.label || filters.propertyType);
+  }
   if (filters.onlyEOselya) parts.push("єОселя");
   if (filters.minRooms || filters.maxRooms) {
     parts.push(`${filters.minRooms || "1"}-${filters.maxRooms || "∞"} кімн.`);
@@ -305,6 +999,8 @@ function SmartSearchPage({
   setShowFavoritesOnly,
   saveCurrentSearch,
   resetFilters,
+  onOpenTrust,
+  trustDialog,
 }) {
   const previewProperties = visibleProperties.slice(0, 6);
 
@@ -319,8 +1015,10 @@ function SmartSearchPage({
             ← Повернутися
           </a>
           <div className="text-center">
-            <div className="text-lg font-black tracking-tight text-slate-900">UA-DIM</div>
-            <div className="text-xs font-medium text-slate-500">Розумний пошук</div>
+            <div className="text-lg font-black tracking-tight text-transparent bg-gradient-to-r from-slate-950 via-blue-700 to-cyan-500 bg-clip-text drop-shadow-[0_0_12px_rgba(59,130,246,0.45)]">
+              UA-DIM
+            </div>
+            <div className="text-xs font-semibold text-blue-700">Розумний пошук</div>
           </div>
           <a
             href="real-estate-demo.html"
@@ -471,50 +1169,27 @@ function SmartSearchPage({
 
         <div className="mt-5 grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
           {previewProperties.map((property, cardIndex) => (
-            <div key={property.id} className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
-              <PhotoGallery images={property.images} title={property.title} priority={cardIndex < 3} />
-              <div className="p-5">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h3 className="line-clamp-2 text-lg font-bold text-slate-900">{property.title}</h3>
-                    <p className="mt-1 text-sm text-slate-500">
-                      {property.city} • {property.district}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => toggleFavorite(property)}
-                    className="rounded-full bg-slate-100 px-3 py-1 text-sm font-bold text-slate-700"
-                  >
-                    {favoriteIds.includes(property.id) ? "❤️" : "🤍"}
-                  </button>
-                </div>
-                <div className="mt-4 flex items-center justify-between gap-3">
-                  <div className="text-sm text-slate-600">
-                    {property.rooms} кімн. • {property.area} м²
-                  </div>
-                  <div className="text-xl font-black text-blue-600">${property.price.toLocaleString("uk-UA")}</div>
-                </div>
-              </div>
-            </div>
+            <ListingCard
+              key={property.id}
+              property={property}
+              favorite={favoriteIds.includes(property.id)}
+              onToggleFavorite={toggleFavorite}
+              onOpenTrust={onOpenTrust}
+              priority={false}
+            />
           ))}
         </div>
       </main>
+      {trustDialog}
     </div>
   );
 }
 
-function PhotoGallery({ images, title, priority = false }) {
+function PhotoGallery({ images, title, href, priority = false }) {
   const [index, setIndex] = useState(0);
+  const failedImagesRef = useRef(new Set());
   const items = Array.isArray(images) ? images.map(normalizeImageSrc).filter(Boolean) : [];
-
-  if (!items.length) {
-    return (
-      <div className="flex h-56 items-center justify-center bg-gray-200 text-5xl text-gray-400">
-        🏠
-      </div>
-    );
-  }
+  const isFallback = !items.length;
 
   const prev = (e) => {
     e.stopPropagation();
@@ -550,33 +1225,58 @@ function PhotoGallery({ images, title, priority = false }) {
     return { original: url, webp: null, avif: null };
   };
 
-  const currentImage = items[index];
+  const currentImage = items[index] || FALLBACK_IMAGE;
   const variants = getImageVariants(currentImage);
+  const cloudinarySources = [480, 768, 1200]
+    .map((width) => {
+      const url = getCloudinaryImageUrl(currentImage, width);
+      return url ? `${url} ${width}w` : "";
+    })
+    .filter(Boolean)
+    .join(", ");
+  const optimizedOriginal = getCloudinaryImageUrl(currentImage, 1200) || variants.original;
+  const picture = (
+    <picture className="block h-full w-full">
+      {variants.avif && (
+        <source srcSet={variants.avif} type="image/avif" />
+      )}
+      {variants.webp && (
+        <source srcSet={variants.webp} type="image/webp" />
+      )}
+      <img
+        src={optimizedOriginal}
+        srcSet={cloudinarySources || undefined}
+        sizes={cloudinarySources ? "(max-width: 767px) calc(100vw - 36px), 402px" : undefined}
+        alt={isFallback ? `Фото для оголошення «${title}» відсутнє` : `Фото оголошення «${title}»`}
+        width="1200"
+        height="900"
+        loading={priority ? "eager" : "lazy"}
+        fetchPriority={priority ? "high" : "auto"}
+        decoding={priority ? "sync" : "async"}
+        className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.02]"
+        onError={(event) => {
+          if (event.currentTarget.getAttribute("src") === FALLBACK_IMAGE) return;
+          failedImagesRef.current.add(currentImage);
+          const nextIndex = items.findIndex((item) => !failedImagesRef.current.has(item));
+          if (nextIndex >= 0) {
+            setIndex(nextIndex);
+            return;
+          }
+          event.currentTarget.setAttribute("src", FALLBACK_IMAGE);
+        }}
+      />
+    </picture>
+  );
 
   return (
-    <div className="relative h-60 overflow-hidden bg-slate-200">
-      {/* Picture element for responsive format selection (AVIF > WebP > original) */}
-      <picture>
-        {variants.avif && (
-          <source srcSet={variants.avif} type="image/avif" />
-        )}
-        {variants.webp && (
-          <source srcSet={variants.webp} type="image/webp" />
-        )}
-        <img 
-          src={variants.original} 
-          alt={title} 
-          loading={priority ? "eager" : "lazy"} 
-          fetchPriority={priority ? "high" : "auto"} 
-          decoding={priority ? "sync" : "async"} 
-          className="h-full w-full object-cover" 
-          onError={(event) => {
-            if (event.currentTarget.getAttribute("src") !== FALLBACK_IMAGE) {
-              event.currentTarget.setAttribute("src", FALLBACK_IMAGE);
-            }
-          }}
-        />
-      </picture>
+    <div className="relative aspect-[4/3] overflow-hidden bg-slate-200">
+      {href ? (
+        <a href={href} className="block h-full w-full" aria-label={`Відкрити оголошення «${title}»`}>
+          {picture}
+        </a>
+      ) : (
+        picture
+      )}
       
       {items.length > 1 && (
         <>
@@ -584,6 +1284,7 @@ function PhotoGallery({ images, title, priority = false }) {
             type="button"
             onClick={prev}
             className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full bg-black/50 px-3 py-1 text-white hover:bg-black/70"
+            aria-label="Попереднє фото"
           >
             ‹
           </button>
@@ -591,6 +1292,7 @@ function PhotoGallery({ images, title, priority = false }) {
             type="button"
             onClick={next}
             className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full bg-black/50 px-3 py-1 text-white hover:bg-black/70"
+            aria-label="Наступне фото"
           >
             ›
           </button>
@@ -600,13 +1302,132 @@ function PhotoGallery({ images, title, priority = false }) {
   );
 }
 
+function ListingCard({ property, favorite, onToggleFavorite, onOpenTrust, priority = false }) {
+  const href = property?.id ? `/listing/${property.id}` : null;
+  const pricePerSquareMeter = formatPricePerSquareMeter(property?.price, property?.area);
+  const dateMeta = getListingDateMeta(property);
+  const verifiedSeller = isVerifiedSeller(property);
+
+  return (
+    <article
+      data-role="listing-card"
+      className="group min-w-0 overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-xl"
+    >
+      <div className="relative">
+        <PhotoGallery images={property.images} title={property.title} href={href} priority={priority} />
+        <div className="pointer-events-none absolute left-3 top-3 flex max-w-[calc(100%-5rem)] flex-wrap gap-2">
+          {property.eOselya ? (
+            <span className="rounded-full bg-blue-600 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-white shadow-md">
+              єОселя
+            </span>
+          ) : null}
+          {verifiedSeller ? (
+            <span className="rounded-full bg-emerald-600 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-white shadow-md">
+              ✓ Перевірений продавець
+            </span>
+          ) : null}
+          {property.verifiedListing ? (
+            <span className="rounded-full bg-teal-700 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-white shadow-md">
+              ✓ Перевірене оголошення
+            </span>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={() => onToggleFavorite(property)}
+          className="absolute right-3 top-3 flex h-11 w-11 items-center justify-center rounded-full bg-white/95 text-lg shadow-lg backdrop-blur transition hover:bg-white"
+          aria-label={favorite ? `Прибрати ${property.title} з обраного` : `Додати ${property.title} в обране`}
+          aria-pressed={favorite}
+        >
+          {favorite ? "❤️" : "🤍"}
+        </button>
+      </div>
+
+      <div className="p-5">
+        <div className="flex flex-col gap-1">
+          <p className={`text-2xl font-black tracking-tight ${isPositiveNumber(property.price) ? "text-blue-700" : "text-slate-500"}`}>
+            {formatListingPrice(property.price)}
+          </p>
+          <p className="text-sm font-bold text-slate-500">
+            {pricePerSquareMeter || "Ціна за м² недоступна"}
+          </p>
+        </div>
+
+        <h3 className="mt-4 line-clamp-2 text-xl font-black leading-snug text-slate-900">
+          {href ? (
+            <a href={href} className="transition hover:text-blue-700">
+              {property.title}
+            </a>
+          ) : (
+            property.title
+          )}
+        </h3>
+
+        <p className="mt-3 flex items-start gap-2 text-sm font-semibold leading-relaxed text-slate-600">
+          <span aria-hidden="true">📍</span>
+          <span>{formatListingAddress(property)}</span>
+        </p>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          {isPositiveNumber(property.rooms) ? (
+            <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700">
+              {property.rooms} кімн.
+            </span>
+          ) : null}
+          {isPositiveNumber(property.area) ? (
+            <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700">
+              {property.area} м²
+            </span>
+          ) : null}
+          <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold capitalize text-slate-700">
+            {property.propertyType}
+          </span>
+        </div>
+
+        <div className="mt-5 flex flex-col gap-1.5 border-t border-slate-100 pt-4 text-xs">
+          <span className="font-semibold text-slate-500">
+            {dateMeta ? `${dateMeta.label} ${dateMeta.value}` : "Дата не вказана"}
+          </span>
+          <span className={`font-bold ${verifiedSeller ? "text-emerald-700" : "text-slate-400"}`}>
+            {verifiedSeller ? "Продавця підтверджено" : "Статус продавця не підтверджено"}
+          </span>
+          <span className="font-bold text-slate-600">{getSellerTypeLabel(property.sellerType)}</span>
+        </div>
+
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          {property?.id && onOpenTrust ? (
+            <button
+              type="button"
+              onClick={(event) => onOpenTrust(property, event.currentTarget)}
+              className="inline-flex min-h-[44px] items-center justify-center rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-black text-blue-700 transition hover:bg-blue-100"
+            >
+              Довіра й безпека
+            </button>
+          ) : null}
+          {href ? (
+            <a
+              href={href}
+              className="inline-flex min-h-[44px] items-center justify-center rounded-2xl bg-slate-900 px-4 py-2.5 text-sm font-black text-white transition hover:bg-blue-700"
+            >
+              Переглянути
+            </a>
+          ) : null}
+        </div>
+      </div>
+    </article>
+  );
+}
+
 export default function RealEstateApp() {
   const keywordInputRef = useRef(null);
+  const mobileFiltersTriggerRef = useRef(null);
+  const mobileFiltersDrawerRef = useRef(null);
+  const mobileFiltersCloseRef = useRef(null);
   const [cityFilter, setCityFilter] = useState(() => getStored("re.cityFilter", "Всі"));
+  const [propertyTypeFilter, setPropertyTypeFilter] = useState(() => getStored("re.propertyType", "Всі"));
   const [onlyEOselya, setOnlyEOselya] = useState(
     () => getStored("re.onlyEOselya", "false") === "true"
   );
-  const [activePanel, setActivePanel] = useState("search");
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(
     () => getStored("re.showFavoritesOnly", "false") === "true"
   );
@@ -643,20 +1464,33 @@ export default function RealEstateApp() {
   const [showCreateListingModal, setShowCreateListingModal] = useState(false);
   const [showEOselyaCalculator, setShowEOselyaCalculator] = useState(false);
   const [eOselyaCalcPrice, setEOselyaCalcPrice] = useState("");
+  const [sellerCabinetTab, setSellerCabinetTab] = useState("data");
+  const [sellerCabinetTabReady, setSellerCabinetTabReady] = useState(true);
   const [editingListingId, setEditingListingId] = useState(null);
   const [listingForm, setListingForm] = useState(() => createInitialListingForm());
   const [listingSubmitting, setListingSubmitting] = useState(false);
   const [listingMessage, setListingMessage] = useState("");
   const [myListings, setMyListings] = useState([]);
   const [myListingsLoading, setMyListingsLoading] = useState(false);
+  const [myListingsFilter, setMyListingsFilter] = useState("all");
   const [selectedListingFiles, setSelectedListingFiles] = useState([]);
   const [selectedListingFilePreviews, setSelectedListingFilePreviews] = useState([]);
   const [liveCatalogListings, setLiveCatalogListings] = useState([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
+  const [trustListing, setTrustListing] = useState(null);
   const [pwaInstallPrompt, setPwaInstallPrompt] = useState(null);
-  const [pwaInstallDismissed, setPwaInstallDismissed] = useState(
-    () => getStored("uaDim.pwaDismissed", "false") === "true"
+  const [pwaInstallDismissed, setPwaInstallDismissed] = useState(() => hasActivePwaDismissal());
+  const [pwaHiddenForSession, setPwaHiddenForSession] = useState(
+    () => typeof window !== "undefined" && window.sessionStorage.getItem(PWA_SESSION_HIDDEN_KEY) === "true"
+  );
+  const [pwaOfferEligible, setPwaOfferEligible] = useState(false);
+  const [pwaInstalled, setPwaInstalled] = useState(
+    () => getStored(PWA_INSTALLED_KEY, "false") === "true" || isPwaRunningStandalone()
+  );
+  const [showMobileFilters, setShowMobileFilters] = useState(false);
+  const [resultsView, setResultsView] = useState(() =>
+    getStored(RESULTS_VIEW_MODE_KEY, "list") === "map" ? "map" : "list"
   );
   const isIosSafari = useMemo(() => {
     if (typeof window === "undefined") return false;
@@ -671,6 +1505,74 @@ export default function RealEstateApp() {
     const ua = window.navigator.userAgent || "";
     return /android|iphone|ipad|ipod|mobile/i.test(ua);
   }, []);
+  const canPromptPwaInstall = Boolean(pwaInstallPrompt && !isIosSafari);
+  const closeTrustDialog = () => setTrustListing(null);
+  const openTrustDialog = (property) => setTrustListing(property);
+  const trustDialog = trustListing ? (
+    <TrustDialog property={trustListing} authToken={authToken} onClose={closeTrustDialog} />
+  ) : null;
+
+  useEffect(() => {
+    setSellerCabinetTabReady(false);
+    const frame = window.requestAnimationFrame(() => setSellerCabinetTabReady(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, [sellerCabinetTab]);
+
+  const closeMobileFilters = (restoreFocus = true) => {
+    setShowMobileFilters(false);
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => mobileFiltersTriggerRef.current?.focus());
+    }
+  };
+
+  useEffect(() => {
+    window.localStorage.setItem(RESULTS_VIEW_MODE_KEY, resultsView);
+  }, [resultsView]);
+
+  useEffect(() => {
+    if (!showMobileFilters) return undefined;
+
+    const previousOverflow = document.body.style.overflow;
+    const desktopMedia = window.matchMedia("(min-width: 1024px)");
+    document.body.style.overflow = "hidden";
+    mobileFiltersCloseRef.current?.focus();
+
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeMobileFilters();
+        return;
+      }
+      if (event.key !== "Tab" || !mobileFiltersDrawerRef.current) return;
+
+      const focusable = [
+        ...mobileFiltersDrawerRef.current.querySelectorAll(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        ),
+      ];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    const handleDesktop = (event) => {
+      if (event.matches) closeMobileFilters(false);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    desktopMedia.addEventListener?.("change", handleDesktop);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+      desktopMedia.removeEventListener?.("change", handleDesktop);
+    };
+  }, [showMobileFilters]);
 
   const catalogProperties = useMemo(() => {
     if (liveCatalogListings.length) return liveCatalogListings;
@@ -679,11 +1581,50 @@ export default function RealEstateApp() {
   }, [catalogError, liveCatalogListings]);
 
   const cities = useMemo(
-    () => ["Всі", ...Array.from(new Set(catalogProperties.map((p) => p.city)))],
+    () => ["Всі", ...Array.from(new Set(catalogProperties.map((p) => p.city).filter(Boolean)))],
     [catalogProperties]
   );
   const activeMyListingsCount = useMemo(
     () => myListings.filter((item) => item.status === "published" && item.listing_status === "active").length,
+    [myListings]
+  );
+  const myListingPhotoCount = useMemo(
+    () => myListings.reduce((total, item) => total + (Array.isArray(item.images) ? item.images.filter(Boolean).length : 0), 0),
+    [myListings]
+  );
+  const myListingCounts = useMemo(
+    () => ({
+      all: myListings.length,
+      active: activeMyListingsCount,
+      review: myListings.filter((item) => item.moderation_status === "pending_review").length,
+      draft: myListings.filter((item) => item.status === "draft").length,
+      archived: myListings.filter(
+        (item) => item.status === "archived" || ["sold", "removed"].includes(item.listing_status)
+      ).length,
+    }),
+    [activeMyListingsCount, myListings]
+  );
+  const visibleMyListings = useMemo(() => {
+    if (myListingsFilter === "active") {
+      return myListings.filter((item) => item.status === "published" && item.listing_status === "active");
+    }
+    if (myListingsFilter === "review") {
+      return myListings.filter((item) => item.moderation_status === "pending_review");
+    }
+    if (myListingsFilter === "draft") {
+      return myListings.filter((item) => item.status === "draft");
+    }
+    if (myListingsFilter === "archived") {
+      return myListings.filter((item) => item.status === "archived" || ["sold", "removed"].includes(item.listing_status));
+    }
+    return myListings;
+  }, [myListings, myListingsFilter]);
+  const weakestListing = useMemo(
+    () =>
+      myListings.reduce((weakest, item) => {
+        if (!weakest) return item;
+        return getListingCompleteness(item).score < getListingCompleteness(weakest).score ? item : weakest;
+      }, null),
     [myListings]
   );
 
@@ -784,6 +1725,7 @@ export default function RealEstateApp() {
       setLiveCatalogListings([]);
     } finally {
       setCatalogLoading(false);
+      window.dispatchEvent(new Event("uah:catalog-settled"));
     }
   };
 
@@ -801,16 +1743,44 @@ export default function RealEstateApp() {
   }, []);
 
   useEffect(() => {
-    const handler = (e) => {
+    const handleInstallPrompt = (e) => {
       e.preventDefault();
-      setPwaInstallPrompt(e);
+      if (!pwaInstalled) setPwaInstallPrompt(e);
     };
-    window.addEventListener("beforeinstallprompt", handler);
-    return () => window.removeEventListener("beforeinstallprompt", handler);
+    const handleInstalled = () => {
+      setPwaInstalled(true);
+      setPwaInstallPrompt(null);
+      setPwaHiddenForSession(true);
+      window.localStorage.setItem(PWA_INSTALLED_KEY, "true");
+      window.sessionStorage.setItem(PWA_SESSION_HIDDEN_KEY, "true");
+    };
+    window.addEventListener("beforeinstallprompt", handleInstallPrompt);
+    window.addEventListener("appinstalled", handleInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleInstallPrompt);
+      window.removeEventListener("appinstalled", handleInstalled);
+    };
+  }, [pwaInstalled]);
+
+  useEffect(() => {
+    const markOfferEligible = () => setPwaOfferEligible(true);
+    const handleScroll = () => {
+      if (window.scrollY < Math.max(320, window.innerHeight * 0.55)) return;
+      markOfferEligible();
+      window.removeEventListener("scroll", handleScroll);
+    };
+    window.addEventListener("uah:meaningful-interaction", markOfferEligible);
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    handleScroll();
+    return () => {
+      window.removeEventListener("uah:meaningful-interaction", markOfferEligible);
+      window.removeEventListener("scroll", handleScroll);
+    };
   }, []);
 
   useEffect(() => {
     window.localStorage.setItem("re.cityFilter", cityFilter);
+    window.localStorage.setItem("re.propertyType", propertyTypeFilter);
     window.localStorage.setItem("re.onlyEOselya", String(onlyEOselya));
     window.localStorage.setItem("re.showFavoritesOnly", String(showFavoritesOnly));
     window.localStorage.setItem("re.minPrice", minPrice);
@@ -824,6 +1794,7 @@ export default function RealEstateApp() {
     window.localStorage.setItem(SAVED_SEARCHES_KEY, JSON.stringify(savedSearches.slice(0, MAX_SAVED_SEARCHES)));
   }, [
     cityFilter,
+    propertyTypeFilter,
     onlyEOselya,
     showFavoritesOnly,
     minPrice,
@@ -899,6 +1870,7 @@ export default function RealEstateApp() {
   const searchFilters = useMemo(
     () => ({
       cityFilter,
+      propertyType: propertyTypeFilter,
       onlyEOselya,
       minPrice,
       maxPrice,
@@ -909,7 +1881,7 @@ export default function RealEstateApp() {
       sortBy,
       keywordSearch,
     }),
-    [cityFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, sortBy, keywordSearch]
+    [cityFilter, propertyTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, sortBy, keywordSearch]
   );
 
   const filteredProperties = useMemo(
@@ -954,12 +1926,9 @@ export default function RealEstateApp() {
     () => describeSearchState(searchFilters, keywordSearch),
     [searchFilters, keywordSearch]
   );
-  const eOselyaCount = useMemo(
-    () => filteredProperties.filter((property) => property.eOselya).length,
-    [filteredProperties]
-  );
   const smartSearchMode =
     typeof window !== "undefined" && window.location.pathname.endsWith(SMART_SEARCH_PATH);
+  const eOselyaCalcPresets = [500000, 1000000, 2500000, 5000000];
   const eOselyaCalcValue = useMemo(() => {
     const price = Number(String(eOselyaCalcPrice).replace(/[^\d.]/g, ""));
     if (!Number.isFinite(price) || price <= 0) return null;
@@ -968,21 +1937,9 @@ export default function RealEstateApp() {
       sevenPercent: price * 0.07,
     };
   }, [eOselyaCalcPrice]);
-  const quickActions = [
-    { label: "Пошук", icon: "🔎", href: "#search", panel: "search", hint: "Фільтри, місто, бюджет, сценарії" },
-    { label: "Обране", icon: "♡", href: "#favorites", panel: "favorites", hint: "Порівняння та збережені варіанти" },
-    { label: "Профіль", icon: "👤", href: "#auth", panel: "profile", hint: "Вхід, тариф, мої оголошення" },
-    { label: "Публікація", icon: "➕", href: "#publish", panel: "publish", hint: "Опублікувати новий об'єкт" },
-  ];
-  const sectionTabs = [
-    { id: "search", label: "Пошук", icon: "🔎", badge: "Фільтри" },
-    { id: "profile", label: "Профіль", icon: "👤", badge: "Кабінет" },
-    { id: "publish", label: "Публікація", icon: "➕", badge: "Оголошення" },
-  ];
   const activatePanel = (panelId) => {
-    setActivePanel(panelId);
     if (typeof document === "undefined") return;
-    const targetId = panelId === "publish" ? "publish" : panelId;
+    const targetId = panelId === "profile" ? "auth" : panelId;
     const target = document.getElementById(targetId);
     if (target) {
       target.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -991,6 +1948,10 @@ export default function RealEstateApp() {
   const activeFilters = useMemo(() => {
     const items = [];
     if (cityFilter !== "Всі") items.push({ key: "cityFilter", label: `Місто: ${cityFilter}` });
+    if (propertyTypeFilter !== "Всі") {
+      const selectedType = PROPERTY_TYPE_OPTIONS.find((option) => option.value === propertyTypeFilter);
+      items.push({ key: "propertyType", label: `Тип: ${selectedType?.label || propertyTypeFilter}` });
+    }
     if (onlyEOselya) items.push({ key: "onlyEOselya", label: "єОселя" });
     if (minPrice || maxPrice) {
       items.push({ key: "price", label: `Ціна: $${minPrice || "0"}-${maxPrice || "∞"}` });
@@ -1003,7 +1964,7 @@ export default function RealEstateApp() {
     }
     if (keywordSearch.trim()) items.push({ key: "keywordSearch", label: `Пошук: "${keywordSearch.trim()}"` });
     return items;
-  }, [cityFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, keywordSearch]);
+  }, [cityFilter, propertyTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, keywordSearch]);
 
   const toggleFavorite = (property) => {
     setFavoriteIds((current) =>
@@ -1015,6 +1976,7 @@ export default function RealEstateApp() {
 
   const resetFilters = () => {
     setCityFilter("Всі");
+    setPropertyTypeFilter("Всі");
     setOnlyEOselya(false);
     setShowFavoritesOnly(false);
     setMinPrice("");
@@ -1056,6 +2018,7 @@ export default function RealEstateApp() {
   const applyScenario = (scenario) => {
     const { filters } = scenario;
     if ("cityFilter" in filters) setCityFilter(filters.cityFilter);
+    if ("propertyTypeFilter" in filters) setPropertyTypeFilter(filters.propertyTypeFilter);
     if ("onlyEOselya" in filters) setOnlyEOselya(filters.onlyEOselya);
     if ("minPrice" in filters) setMinPrice(filters.minPrice);
     if ("maxPrice" in filters) setMaxPrice(filters.maxPrice);
@@ -1068,6 +2031,7 @@ export default function RealEstateApp() {
       setKeywordDraft(filters.keywordSearch);
       setKeywordSearch(filters.keywordSearch);
     }
+    activatePanel("search");
   };
 
   const saveCurrentSearch = () => {
@@ -1089,6 +2053,18 @@ export default function RealEstateApp() {
     setKeywordSearch(keywordDraft.trim());
   };
 
+  const dismissPwaOffer = () => {
+    setPwaInstallDismissed(true);
+    setPwaHiddenForSession(true);
+    window.localStorage.setItem(PWA_DISMISS_KEY, String(Date.now() + PWA_DISMISS_DURATION_MS));
+    window.sessionStorage.setItem(PWA_SESSION_HIDDEN_KEY, "true");
+  };
+
+  const hidePwaOfferForSession = () => {
+    setPwaHiddenForSession(true);
+    window.sessionStorage.setItem(PWA_SESSION_HIDDEN_KEY, "true");
+  };
+
   const clearKeywordSearch = () => {
     setKeywordDraft("");
     setKeywordSearch("");
@@ -1097,6 +2073,7 @@ export default function RealEstateApp() {
   const openSavedSearch = (entry) => {
     const next = entry.filters || {};
     if ("cityFilter" in next) setCityFilter(next.cityFilter);
+    if ("propertyTypeFilter" in next) setPropertyTypeFilter(next.propertyTypeFilter);
     if ("onlyEOselya" in next) setOnlyEOselya(next.onlyEOselya);
     if ("minPrice" in next) setMinPrice(next.minPrice);
     if ("maxPrice" in next) setMaxPrice(next.maxPrice);
@@ -1109,10 +2086,12 @@ export default function RealEstateApp() {
       setKeywordDraft(next.keywordSearch || "");
       setKeywordSearch(next.keywordSearch || "");
     }
+    activatePanel("search");
   };
 
   const clearActiveFilter = (key) => {
     if (key === "cityFilter") setCityFilter("Всі");
+    if (key === "propertyType") setPropertyTypeFilter("Всі");
     if (key === "onlyEOselya") setOnlyEOselya(false);
     if (key === "price") {
       setMinPrice("");
@@ -1178,6 +2157,7 @@ export default function RealEstateApp() {
     setAuthToken("");
     setCurrentUser(null);
     setAuthSuccess("Ви вийшли з профілю");
+    setSellerCabinetTab("data");
     setMyListings([]);
     setListingMessage("");
     setEditingListingId(null);
@@ -1195,7 +2175,15 @@ export default function RealEstateApp() {
   };
 
   const openCreateListingModal = () => {
+    if (!currentUser) {
+      setAuthMode("register");
+      setAuthSuccess("Створіть профіль продавця, а потім додайте дані й фото оголошення.");
+      activatePanel("profile");
+      return;
+    }
     setEditingListingId(null);
+    setSellerCabinetTab("photos");
+    setSellerCabinetTabReady(false);
     const developerDefaults = isDeveloperCabinet
       ? {
           conditionType: "нова будова",
@@ -1248,6 +2236,8 @@ export default function RealEstateApp() {
       const contentType = getFileContentType(file);
       return contentType.startsWith("image/");
     });
+    setSellerCabinetTab("photos");
+    setSellerCabinetTabReady(false);
     setSelectedListingFiles((prev) => [...prev, ...files]);
     // Reset input so selecting the same file again still triggers onChange
     event.target.value = "";
@@ -1510,6 +2500,34 @@ export default function RealEstateApp() {
     }
   };
 
+  useEffect(() => {
+    if (smartSearchMode) return undefined;
+    const heroInput = document.getElementById("hero-property-search");
+    keywordInputRef.current = heroInput;
+    const handleHeroSearch = (event) => {
+      const query = String(event.detail?.query || "").trim();
+      setKeywordDraft(query);
+      setKeywordSearch(query);
+      window.__UA_PENDING_HERO_SEARCH__ = null;
+      window.requestAnimationFrame(() => {
+        document.getElementById("results")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    };
+    window.addEventListener("uah:hero-search", handleHeroSearch);
+    if (window.__UA_PENDING_HERO_SEARCH__) {
+      handleHeroSearch({ detail: window.__UA_PENDING_HERO_SEARCH__ });
+    }
+    return () => window.removeEventListener("uah:hero-search", handleHeroSearch);
+  }, [smartSearchMode]);
+
+  useEffect(() => {
+    if (smartSearchMode) return;
+    const heroInput = document.getElementById("hero-property-search");
+    if (heroInput && document.activeElement !== heroInput && heroInput.value !== keywordDraft) {
+      heroInput.value = keywordDraft;
+    }
+  }, [keywordDraft, smartSearchMode]);
+
   if (smartSearchMode) {
     return React.createElement(SmartSearchPage, {
       keywordInputRef,
@@ -1529,6 +2547,8 @@ export default function RealEstateApp() {
       setShowFavoritesOnly,
       saveCurrentSearch,
       resetFilters,
+      onOpenTrust: openTrustDialog,
+      trustDialog,
     });
   }
 
@@ -1573,315 +2593,7 @@ export default function RealEstateApp() {
   }, [currentUser]);
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="sticky top-0 z-50 border-b border-slate-200 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-blue-700 text-sm font-black text-white shadow-lg shadow-slate-900/20">
-              UA
-            </div>
-            <div>
-              <div className="text-lg font-black tracking-tight text-slate-900">UA-Dim</div>
-              <div className="text-xs font-medium text-slate-500">Пошук нерухомості</div>
-            </div>
-          </div>
-
-          <nav className="hidden items-center gap-2 lg:flex">
-            {quickActions.map((item) => {
-              const isActive = activePanel === item.panel;
-              return (
-                <a
-                  key={item.label}
-                  href={item.href}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    activatePanel(item.panel);
-                  }}
-                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-semibold transition ${
-                    isActive
-                      ? "border-blue-600 bg-blue-600 text-white shadow-sm"
-                      : "border-slate-200 bg-slate-50 text-slate-700 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
-                  }`}
-                >
-                  <span className="text-base">{item.icon}</span>
-                  <span>{item.label}</span>
-                </a>
-              );
-            })}
-          </nav>
-
-          <div className="flex items-center gap-2">
-            <a
-              href={SMART_SEARCH_PATH}
-              className="inline-flex rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700 transition hover:bg-blue-100"
-            >
-              Розумний пошук
-            </a>
-            <button
-              type="button"
-              onClick={() => setShowFavoritesOnly((current) => !current)}
-              className="hidden rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-bold text-rose-700 transition hover:bg-rose-100 sm:inline-flex"
-            >
-              Тільки обрані ({favoriteIds.length})
-            </button>
-            <a
-              href="#auth"
-              className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
-            >
-              Вхід / реєстрація
-            </a>
-          </div>
-        </div>
-      </header>
-
-      {pwaInstallPrompt && !pwaInstallDismissed ? (
-        <div className="sticky top-[73px] z-40 border-b border-blue-100 bg-blue-600 text-white">
-          <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-2.5">
-            <div className="flex items-center gap-2.5 text-sm font-semibold">
-              <span className="text-base">📱</span>
-              <span>Встановіть UA-Dim як застосунок — швидко і без App Store</span>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={async () => {
-                  pwaInstallPrompt.prompt();
-                  const { outcome } = await pwaInstallPrompt.userChoice;
-                  if (outcome === "accepted") {
-                    setPwaInstallPrompt(null);
-                  }
-                }}
-                className="rounded-xl bg-white px-3 py-1.5 text-xs font-black text-blue-700 transition hover:bg-blue-50"
-              >
-                Встановити
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setPwaInstallDismissed(true);
-                  window.localStorage.setItem("uaDim.pwaDismissed", "true");
-                }}
-                className="rounded-xl border border-white/30 px-2.5 py-1.5 text-xs font-semibold text-white/80 transition hover:bg-white/10"
-              >
-                ✕
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : isIosSafari && !pwaInstallDismissed ? (
-        <div className="sticky top-[73px] z-40 border-b border-slate-200 bg-slate-900 text-white">
-          <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-2.5">
-            <div className="flex items-center gap-2.5 text-sm font-semibold">
-              <span className="text-base">📱</span>
-              <span>
-                Додайте UA-Dim на головний екран:{" "}
-                <span className="font-normal opacity-80">натисніть <strong>Поділитись</strong> → <strong>На екран Початку</strong></span>
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setPwaInstallDismissed(true);
-                window.localStorage.setItem("uaDim.pwaDismissed", "true");
-              }}
-              className="shrink-0 rounded-xl border border-white/30 px-2.5 py-1.5 text-xs font-semibold text-white/80 transition hover:bg-white/10"
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      <section className="bg-[radial-gradient(circle_at_top_left,rgba(37,99,235,.16),transparent_35%),linear-gradient(180deg,#0f172a_0%,#1e293b_58%,#f8fafc_58%)]">
-        <div className="mx-auto max-w-7xl px-4 pb-10 pt-10 lg:pb-14">
-          <div className="grid gap-6 lg:grid-cols-12">
-            <div className="rounded-[32px] border border-white/10 bg-slate-900/95 p-6 shadow-2xl shadow-slate-900/20 backdrop-blur lg:col-span-7">
-              <p className="text-xs font-black uppercase tracking-[0.28em] text-blue-300">
-                Search-first marketplace
-              </p>
-              <h1 className="mt-3 text-4xl font-black leading-tight text-white sm:text-5xl">
-                Нерухомість України
-              </h1>
-              <p className="mt-4 max-w-2xl text-base leading-relaxed text-slate-300">
-                Знаходьте об&apos;єкти за містом, районом, площею й бюджетом, зберігайте пошук, порівнюйте
-                обрані та швидко відсікайте неактуальні варіанти.
-              </p>
-
-              <div className="mt-6 flex flex-wrap gap-2">
-                <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white">
-                  Пошук відразу по всій Україні
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setShowEOselyaCalculator(true)}
-                  className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20"
-                >
-                  єОселя 3% / 7%
-                </button>
-                <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white">
-                  Порівняння обраних
-                </span>
-                <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white">
-                  Швидкі сценарії
-                </span>
-              </div>
-
-              <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                {[
-                  { label: "Знайдено", value: visibleProperties.length, note: "об'єктів" },
-                  { label: "У фільтрі", value: filteredProperties.length, note: "після умов" },
-                  { label: "Обрані", value: favoriteStats.count, note: "збережено" },
-                  { label: "єОселя", value: eOselyaCount, note: "пропозицій" },
-                ].map((metric) => (
-                  <div key={metric.label} className="rounded-[24px] border border-white/10 bg-white/10 p-4">
-                    <div className="text-xs font-black uppercase tracking-wide text-blue-200">{metric.label}</div>
-                    <div className="mt-1 text-3xl font-black text-white">{metric.value}</div>
-                    <div className="mt-1 text-xs font-semibold text-slate-300">{metric.note}</div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                {quickActions.map((item) => {
-                  const isActive = activePanel === item.panel;
-                  return (
-                    <a
-                      key={item.label}
-                      href={item.href}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        activatePanel(item.panel);
-                      }}
-                     className={`rounded-[24px] border px-4 py-3 text-left backdrop-blur-sm transition ${
-                        isActive
-                          ? "border-white/40 bg-white/25 shadow-lg shadow-slate-950/20"
-                          : "border-white/15 bg-white/10 hover:bg-white/20"
-                      }`}
-                    >
-                     <div className="flex items-center justify-between gap-2">
-                       <div className="flex items-center gap-2 text-sm font-black text-white">
-                         <span className="text-base">{item.icon}</span>
-                         <span>{item.label}</span>
-                       </div>
-                       {isActive ? <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-white">Активно</span> : null}
-                     </div>
-                     <div className="mt-2 text-[11px] font-semibold leading-relaxed text-slate-300">{item.hint}</div>
-                   </a>
-                 );
-               })}
-              </div>
-            </div>
-
-            <div className="rounded-[32px] border border-slate-200 bg-white p-5 shadow-xl shadow-slate-200/70 lg:col-span-5">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Активний запит</p>
-                  <p className="mt-1 text-2xl font-black text-slate-900">UA-DIM</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={clearKeywordSearch}
-                  className="rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 transition hover:bg-blue-100"
-                >
-                  ✕ Очистити слово
-                </button>
-              </div>
-
-              <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3">
-                <p className="text-[11px] font-black uppercase tracking-wide text-blue-700">Поточний запит</p>
-                <p className="mt-1 text-sm leading-relaxed text-slate-700">{searchSummary}</p>
-              </div>
-
-              <div className="mt-4 flex flex-wrap gap-2">
-                {oneClickChips.slice(0, 6).map((chip) => (
-                  <button
-                    key={chip.label}
-                    type="button"
-                    onClick={chip.action}
-                    className="rounded-full border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100"
-                  >
-                    {chip.label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Ключові слова</p>
-                  <span className="text-xs font-semibold text-slate-400">Швидке автодоповнення</span>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {KEYWORD_SUGGESTIONS.map((suggestion) => (
-                    <button
-                      key={suggestion}
-                      type="button"
-                      onClick={() => {
-                        const current = keywordDraft.trim();
-                        const nextValue = current ? `${current} ${suggestion}` : suggestion;
-                        setKeywordDraft(nextValue);
-                        setKeywordSearch(nextValue);
-                        window.requestAnimationFrame(() => {
-                          keywordInputRef.current?.focus();
-                          keywordInputRef.current?.select?.();
-                        });
-                      }}
-                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
-                    >
-                      {suggestion}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={saveCurrentSearch}
-                  className="min-h-[44px] rounded-2xl bg-slate-900 px-4 text-sm font-bold text-white transition hover:bg-blue-700"
-                >
-                  💾 Зберегти запит
-                </button>
-                <button
-                  type="button"
-                  onClick={resetFilters}
-                  className="min-h-[44px] rounded-2xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition hover:bg-slate-50"
-                >
-                  ↺ Скинути фільтри
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="mx-auto max-w-7xl px-4 pb-6">
-        <div className="rounded-[32px] border border-slate-200 bg-white p-3 shadow-sm">
-          <div className="flex flex-wrap gap-2">
-            {sectionTabs.map((tab) => {
-              const isActive = activePanel === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => activatePanel(tab.id)}
-                  className={`flex items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-bold transition ${
-                    isActive
-                      ? "border-blue-600 bg-blue-600 text-white shadow-lg shadow-blue-200"
-                      : "border-slate-200 bg-slate-50 text-slate-700 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
-                  }`}
-                >
-                  <span className="text-base">{tab.icon}</span>
-                  <span>{tab.label}</span>
-                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide ${
-                    isActive ? "bg-white/20 text-white" : "bg-white text-slate-500"
-                  }`}>{tab.badge}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </section>
-
+    <div className="bg-slate-50 text-slate-900">
       {showEOselyaCalculator ? (
        <div
          className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/70 px-4 py-6 backdrop-blur-sm"
@@ -1916,6 +2628,30 @@ export default function RealEstateApp() {
                placeholder="Наприклад, 1250000"
                className="mt-2 w-full rounded-2xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
              />
+             <div className="mt-3 flex flex-wrap gap-2">
+               {eOselyaCalcPresets.map((preset) => (
+                 <button
+                   key={preset}
+                   type="button"
+                   onClick={() => setEOselyaCalcPrice(String(preset))}
+                   className="rounded-full border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100"
+                 >
+                   ₴{preset.toLocaleString("uk-UA")}
+                 </button>
+               ))}
+             </div>
+           </div>
+
+           <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+             <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">Формула розрахунку</p>
+             <p className="mt-2 text-sm text-slate-600">
+               Комісія = вартість об’єкта × 3% або × 7% залежно від тарифу єОселя.
+             </p>
+             <p className="mt-3 text-sm font-black text-slate-900">
+               {eOselyaCalcValue
+                 ? `${formatCurrency(eOselyaCalcValue.threePercent)} / ${formatCurrency(eOselyaCalcValue.sevenPercent)}`
+                 : "Введіть суму, щоб побачити розрахунок"}
+             </p>
            </div>
 
            <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -1943,6 +2679,27 @@ export default function RealEstateApp() {
       ) : null}
 
       <section className="mx-auto max-w-7xl px-4 pb-12">
+       <div className="mb-4 rounded-[24px] border border-blue-200 bg-white p-3 shadow-sm lg:hidden">
+         <button
+           ref={mobileFiltersTriggerRef}
+           type="button"
+           onClick={() => setShowMobileFilters(true)}
+           aria-controls="search"
+           aria-expanded={showMobileFilters}
+           className="flex w-full items-center justify-between gap-3 rounded-2xl bg-slate-900 px-4 py-3 text-left text-white transition hover:bg-blue-700"
+         >
+           <span>
+             <span className="block text-sm font-black">Розширені фільтри</span>
+             <span className="mt-0.5 block text-xs font-medium text-slate-300">
+               {activeFilters.length ? `${activeFilters.length} активних умов` : "Місто, тип, ціна, кімнати й площа"}
+             </span>
+           </span>
+           <span className="shrink-0 rounded-full bg-white/15 px-3 py-1 text-xs font-black">
+             {visibleProperties.length}
+           </span>
+         </button>
+       </div>
+
        <div className="grid gap-6 lg:grid-cols-12">
           <aside id="add" className="space-y-6 lg:col-span-4 lg:sticky lg:top-24 self-start">
             <div id="publish" className="scroll-mt-28 rounded-[28px] border border-amber-200 bg-gradient-to-br from-amber-50 via-white to-orange-50 p-5 shadow-sm">
@@ -1996,6 +2753,38 @@ export default function RealEstateApp() {
                   ? cabinet.intro
                   : "Створіть кабінет власника, ріелтора або забудовника, щоб публікувати оголошення просто з сайту."}
               </p>
+
+              {currentUser ? (
+                <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  {[
+                    {
+                      step: "1",
+                      title: "Заповніть дані",
+                      text: "Назва, ціна, площа, тип і район.",
+                    },
+                    {
+                      step: "2",
+                      title: "Додайте фото",
+                      text: "З телефону або за прямим URL.",
+                    },
+                    {
+                      step: "3",
+                      title: "Публікуйте",
+                      text: "Фото й оголошення одразу підуть на сайт.",
+                    },
+                  ].map((item) => (
+                    <div key={item.step} className="rounded-2xl border border-slate-200 bg-white p-3">
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-7 w-7 items-center justify-center rounded-full bg-blue-600 text-xs font-black text-white">
+                          {item.step}
+                        </span>
+                        <p className="text-sm font-black text-slate-900">{item.title}</p>
+                      </div>
+                      <p className="mt-2 text-xs leading-relaxed text-slate-500">{item.text}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
 
               {authError ? <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{authError}</div> : null}
               {authSuccess ? <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{authSuccess}</div> : null}
@@ -2096,16 +2885,162 @@ export default function RealEstateApp() {
                     ) : null}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
-                      <p className="text-[11px] font-black uppercase tracking-wide text-emerald-700">Активні</p>
-                      <p className="mt-1 text-2xl font-black text-emerald-700">{activeMyListingsCount}</p>
+                  <div className="rounded-3xl border border-slate-200 bg-white p-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-wide text-slate-500">Кабінет продавця</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-700">
+                          Окремі вкладки для фото, даних і статусу публікації.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={openCreateListingModal}
+                        className="rounded-2xl bg-blue-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700"
+                      >
+                        Відкрити форму
+                      </button>
                     </div>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                      <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">
-                        {isRealtorCabinet ? "У портфелі" : "Усього"}
-                      </p>
-                      <p className="mt-1 text-2xl font-black text-slate-900">{myListings.length}</p>
+
+                    <div className="mt-3 grid grid-cols-3 gap-2">
+                      {[
+                        {
+                          id: "photos",
+                          label: "Мої фото",
+                          icon: "📷",
+                          count: myListingPhotoCount,
+                          tone: "blue",
+                        },
+                        {
+                          id: "data",
+                          label: "Мої дані",
+                          icon: "👤",
+                          count: currentUser?.email ? 1 : 0,
+                          tone: "slate",
+                        },
+                        {
+                          id: "status",
+                          label: "Статус",
+                          icon: "📊",
+                          count: activeMyListingsCount,
+                          tone: "emerald",
+                        },
+                      ].map((tab) => {
+                        const isActive = sellerCabinetTab === tab.id;
+                        return (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => setSellerCabinetTab(tab.id)}
+                            className={`rounded-2xl border p-3 text-left transition ${
+                              isActive
+                                ? tab.tone === "blue"
+                                  ? "border-blue-300 bg-blue-50 shadow-sm scale-[1.02]"
+                                  : tab.tone === "emerald"
+                                    ? "border-emerald-300 bg-emerald-50 shadow-sm scale-[1.02]"
+                                    : "border-slate-300 bg-slate-100 shadow-sm scale-[1.02]"
+                                : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                            }`}
+                            aria-pressed={isActive}
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="text-lg">{tab.icon}</span>
+                              <div>
+                                <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">{tab.label}</p>
+                                <p className="text-lg font-black text-slate-900">{tab.count}</p>
+                              </div>
+                            </div>
+                            {isActive ? (
+                              <span
+                                className={`mt-2 block h-1 w-10 rounded-full ${
+                                  tab.tone === "blue"
+                                    ? "bg-blue-500"
+                                    : tab.tone === "emerald"
+                                      ? "bg-emerald-500"
+                                      : "bg-slate-500"
+                                }`}
+                              />
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div
+                      key={sellerCabinetTab}
+                      className={`mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 transition-all duration-200 ease-out ${
+                        sellerCabinetTabReady ? "translate-y-0 opacity-100" : "translate-y-1 opacity-0"
+                      }`}
+                    >
+                      {sellerCabinetTab === "photos" ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-base">📷</span>
+                            <p className="text-sm font-black text-slate-900">Мої фото</p>
+                          </div>
+                          <p className="text-xs text-slate-600">
+                            {myListingPhotoCount
+                              ? "Ці фото вже збережені у ваших оголошеннях на сайті."
+                              : "Опублікуйте оголошення з фото — після цього вони з'являться тут."}
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={openCreateListingModal}
+                              className="rounded-2xl bg-blue-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700"
+                            >
+                              Додати фото
+                            </button>
+                            <span className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+                              {myListingPhotoCount} фото на сайті
+                            </span>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {sellerCabinetTab === "data" ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-base">👤</span>
+                            <p className="text-sm font-black text-slate-900">Мої дані</p>
+                          </div>
+                          <p className="text-xs text-slate-600">
+                            Тут видно ваш email, тип кабінету та тариф, щоб не губитися між налаштуваннями.
+                          </p>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <div className="rounded-2xl border border-white bg-white p-3">
+                              <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Email</p>
+                              <p className="mt-1 text-sm font-bold text-slate-900">{currentUser.email}</p>
+                            </div>
+                            <div className="rounded-2xl border border-white bg-white p-3">
+                              <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Кабінет</p>
+                              <p className="mt-1 text-sm font-bold text-slate-900">{cabinet.badge}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {sellerCabinetTab === "status" ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-base">📊</span>
+                            <p className="text-sm font-black text-slate-900">Статус публікації</p>
+                          </div>
+                          <p className="text-xs text-slate-600">
+                            Скільки оголошень уже активні та що ще не опубліковано.
+                          </p>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
+                              <p className="text-[10px] font-black uppercase tracking-wide text-emerald-700">Активні</p>
+                              <p className="mt-1 text-2xl font-black text-emerald-700">{activeMyListingsCount}</p>
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                              <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Усього</p>
+                              <p className="mt-1 text-2xl font-black text-slate-900">{myListings.length}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
 
@@ -2207,26 +3142,61 @@ export default function RealEstateApp() {
               )}
             </div>
 
-            <div id="search" className="scroll-mt-28 rounded-[28px] border border-blue-200 bg-gradient-to-br from-blue-50 via-white to-cyan-50 p-5 shadow-sm">
+            <div
+              id="search"
+              className={`${
+                showMobileFilters ? "fixed inset-0 z-[90] flex bg-slate-950/60" : "hidden"
+              } lg:static lg:block lg:scroll-mt-28 lg:bg-transparent`}
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) closeMobileFilters();
+              }}
+            >
+              <div
+                ref={mobileFiltersDrawerRef}
+                role={showMobileFilters ? "dialog" : undefined}
+                aria-modal={showMobileFilters ? "true" : undefined}
+                aria-labelledby="mobile-filters-title"
+                onMouseDown={(event) => event.stopPropagation()}
+                className="ml-auto h-full w-full max-w-md overflow-y-auto bg-gradient-to-br from-blue-50 via-white to-cyan-50 p-5 shadow-2xl lg:h-auto lg:max-w-none lg:overflow-visible lg:rounded-[28px] lg:border lg:border-blue-200 lg:shadow-sm"
+              >
               <div className="mb-4 h-1.5 rounded-full bg-gradient-to-r from-blue-600 to-cyan-500" />
-              <div className="flex items-start justify-between gap-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="text-base">🔎</span>
                     <div>
                       <p className="text-xs font-black uppercase tracking-wide text-slate-500">Фільтри</p>
-                      <h2 className="mt-0.5 text-xl font-black text-slate-900">Пошук</h2>
+                      <h2 id="mobile-filters-title" className="mt-0.5 text-xl font-black text-slate-900">
+                        Пошук
+                      </h2>
                     </div>
                   </div>
                   <p className="mt-2 text-sm text-slate-500">Оберіть місто, бюджет, кімнати та збережіть запит для наступного разу.</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={resetFilters}
-                  className="rounded-2xl bg-slate-900 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700"
-                >
-                  Скинути фільтри
-                </button>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <button
+                    ref={mobileFiltersCloseRef}
+                    type="button"
+                    onClick={() => closeMobileFilters()}
+                    className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 lg:hidden"
+                    aria-label="Закрити фільтри"
+                  >
+                    ✕ Закрити
+                  </button>
+                  <a
+                    href={SMART_SEARCH_PATH}
+                    className="inline-flex min-h-[44px] items-center rounded-2xl border border-blue-200 bg-white px-3 py-2 text-xs font-bold text-blue-700 transition hover:bg-blue-50"
+                  >
+                    Розумний пошук
+                  </a>
+                  <button
+                    type="button"
+                    onClick={resetFilters}
+                    className="rounded-2xl bg-slate-900 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700"
+                  >
+                    Скинути фільтри
+                  </button>
+                </div>
               </div>
 
               <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3">
@@ -2266,7 +3236,6 @@ export default function RealEstateApp() {
                 </div>
                 <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                   <input
-                    ref={keywordInputRef}
                     type="text"
                     value={keywordDraft}
                     onChange={(e) => setKeywordDraft(e.target.value)}
@@ -2301,16 +3270,23 @@ export default function RealEstateApp() {
                   </button>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {QUICK_SCENARIOS.map((scenario) => (
-                    <button
-                      key={scenario.label}
-                      type="button"
-                      onClick={() => applyScenario(scenario)}
-                      className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-medium text-slate-800 transition hover:bg-slate-200"
-                    >
-                      {scenario.label}
-                    </button>
-                  ))}
+                  {QUICK_SCENARIOS.map((scenario) => {
+                    const isActive = propertyTypeFilter === scenario.value;
+                    return (
+                      <button
+                        key={scenario.label}
+                        type="button"
+                        onClick={() => applyScenario(scenario)}
+                        className={`rounded-xl px-3 py-2 text-sm font-semibold transition ${
+                          isActive
+                            ? "bg-blue-600 text-white shadow-sm"
+                            : "bg-slate-100 text-slate-800 hover:bg-slate-200"
+                        }`}
+                      >
+                        {scenario.label}
+                      </button>
+                    );
+                  })}
                 </div>
                 {!!savedSearches.length && (
                   <div className="mt-4 flex flex-wrap gap-2">
@@ -2349,6 +3325,21 @@ export default function RealEstateApp() {
                     {cities.map((city) => (
                       <option key={city} value={city}>
                         {city === "Всі" ? "Всі міста України" : city}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Тип нерухомості</label>
+                  <select
+                    value={propertyTypeFilter}
+                    onChange={(event) => setPropertyTypeFilter(event.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                  >
+                    {PROPERTY_TYPE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
                       </option>
                     ))}
                   </select>
@@ -2480,6 +3471,26 @@ export default function RealEstateApp() {
                   Очистити localStorage
                 </button>
               </div>
+              <div className="sticky bottom-0 -mx-5 mt-5 border-t border-slate-200 bg-white/95 p-4 backdrop-blur lg:hidden">
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeMobileFilters(false);
+                    window.dispatchEvent(
+                      new CustomEvent("uah:meaningful-interaction", { detail: { source: "mobile-filters" } })
+                    );
+                    window.requestAnimationFrame(() => {
+                      const results = document.getElementById("results");
+                      results?.focus({ preventScroll: true });
+                      results?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    });
+                  }}
+                  className="w-full rounded-2xl bg-blue-600 px-4 py-3 text-sm font-black text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700"
+                >
+                  Показати {visibleProperties.length} оголошень
+                </button>
+              </div>
+              </div>
             </div>
 
             <div className="rounded-[28px] border border-rose-200 bg-rose-50 p-5 shadow-sm">
@@ -2509,7 +3520,10 @@ export default function RealEstateApp() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setShowFavoritesOnly(true)}
+                    onClick={() => {
+                      setShowFavoritesOnly(true);
+                      activatePanel("favorites");
+                    }}
                     className="min-h-[44px] rounded-2xl bg-slate-900 px-4 text-sm font-bold text-white transition hover:bg-blue-700"
                   >
                     Порівняти зараз
@@ -2593,7 +3607,11 @@ export default function RealEstateApp() {
           </aside>
 
           <div className="space-y-4 lg:col-span-8">
-            <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
+            <div
+              id="results"
+              tabIndex={-1}
+              className="scroll-mt-24 rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm outline-none"
+            >
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
                   <p className="text-xs font-black uppercase tracking-wide text-slate-500">Результати</p>
@@ -2614,6 +3632,37 @@ export default function RealEstateApp() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
+                  <div
+                    data-role="results-view-toggle"
+                    role="group"
+                    aria-label="Вигляд результатів"
+                    className="inline-flex rounded-2xl border border-slate-200 bg-slate-100 p-1"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setResultsView("list")}
+                      aria-pressed={resultsView === "list"}
+                      className={`rounded-xl px-3 py-2 text-sm font-bold transition ${
+                        resultsView === "list"
+                          ? "bg-white text-slate-900 shadow-sm"
+                          : "text-slate-500 hover:text-slate-900"
+                      }`}
+                    >
+                      Список
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setResultsView("map")}
+                      aria-pressed={resultsView === "map"}
+                      className={`rounded-xl px-3 py-2 text-sm font-bold transition ${
+                        resultsView === "map"
+                          ? "bg-blue-600 text-white shadow-sm"
+                          : "text-slate-500 hover:text-slate-900"
+                      }`}
+                    >
+                      Карта
+                    </button>
+                  </div>
                   <button
                     type="button"
                     onClick={() => setShowFavoritesOnly((current) => !current)}
@@ -2665,100 +3714,27 @@ export default function RealEstateApp() {
              </div>
             ) : null}
 
-            <div id="favorites" className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-2">
+            {resultsView === "map" ? (
+              <ListingsMapView properties={visibleProperties} onShowList={() => setResultsView("list")} />
+            ) : null}
+
+            <div
+              id="favorites"
+              className={resultsView === "list" ? "grid grid-cols-1 gap-5 md:grid-cols-2" : "hidden"}
+            >
               {visibleProperties.map((property, cardIndex) => (
-                <div
+                <ListingCard
                   key={property.id}
-                  className="group overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-xl"
-                >
-                  <div className="relative">
-                    <PhotoGallery images={property.images} title={property.title} priority={cardIndex < 4} />
-                    <div className="absolute left-3 top-3 flex flex-col gap-2">
-                      {property.eOselya && (
-                        <span className="rounded-full bg-blue-600 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-white shadow-md">
-                          єОселя
-                        </span>
-                      )}
-                      <span className="rounded-full bg-black/60 px-3 py-1.5 text-[10px] font-semibold text-white backdrop-blur-sm">
-                        {property.city}, {property.district}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => toggleFavorite(property)}
-                      className="absolute right-3 top-3 rounded-full bg-white/90 px-3 py-1 text-sm font-bold shadow hover:bg-white"
-                      aria-label={
-                        favoriteIds.includes(property.id)
-                          ? `Прибрати ${property.title} з обраного`
-                          : `Додати ${property.title} в обране`
-                      }
-                    >
-                      {favoriteIds.includes(property.id) ? "❤️" : "🤍"}
-                    </button>
-                    <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between gap-2">
-                      <span className="rounded-full bg-black/60 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur-sm">
-                        {property.rooms} кімн.
-                      </span>
-                      <span className="rounded-full bg-white/90 px-3 py-1.5 text-xs font-bold text-slate-700">
-                        {property.area} м²
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="p-5">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <h3 className="line-clamp-2 text-lg font-bold leading-snug text-slate-900 group-hover:text-blue-700">
-                          {property.title}
-                        </h3>
-                        <p className="mt-2 text-sm text-slate-500">
-                          {property.city} • {property.district}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-2xl font-black text-blue-600">${property.price.toLocaleString("uk-UA")}</p>
-                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Ціна</p>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700">
-                        {property.rooms} кімн.
-                      </span>
-                      <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700">
-                        {property.area} м²
-                      </span>
-                      <span
-                        className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
-                          property.eOselya
-                            ? "bg-emerald-100 text-emerald-700"
-                            : "bg-amber-50 text-amber-700"
-                        }`}
-                      >
-                        {property.eOselya ? "Під єОселя" : "Стандартна пропозиція"}
-                      </span>
-                    </div>
-
-                    <div className="mt-4 flex items-center justify-between gap-3">
-                      <p className="text-xs text-slate-500">
-                        {property.eOselya
-                          ? "Підходить під державну програму"
-                          : "Базова пропозиція без держпрограми"}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => toggleFavorite(property)}
-                        className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700 transition hover:bg-blue-50 hover:text-blue-700"
-                      >
-                        {favoriteIds.includes(property.id) ? "В обраному" : "В обране"}
-                      </button>
-                    </div>
-                  </div>
-                </div>
+                  property={property}
+                  favorite={favoriteIds.includes(property.id)}
+                  onToggleFavorite={toggleFavorite}
+                  onOpenTrust={openTrustDialog}
+                  priority={false}
+                />
               ))}
             </div>
 
-            {visibleProperties.length === 0 && (
+            {resultsView === "list" && visibleProperties.length === 0 && (
               <div className="rounded-[28px] border border-dashed border-slate-200 bg-white py-16 text-center px-6">
                 <p className="text-lg font-medium text-slate-400">
                   {catalogLoading && !catalogProperties.length
@@ -2780,6 +3756,60 @@ export default function RealEstateApp() {
           </div>
         </div>
       </section>
+
+      {pwaOfferEligible &&
+      !pwaInstalled &&
+      !pwaInstallDismissed &&
+      !pwaHiddenForSession &&
+      (pwaInstallPrompt || isIosSafari) ? (
+        <aside
+          data-role="pwa-install-offer"
+          aria-label={canPromptPwaInstall ? "Встановлення UA-Dim" : "Як додати UA-Dim на головний екран"}
+          className="mx-auto my-6 w-[calc(100%-2rem)] max-w-7xl rounded-[24px] border border-blue-200 bg-white p-4 shadow-sm"
+        >
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-start gap-3">
+              <span aria-hidden="true" className="shrink-0 text-xl">📱</span>
+              <div>
+                <p className="text-sm font-black text-slate-900">
+                  {canPromptPwaInstall ? "UA-Dim можна встановити як застосунок" : "Додайте UA-Dim на головний екран"}
+                </p>
+                <p className="mt-1 text-sm text-slate-600">
+                  {canPromptPwaInstall
+                    ? "Поверніться до пошуку житла одним дотиком."
+                    : <>У Safari натисніть <strong>Поділитись</strong> → <strong>На екран Початку</strong>.</>}
+                </p>
+              </div>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {canPromptPwaInstall ? (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await pwaInstallPrompt.prompt();
+                    await pwaInstallPrompt.userChoice;
+                    setPwaInstallPrompt(null);
+                    hidePwaOfferForSession();
+                  }}
+                  className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-black text-white transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2"
+                >
+                  Встановити
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={dismissPwaOffer}
+                aria-label="Закрити пропозицію встановлення на 30 днів"
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-600 transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2"
+              >
+                Не зараз
+              </button>
+            </div>
+          </div>
+        </aside>
+      ) : null}
+
+      {trustDialog}
 
       {planLimitPrompt ? (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/70 px-4 py-8">
@@ -3022,11 +4052,30 @@ export default function RealEstateApp() {
                   </label>
                   {selectedListingFiles.length ? (
                     <div className="mt-3 space-y-3">
+                      <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-[11px] font-black uppercase tracking-wide text-blue-700">Фото додано</p>
+                            <p className="mt-1 text-sm text-slate-700">
+                              {selectedListingFiles.length} фото{selectedListingFiles.length > 1 ? " готові" : " готове"} до публікації.
+                            </p>
+                          </div>
+                          <span className="rounded-full bg-white px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-blue-700">
+                            Буде завантажено на сайт
+                          </span>
+                        </div>
+                        <p className="mt-2 text-xs leading-relaxed text-slate-600">
+                          Після натискання <b>Публікувати оголошення</b> фото автоматично завантажаться в оголошення і стануть видимими в каталозі.
+                        </p>
+                      </div>
                       {selectedListingFilePreviews.length ? (
                         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                           {selectedListingFilePreviews.map((preview, previewIndex) => (
                             <div key={preview.id} className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                               <img src={preview.src} alt={preview.name} className="h-28 w-full object-cover" />
+                              <span className="absolute left-2 top-2 rounded-full bg-emerald-600 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white shadow">
+                                Готово
+                              </span>
                               <div className="border-t border-slate-100 px-3 py-1.5 text-xs font-medium text-slate-600 truncate">
                                 {preview.name}
                               </div>
