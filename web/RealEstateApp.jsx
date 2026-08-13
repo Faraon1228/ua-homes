@@ -1590,8 +1590,6 @@ export default function RealEstateApp() {
   const [showCreateListingModal, setShowCreateListingModal] = useState(false);
   const [showEOselyaCalculator, setShowEOselyaCalculator] = useState(false);
   const [eOselyaCalcPrice, setEOselyaCalcPrice] = useState("");
-  const [sellerCabinetTab, setSellerCabinetTab] = useState("data");
-  const [sellerCabinetTabReady, setSellerCabinetTabReady] = useState(true);
   const [editingListingId, setEditingListingId] = useState(null);
   const [listingForm, setListingForm] = useState(() => createInitialListingForm());
   const [listingSubmitting, setListingSubmitting] = useState(false);
@@ -1642,12 +1640,6 @@ export default function RealEstateApp() {
   const trustDialog = trustListing ? (
     <TrustDialog property={trustListing} authToken={authToken} onClose={closeTrustDialog} />
   ) : null;
-
-  useEffect(() => {
-    setSellerCabinetTabReady(false);
-    const frame = window.requestAnimationFrame(() => setSellerCabinetTabReady(true));
-    return () => window.cancelAnimationFrame(frame);
-  }, [sellerCabinetTab]);
 
   const closeMobileFilters = (restoreFocus = true) => {
     setShowMobileFilters(false);
@@ -1758,15 +1750,6 @@ export default function RealEstateApp() {
     }
     return myListings;
   }, [myListings, myListingsFilter]);
-  const weakestListing = useMemo(
-    () =>
-      myListings.reduce((weakest, item) => {
-        if (!weakest) return item;
-        return getListingCompleteness(item).score < getListingCompleteness(weakest).score ? item : weakest;
-      }, null),
-    [myListings]
-  );
-
   const isRealtorCabinet = accountTypeOf(currentUser) === "realtor";
   const isDeveloperCabinet = accountTypeOf(currentUser) === "developer";
   const planUsage = currentUser?.usage || null;
@@ -1780,26 +1763,9 @@ export default function RealEstateApp() {
     currentUser.plan_id === "developer_free";
   const planQuota = formatPlanQuota(planUsage);
   const planLimitReached = planUsage ? planUsage.listings_remaining === 0 : false;
-  const cabinet = isDeveloperCabinet
-    ? {
-        eyebrow: "Кабінет забудовника",
-        badge: "Забудовник",
-        intro: "Публікуйте новобудови, тримайте їх окремо в каталозі та швидко оновлюйте оголошення проєктів.",
-        profileHint: "У кабінеті забудовника видно новобудови, їх статус і доступний ліміт для публікацій.",
-      }
-    : isRealtorCabinet
-      ? {
-          eyebrow: "Кабінет ріелтора",
-          badge: "Ріелтор",
-          intro: "Ведіть портфель об'єктів клієнтів, стежте за лімітом тарифу та піднімайте оголошення в ТОП.",
-          profileHint: "У кабінеті ріелтора видно портфель об'єктів, статус кожного та ліміт вашого пакета.",
-        }
-      : {
-          eyebrow: "Кабінет власника",
-          badge: "Власник",
-          intro: "Створюйте оголошення з профілю, одразу публікуйте їх на сайті та редагуйте без переходу в адмінку.",
-          profileHint: "У профілі видно активні оголошення, їх статус і доступне швидке редагування.",
-        };
+  const cabinet = {
+    badge: isDeveloperCabinet ? "Забудовник" : isRealtorCabinet ? "Ріелтор" : "Власник",
+  };
 
   const openPlansModal = (audience) => {
     const target = audience || (isDeveloperCabinet ? "developer" : isRealtorCabinet ? "realtor" : "owner");
@@ -2421,7 +2387,6 @@ export default function RealEstateApp() {
     setAuthToken("");
     setCurrentUser(null);
     setAuthSuccess("Ви вийшли з профілю");
-    setSellerCabinetTab("data");
     setMyListings([]);
     setListingMessage("");
     setEditingListingId(null);
@@ -2452,8 +2417,6 @@ export default function RealEstateApp() {
       return;
     }
     setEditingListingId(null);
-    setSellerCabinetTab("photos");
-    setSellerCabinetTabReady(false);
     const developerDefaults = isDeveloperCabinet
       ? {
           conditionType: "нова будова",
@@ -2516,8 +2479,6 @@ export default function RealEstateApp() {
       return contentType.startsWith(`${mediaType}/`) && file.size <= maxBytes;
     });
     const rejectedCount = selectedFiles.length - acceptedFiles.length;
-    setSellerCabinetTab("photos");
-    setSellerCabinetTabReady(false);
     if (mediaType === "video") {
       setSelectedListingVideoFiles((previous) => [...previous, ...acceptedFiles].slice(0, maxFiles));
     } else {
@@ -2848,7 +2809,9 @@ export default function RealEstateApp() {
       setKeywordSearch(query);
       window.__UA_PENDING_HERO_SEARCH__ = null;
       window.requestAnimationFrame(() => {
-        document.getElementById("results")?.scrollIntoView({ behavior: getPreferredScrollBehavior(), block: "start" });
+        const results = document.getElementById("results");
+        results?.scrollIntoView({ behavior: getPreferredScrollBehavior(), block: "start" });
+        results?.focus({ preventScroll: true });
       });
     };
     window.addEventListener("uah:hero-search", handleHeroSearch);
@@ -3047,47 +3010,19 @@ export default function RealEstateApp() {
        </div>
 
        <div className="grid gap-6 lg:grid-cols-12">
-          <aside id="add" className="min-w-0 space-y-6 lg:col-span-4 lg:sticky lg:top-24 self-start">
-            <div id="publish" className="scroll-mt-28 rounded-[28px] border border-amber-200 bg-gradient-to-br from-amber-50 via-white to-orange-50 p-5 shadow-sm">
-              <div className="mb-4 h-1.5 rounded-full bg-gradient-to-r from-amber-500 to-orange-500" />
-              <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-amber-700 text-lg text-white shadow-lg shadow-amber-200">
-                  ➕
-                </div>
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-wide text-amber-700">Публікація</p>
-                  <h2 className="text-lg font-black text-slate-900">Створіть оголошення за 2 хвилини</h2>
-                </div>
-              </div>
-              <p className="mt-3 text-sm text-slate-600">Публікуйте новий об'єкт, додавайте фото й відео та одразу розміщуйте його в каталозі.</p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={openCreateListingModal}
-                  className="rounded-2xl bg-amber-700 px-4 py-2 text-sm font-bold text-white transition hover:bg-amber-800"
-                >
-                  ➕ Створити оголошення
-                </button>
-              </div>
-            </div>
-
-            <div id="auth" className="scroll-mt-28 rounded-[28px] border border-violet-200 bg-gradient-to-br from-violet-50 via-white to-fuchsia-50 p-5 shadow-sm">
-              <div className="mb-4 h-1.5 rounded-full bg-gradient-to-r from-violet-600 to-fuchsia-500" />
-              <div className="mb-3 flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
-                <span className="text-base">👤</span>
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">Профіль</p>
-                  <p className="text-sm font-semibold text-slate-700">Керуйте входом, тарифом і оголошеннями</p>
-                </div>
-              </div>
+          <aside id="add" className="order-2 min-w-0 space-y-6 self-start lg:order-1 lg:col-span-4 lg:sticky lg:top-24">
+            <div id="auth" className="scroll-mt-28 rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">
-                    {currentUser ? cabinet.eyebrow : "Профіль"}
-                  </p>
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-slate-950 text-sm font-black text-white">
+                    UA
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-xs font-black uppercase tracking-wide text-blue-700">Кабінет продавця</p>
                   <h2 className="mt-1 text-xl font-black text-slate-900">
-                    {currentUser ? currentUser.name : "Увійдіть у профіль"}
+                      {currentUser ? currentUser.name : "Публікуйте житло самостійно"}
                   </h2>
+                  </div>
                 </div>
                 <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${currentUser ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-700"}`}>
                   {currentUser ? cabinet.badge : "Потрібен вхід"}
@@ -3096,41 +3031,9 @@ export default function RealEstateApp() {
 
               <p className="mt-2 text-sm text-slate-600">
                 {currentUser
-                  ? cabinet.intro
-                  : "Створіть кабінет власника, ріелтора або забудовника, щоб публікувати оголошення просто з сайту."}
+                  ? `${planName}${planQuota ? ` · ${planQuota}` : ""}`
+                  : "Увійдіть або створіть профіль, щоб додати фото, опублікувати й редагувати оголошення."}
               </p>
-
-              {currentUser ? (
-                <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  {[
-                    {
-                      step: "1",
-                      title: "Заповніть дані",
-                      text: "Назва, ціна, площа, тип і район.",
-                    },
-                    {
-                      step: "2",
-                      title: "Додайте медіа",
-                      text: "Фото й відео з телефону або комп'ютера.",
-                    },
-                    {
-                      step: "3",
-                      title: "Публікуйте",
-                      text: "Медіа й оголошення одразу підуть на сайт.",
-                    },
-                  ].map((item) => (
-                    <div key={item.step} className="rounded-2xl border border-slate-200 bg-white p-3">
-                      <div className="flex items-center gap-2">
-                        <span className="flex h-7 w-7 items-center justify-center rounded-full bg-blue-600 text-xs font-black text-white">
-                          {item.step}
-                        </span>
-                        <p className="text-sm font-black text-slate-900">{item.title}</p>
-                      </div>
-                      <p className="mt-2 text-xs leading-relaxed text-slate-500">{item.text}</p>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
 
               {authError ? <div id="auth-error" role="alert" className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{authError}</div> : null}
               {authSuccess ? <div id="auth-success" role="status" aria-live="polite" className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{authSuccess}</div> : null}
@@ -3371,245 +3274,104 @@ export default function RealEstateApp() {
                 </form>
                 )
               ) : (
-                <div className="mt-4 space-y-3">
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                    <p className="text-xs font-black uppercase tracking-wide text-slate-500">Профіль</p>
-                    <p className="mt-1 font-semibold text-slate-900">{currentUser.email}</p>
-                    <p className="mt-1 text-xs text-slate-500">{cabinet.profileHint}</p>
-                  </div>
-
-                  <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-[11px] font-black uppercase tracking-wide text-blue-700">Тариф</p>
-                        <p className="mt-1 font-black text-slate-900">{planName}</p>
-                        {planQuota ? <p className="mt-0.5 text-xs text-slate-600">{planQuota}</p> : null}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => openPlansModal()}
-                        className="rounded-2xl bg-blue-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700"
-                      >
-                        {planIsFree ? "Обрати тариф" : "Змінити тариф"}
-                      </button>
-                    </div>
-                    {planLimitReached ? (
-                      <p className="mt-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-rose-700">
-                        Ліміт вичерпано — оновіть тариф, щоб додати ще оголошення.
-                      </p>
-                    ) : null}
-                  </div>
-
-                  <div className="rounded-3xl border border-slate-200 bg-white p-3">
+                <div className="mt-4 space-y-4">
+                  <section className="rounded-3xl bg-slate-950 p-4 text-white">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <p className="text-xs font-black uppercase tracking-wide text-slate-500">Кабінет продавця</p>
-                        <p className="mt-1 text-sm font-semibold text-slate-700">
-                          Медіа, дані та статус публікації в одному сучасному кабінеті.
-                        </p>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-300">{currentUser.email}</p>
+                        <p className="mt-1 text-xs text-slate-400">{cabinet.badge} · {planName}</p>
                       </div>
                       <button
                         type="button"
-                        onClick={openCreateListingModal}
-                        className="rounded-2xl bg-blue-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700"
+                        onClick={() => (planLimitReached ? openPlansModal() : openCreateListingModal())}
+                        className="rounded-2xl bg-blue-600 px-4 py-3 text-sm font-black text-white transition hover:bg-blue-700"
                       >
-                        Відкрити форму
+                        {planLimitReached
+                          ? "Оновити тариф"
+                          : isDeveloperCabinet
+                            ? "Додати новобудову"
+                            : "Створити оголошення"}
                       </button>
                     </div>
-
-                    <div className="mt-3 grid grid-cols-3 gap-2">
+                    <dl className="mt-4 grid grid-cols-3 gap-2">
                       {[
-                        {
-                          id: "photos",
-                          label: "Мої фото",
-                          icon: "📷",
-                          count: myListingPhotoCount,
-                          tone: "blue",
-                        },
-                        {
-                          id: "data",
-                          label: "Мої дані",
-                          icon: "👤",
-                          count: currentUser?.email ? 1 : 0,
-                          tone: "slate",
-                        },
-                        {
-                          id: "status",
-                          label: "Статус",
-                          icon: "📊",
-                          count: activeMyListingsCount,
-                          tone: "emerald",
-                        },
-                      ].map((tab) => {
-                        const isActive = sellerCabinetTab === tab.id;
-                        return (
-                          <button
-                            key={tab.id}
-                            type="button"
-                            onClick={() => setSellerCabinetTab(tab.id)}
-                            className={`rounded-2xl border p-3 text-left transition ${
-                              isActive
-                                ? tab.tone === "blue"
-                                  ? "border-blue-300 bg-blue-50 shadow-sm scale-[1.02]"
-                                  : tab.tone === "emerald"
-                                    ? "border-emerald-300 bg-emerald-50 shadow-sm scale-[1.02]"
-                                    : "border-slate-300 bg-slate-100 shadow-sm scale-[1.02]"
-                                : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
-                            }`}
-                            aria-pressed={isActive}
-                          >
-                            <div className="flex items-center gap-2">
-                              <span className="text-lg">{tab.icon}</span>
-                              <div>
-                                <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">{tab.label}</p>
-                                <p className="text-lg font-black text-slate-900">{tab.count}</p>
-                              </div>
-                            </div>
-                            {isActive ? (
-                              <span
-                                className={`mt-2 block h-1 w-10 rounded-full ${
-                                  tab.tone === "blue"
-                                    ? "bg-blue-500"
-                                    : tab.tone === "emerald"
-                                      ? "bg-emerald-500"
-                                      : "bg-slate-500"
-                                }`}
-                              />
-                            ) : null}
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    <div
-                      key={sellerCabinetTab}
-                      className={`mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 transition-all duration-200 ease-out ${
-                        sellerCabinetTabReady ? "translate-y-0 opacity-100" : "translate-y-1 opacity-0"
-                      }`}
-                    >
-                      {sellerCabinetTab === "photos" ? (
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2">
-                            <span className="text-base">📷</span>
-                            <p className="text-sm font-black text-slate-900">Мої фото</p>
-                          </div>
-                          <p className="text-xs text-slate-600">
-                            {myListingPhotoCount
-                              ? "Ці фото вже збережені у ваших оголошеннях на сайті."
-                              : "Опублікуйте оголошення з фото — після цього вони з'являться тут."}
-                          </p>
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              onClick={openCreateListingModal}
-                              className="rounded-2xl bg-blue-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700"
-                            >
-                              Додати фото
-                            </button>
-                            <span className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-slate-600">
-                              {myListingPhotoCount} фото на сайті
-                            </span>
-                          </div>
+                        ["Активні", activeMyListingsCount],
+                        ["Усього", myListings.length],
+                        ["Фото", myListingPhotoCount],
+                      ].map(([label, value]) => (
+                        <div key={label} className="rounded-2xl bg-white/10 px-3 py-2">
+                          <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{label}</dt>
+                          <dd className="mt-1 text-xl font-black text-white">{value}</dd>
                         </div>
-                      ) : null}
+                      ))}
+                    </dl>
+                  </section>
 
-                      {sellerCabinetTab === "data" ? (
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2">
-                            <span className="text-base">👤</span>
-                            <p className="text-sm font-black text-slate-900">Мої дані</p>
-                          </div>
-                          <p className="text-xs text-slate-600">
-                            Тут видно ваш email, тип кабінету та тариф, щоб не губитися між налаштуваннями.
-                          </p>
-                          <div className="grid gap-2 sm:grid-cols-2">
-                            <div className="rounded-2xl border border-white bg-white p-3">
-                              <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Email</p>
-                              <p className="mt-1 text-sm font-bold text-slate-900">{currentUser.email}</p>
-                            </div>
-                            <div className="rounded-2xl border border-white bg-white p-3">
-                              <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Кабінет</p>
-                              <p className="mt-1 text-sm font-bold text-slate-900">{cabinet.badge}</p>
-                            </div>
-                          </div>
-                        </div>
-                      ) : null}
-
-                      {sellerCabinetTab === "status" ? (
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2">
-                            <span className="text-base">📊</span>
-                            <p className="text-sm font-black text-slate-900">Статус публікації</p>
-                          </div>
-                          <p className="text-xs text-slate-600">
-                            Скільки оголошень уже активні та що ще не опубліковано.
-                          </p>
-                          <div className="grid grid-cols-2 gap-2">
-                            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
-                              <p className="text-[10px] font-black uppercase tracking-wide text-emerald-700">Активні</p>
-                              <p className="mt-1 text-2xl font-black text-emerald-700">{activeMyListingsCount}</p>
-                            </div>
-                            <div className="rounded-2xl border border-slate-200 bg-white p-3">
-                              <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Усього</p>
-                              <p className="mt-1 text-2xl font-black text-slate-900">{myListings.length}</p>
-                            </div>
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  {isRealtorCabinet ? (
-                    <div className="rounded-2xl border border-slate-200 bg-white p-3">
-                      <p className="text-[11px] font-black uppercase tracking-wide text-slate-500">Агентство</p>
-                      <p className="mt-1 text-sm font-semibold text-slate-900">
-                        {currentUser.agency_slug || "Профіль агентства ще не підключено"}
-                      </p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        Брендинг агентства і верифікація доступні на тарифі «Агенція».
-                      </p>
-                    </div>
+                  {planLimitReached ? (
+                    <p role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+                      Ліміт публікацій вичерпано. Оновіть тариф, щоб додати ще оголошення.
+                    </p>
                   ) : null}
 
-                  {isDeveloperCabinet ? (
-                    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
-                      <p className="text-[11px] font-black uppercase tracking-wide text-amber-700">Новобудови</p>
-                      <p className="mt-1 text-sm font-semibold text-slate-900">
-                        Публікуйте новобудови як окремий формат оголошень для забудовника.
-                      </p>
+                  <details className="group rounded-2xl border border-slate-200 bg-slate-50">
+                    <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-black text-slate-900">
+                      Профіль і тариф
+                      <span aria-hidden="true" className="text-slate-500 transition group-open:rotate-180">⌄</span>
+                    </summary>
+                    <div className="border-t border-slate-200 p-4">
+                      <dl className="grid gap-3 text-sm sm:grid-cols-2">
+                        <div>
+                          <dt className="text-xs font-bold uppercase tracking-wide text-slate-500">Тип профілю</dt>
+                          <dd className="mt-1 font-semibold text-slate-900">{cabinet.badge}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs font-bold uppercase tracking-wide text-slate-500">Тариф</dt>
+                          <dd className="mt-1 font-semibold text-slate-900">{planName}</dd>
+                          {planQuota ? <dd className="mt-1 text-xs text-slate-600">{planQuota}</dd> : null}
+                        </div>
+                      </dl>
+                      {isRealtorCabinet ? (
+                        <p className="mt-3 rounded-xl bg-white px-3 py-2 text-xs text-slate-600">
+                          Агентство: {currentUser.agency_slug || "профіль ще не підключено"}.
+                        </p>
+                      ) : null}
+                      {isDeveloperCabinet ? (
+                        <p className="mt-3 rounded-xl bg-white px-3 py-2 text-xs text-slate-600">
+                          Новобудови публікуються як окремий формат оголошень.
+                        </p>
+                      ) : null}
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openPlansModal()}
+                          className="rounded-xl bg-blue-600 px-3 py-2 text-xs font-bold text-white"
+                        >
+                          {planIsFree ? "Обрати тариф" : "Змінити тариф"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={switchAccountType}
+                          disabled={accountTypeSwitching}
+                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60"
+                        >
+                          {accountTypeSwitching
+                            ? "Перемикаємо…"
+                            : isDeveloperCabinet
+                              ? "Кабінет власника"
+                              : isRealtorCabinet
+                                ? "Кабінет забудовника"
+                                : "Кабінет ріелтора"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={logoutProfile}
+                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                        >
+                          Вийти
+                        </button>
+                      </div>
                     </div>
-                  ) : null}
-
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={openCreateListingModal}
-                      className="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
-                    >
-                      {isDeveloperCabinet ? "➕ Додати новобудову" : "➕ Створити оголошення"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={switchAccountType}
-                      disabled={accountTypeSwitching}
-                      className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-60"
-                    >
-                      {accountTypeSwitching
-                        ? "Перемикаємо…"
-                        : isDeveloperCabinet
-                          ? "🔁 Кабінет власника"
-                          : isRealtorCabinet
-                            ? "🔁 Кабінет забудовника"
-                            : "🔁 Кабінет ріелтора"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={logoutProfile}
-                      className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
-                    >
-                      🚪 Вийти
-                    </button>
-                  </div>
+                  </details>
                   {publishSuccess ? (
                     <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-4" role="status">
                       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -3659,7 +3421,7 @@ export default function RealEstateApp() {
                         ["review", "Модерація"],
                         ["draft", "Чернетки"],
                         ["archived", "Архів"],
-                      ].map(([id, label]) => (
+                      ].filter(([id]) => id === "all" || myListingCounts[id] > 0).map(([id, label]) => (
                         <button
                           key={id}
                           type="button"
@@ -4260,7 +4022,7 @@ export default function RealEstateApp() {
             </div>
           </aside>
 
-          <div className="space-y-4 lg:col-span-8">
+          <div className="order-1 space-y-4 lg:order-2 lg:col-span-8">
             <div
               id="results"
               tabIndex={-1}

@@ -230,6 +230,8 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(detail_page.status_code, 200)
         self.assertIn(b"<video controls playsinline", detail_page.data)
         self.assertIn(b"/video/upload/example.mp4", detail_page.data)
+        detail_html = detail_page.get_data(as_text=True)
+        self.assertLess(detail_html.index('id="listing-price"'), detail_html.index('id="gallery"'))
 
         forbidden = self.client.delete(
             f"/api/listings/{listing['id']}",
@@ -409,9 +411,18 @@ class TrustFeatureTests(unittest.TestCase):
         realtor = self.client.get(f"/api/listings/{self.realtor_listing_id}").get_json()["listing"]
         self.assertEqual(realtor["seller_type"], "intermediary")
         detail_html = self.client.get(f"/listing/{self.target_id}").get_data(as_text=True)
-        self.assertIn("Тип продавця: <strong>Власник</strong>", detail_html)
+        self.assertIn("<strong>Продавець:</strong> Власник", detail_html)
         self.assertNotIn("Джерело: <strong>Агентство</strong>", detail_html)
         self.assertIn('"@type": "Person"', detail_html)
+        self.assertIn("UA-Dim", detail_html)
+        self.assertNotIn("UA Homes", detail_html)
+        self.assertIn("mailto:feedback@ua-dim.com", detail_html)
+        self.assertIn("Запитати про об’єкт", detail_html)
+        self.assertIn("До каталогу UA-Dim", detail_html)
+        self.assertNotIn("Trust-flow", detail_html)
+        self.assertIn('<details class="disclosure" id="verification-details">', detail_html)
+        self.assertIn("Ціна та відповіді на запитання", detail_html)
+        self.assertNotIn("Що відомо про оголошення", detail_html)
         with sqlite3.connect(TEST_DB) as db:
             developer = db.execute(
                 "SELECT account_type, plan_id FROM users WHERE id = ?",

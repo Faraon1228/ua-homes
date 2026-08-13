@@ -1373,7 +1373,7 @@ PLACEHOLDER_LISTING_IMAGE = (
     "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 800'%3E"
     "%3Crect width='1200' height='800' fill='%23e2e8f0'/%3E"
     "%3Crect width='1200' height='120' fill='%232563eb'/%3E"
-    "%3Ctext x='60' y='80' fill='white' font-family='Arial,sans-serif' font-size='54' font-weight='700'%3EUA Homes%3C/text%3E"
+    "%3Ctext x='60' y='80' fill='white' font-family='Arial,sans-serif' font-size='54' font-weight='700'%3EUA-Dim%3C/text%3E"
     "%3Ctext x='60' y='220' fill='%231f2937' font-family='Arial,sans-serif' font-size='40' font-weight='700'%3EListing preview%3C/text%3E"
     "%3Ctext x='60' y='280' fill='%234b5563' font-family='Arial,sans-serif' font-size='28'%3EImage unavailable%3C/text%3E"
     "%3C/svg%3E"
@@ -2996,10 +2996,10 @@ def _email_provider_configured() -> bool:
 def send_email_verify(to_email: str, token: str) -> bool:
     """Send verification email via the configured provider, or log to console in dev."""
     verify_url = f"{PUBLIC_SITE_URL or 'http://localhost:5050'}/api/auth/verify-email?token={token}"
-    subject = "Підтвердіть email — UA Homes"
+    subject = "Підтвердіть email — UA-Dim"
     body_text = f"Перейдіть за посиланням для підтвердження: {verify_url}"
     body_html = (
-        f"<p>Вітаємо у UA Homes!</p>"
+        f"<p>Вітаємо в UA-Dim!</p>"
         f'<p><a href="{verify_url}">Підтвердити email</a></p>'
         f"<p>Посилання дійсне 24 години.</p>"
     )
@@ -3024,7 +3024,7 @@ def send_sms_verify(phone: str, code: str):
     auth_token  = os.environ.get("TWILIO_AUTH_TOKEN", "")
     from_phone  = os.environ.get("TWILIO_FROM_PHONE", "")
     if account_sid and auth_token and from_phone:
-        msg = f"Ваш код підтвердження UA Homes: {code}"
+        msg = f"Ваш код підтвердження UA-Dim: {code}"
         try:
             import urllib.request as _req, urllib.parse as _parse, base64 as _b64
             payload = _parse.urlencode({"To": phone, "From": from_phone, "Body": msg}).encode()
@@ -3044,7 +3044,7 @@ def send_sms_verify(phone: str, code: str):
 
 def send_alert_listing_email(to_email: str, alert_name: str, listing: dict) -> bool:
     listing_url = f"{PUBLIC_SITE_URL or 'http://localhost:8080'}/listing/{listing['id']}"
-    subject = f"Новий об'єкт за алертом «{alert_name}» — UA Homes"
+    subject = f"Новий об'єкт за алертом «{alert_name}» — UA-Dim"
     body_text = (
         f"Знайдено новий релевантний об'єкт:\n"
         f"{listing.get('title', 'Оголошення')} — ${int(listing.get('price') or 0):,}\n"
@@ -4621,10 +4621,10 @@ def forgot_password():
     db.commit()
 
     reset_url = f"{public_app_url()}#reset_token={raw_token}"
-    subject = "Відновлення пароля — UA Homes"
+    subject = "Відновлення пароля — UA-Dim"
     body_text = f"Для відновлення пароля перейдіть за посиланням (дійсне 30 хв): {reset_url}"
     body_html = (
-        f"<p>Ви отримали запит на відновлення пароля для вашого облікового запису UA Homes.</p>"
+        f"<p>Ви отримали запит на відновлення пароля для вашого облікового запису UA-Dim.</p>"
         f'<p><a href="{reset_url}">Встановити новий пароль</a></p>'
         f"<p>Посилання дійсне 30 хвилин. Якщо ви не робили цей запит — проігноруйте листа.</p>"
     )
@@ -5155,7 +5155,7 @@ def insights_hub():
     ) or "<span style='color:#64748b'>Немає featured контенту</span>"
     html = f"""<!doctype html>
 <html lang="uk"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Insights — UA Homes</title>
+<title>Insights — UA-Dim</title>
 <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f8fafc;margin:0;padding:24px;color:#0f172a">
 <main style="max-width:1100px;margin:0 auto">
   <a href="{public_app_url()}" style="color:#2563eb;text-decoration:none">← До каталогу</a>
@@ -5183,7 +5183,7 @@ def insight_article(slug: str):
     )
     html = f"""<!doctype html>
 <html lang="uk"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{escape(article["title"])} — UA Homes Insights</title>
+<title>{escape(article["title"])} — UA-Dim Insights</title>
 <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f8fafc;margin:0;padding:24px;color:#0f172a">
 <main style="max-width:920px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:24px">
   <a href="/insights" style="color:#2563eb;text-decoration:none">← До Insights</a>
@@ -6916,11 +6916,11 @@ def _render_development_project_page(slug: str):
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>%s — новобудова в %s | UA Homes</title>
+  <title>%s — новобудова в %s | UA-Dim</title>
   <meta name="description" content="%s. Ціна від %s/м², %s, %s." />
   <link rel="canonical" href="%s" />
   <meta property="og:type" content="website" />
-  <meta property="og:title" content="%s — новобудова в %s | UA Homes" />
+  <meta property="og:title" content="%s — новобудова в %s | UA-Dim" />
   <meta property="og:description" content="%s. Ціна від %s/м²." />
   <meta property="og:url" content="%s" />
   <meta property="og:image" content="%s/favicon.png" />
@@ -7274,7 +7274,7 @@ def _render_seo_page(city: str, district: str | None):
             {
                 "@type": "ListItem",
                 "position": 1,
-                "name": "UA Homes",
+                "name": "UA-Dim",
                 "item": public_app_url(),
             },
             {
@@ -7326,7 +7326,7 @@ def _render_seo_page(city: str, district: str | None):
     organization_json_ld = {
         "@context": "https://schema.org",
         "@type": "Organization",
-        "name": "UA Homes",
+        "name": "UA-Dim",
         "url": public_app_url(),
         "logo": f"{base}/favicon.png",
         "description": "Платформа для пошуку нерухомості в Україні: квартири, будинки, єОселя.",
@@ -7343,11 +7343,11 @@ def _render_seo_page(city: str, district: str | None):
     webpage_json_ld = {
         "@context": "https://schema.org",
         "@type": "WebPage",
-        "name": f"Купити нерухомість — {title_suffix} | UA Homes",
+        "name": f"Купити нерухомість — {title_suffix} | UA-Dim",
         "url": canonical,
         "description": f"Актуальні оголошення в локації {title_suffix}: {total_count} об'єктів, середня ціна ${avg_price:,}.",
         "inLanguage": "uk-UA",
-        "isPartOf": {"@type": "WebSite", "name": "UA Homes", "url": public_app_url()},
+        "isPartOf": {"@type": "WebSite", "name": "UA-Dim", "url": public_app_url()},
         "speakable": {
             "@type": "SpeakableSpecification",
             "cssSelector": ["#main-h1", "#page-description"],
@@ -7380,20 +7380,20 @@ def _render_seo_page(city: str, district: str | None):
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Купити нерухомість — {escape(title_suffix)} | UA Homes</title>
+  <title>Купити нерухомість — {escape(title_suffix)} | UA-Dim</title>
   <meta name="description" content="Актуальні оголошення в локації {escape(title_suffix)}: {total_count} об'єктів, середня ціна ${avg_price:,}. Сторінка {page} з {total_pages}." />
   <link rel="canonical" href="{canonical}" />
   {''.join(pagination_rel_links)}
   {''.join(alternate_links)}
   <meta property="og:locale" content="uk_UA" />
   <meta property="og:type" content="website" />
-  <meta property="og:site_name" content="UA Homes" />
-  <meta property="og:title" content="Купити нерухомість — {escape(title_suffix)} | UA Homes" />
+  <meta property="og:site_name" content="UA-Dim" />
+  <meta property="og:title" content="Купити нерухомість — {escape(title_suffix)} | UA-Dim" />
   <meta property="og:description" content="Актуальні оголошення в локації {escape(title_suffix)}: {total_count} об'єктів, середня ціна ${avg_price:,}. Сторінка {page} з {total_pages}." />
   <meta property="og:url" content="{canonical}" />
   <meta property="og:image" content="{og_image}" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Купити нерухомість — {escape(title_suffix)} | UA Homes" />
+  <meta name="twitter:title" content="Купити нерухомість — {escape(title_suffix)} | UA-Dim" />
   <meta name="twitter:description" content="Актуальні оголошення в локації {escape(title_suffix)}: {total_count} об'єктів, середня ціна ${avg_price:,}. Сторінка {page} з {total_pages}." />
   <meta name="twitter:image" content="{og_image}" />
   <script type="application/ld+json">{json.dumps(organization_json_ld, ensure_ascii=False)}</script>
@@ -7413,13 +7413,13 @@ def _render_seo_page(city: str, district: str | None):
 </head>
 <body>
   <nav class="breadcrumbs">
-    <a href="{public_app_url()}">UA Homes</a>
+    <a href="{public_app_url()}">UA-Dim</a>
     <span>›</span>
     <a href="{base}/seo/{quote(city_name)}">{escape(city_name)}</a>
     {f'<span>›</span><span>{escape(district_name)}</span>' if district_name else ''}
   </nav>
   <h1 id="main-h1">Нерухомість: {escape(title_suffix)}</h1>
-  <p id="page-description">UA Homes: перевірені оголошення з фото, єОселя та картою.</p>
+  <p id="page-description">UA-Dim: перевірені оголошення з фото, єОселя та картою.</p>
   <div class="kpi">
     <div class="card"><strong>{total_count}</strong> оголошень</div>
     <div class="card"><strong>${avg_price:,}</strong> середня ціна</div>
@@ -7467,6 +7467,12 @@ def listing_page(lid: int):
     canonical = f"{base}/listing/{lid}"
     og_image = next((img for img in listing["images"] if not str(img).startswith("data:")), f"{base}/favicon.png")
     app_link = f"{public_app_url()}?listing_id={lid}"
+    contact_subject = quote(f"Запит щодо оголошення №{lid}: {listing['title']}", safe="")
+    contact_body = quote(
+        f"Доброго дня! Хочу уточнити деталі оголошення №{lid}: {canonical}",
+        safe="",
+    )
+    contact_link = f"mailto:feedback@ua-dim.com?subject={contact_subject}&body={contact_body}"
     city_link = f"{base}/seo/{quote(listing['city'])}"
     district_link = f"{base}/seo/{quote(listing['city'])}/{quote(listing['district'])}"
     listing_type_label = "Оренда" if listing.get("listing_type") == "rent" else "Продаж"
@@ -7491,15 +7497,9 @@ def listing_page(lid: int):
     if listing.get("has_video_tour"):
         trust_items.append("Є відео-тур")
     trust_count = len(trust_items)
-    media_count = int(bool(listing.get("has_photo_tour"))) + int(bool(listing.get("has_video_tour")))
     owner_verification_key = listing.get("owner_verification_status") or "unverified"
     phone_verification_key = listing.get("phone_verification_status") or "unverified"
     moderation_key = listing.get("moderation_status") or "approved"
-    trust_score_label = (
-        "Йде перевірка"
-        if moderation_key != "approved"
-        else ("Висока довіра" if (listing.get("trust_score") or 0) >= 70 else "Базова перевірка")
-    )
     # Seller type shown to users is derived strictly from the backend account
     # type/account agency membership — never from client-supplied listing data.
     seller_type_label = {
@@ -7516,10 +7516,6 @@ def listing_page(lid: int):
         "verified": "Оголошення верифіковано",
         "rejected": "У верифікації оголошення відмовлено",
     }.get(listing_verification_key, "Статус верифікації оголошення уточнюється")
-    verified_listing_tone = (
-        ("#dcfce7", "#166534") if listing.get("verified_listing")
-        else ("#e2e8f0", "#334155")
-    )
     listing_status_label = {
         "active": "Актуально",
         "sold": "Продано",
@@ -7550,15 +7546,18 @@ def listing_page(lid: int):
         ("Телефон", phone_verification_label),
         ("Документи", "Документи перевірено" if listing.get("verified_docs") else "Документи ще не підтверджено"),
     ]
-    moderation_tone = {
-        "pending_review": ("#fef3c7", "#92400e"),
-        "in_review": ("#dbeafe", "#1d4ed8"),
-        "approved": ("#dcfce7", "#166534"),
-        "changes_requested": ("#ffedd5", "#c2410c"),
-        "rejected": ("#ffe4e6", "#be123c"),
-    }.get(moderation_key, ("#e2e8f0", "#334155"))
-
-    title_seo = f"{listing['title']} | {listing_type_label} | UA Homes"
+    quick_facts = []
+    if listing.get("rooms"):
+        quick_facts.append(f'{listing["rooms"]} кімн.')
+    quick_facts.append(f'{listing["area"]} м²')
+    if listing.get("floor") and listing.get("total_floors"):
+        quick_facts.append(f'{listing["floor"]}/{listing["total_floors"]} поверх')
+    elif listing.get("floor"):
+        quick_facts.append(f'{listing["floor"]} поверх')
+    if listing.get("year_built"):
+        quick_facts.append(f'{listing["year_built"]} рік')
+    quick_facts_html = "".join(f"<span>{escape(fact)}</span>" for fact in quick_facts)
+    title_seo = f"{listing['title']} | {listing_type_label} | UA-Dim"
     desc_seo = (
         f"{listing['rooms']} кімн., {listing['area']} м², {listing['city']}, {listing['district']}. "
         f"Ціна: {price_label}. {moderation_label}. {owner_verification_label}. {listing.get('description','')[:120]}"
@@ -7568,7 +7567,7 @@ def listing_page(lid: int):
         "@context": "https://schema.org",
         "@type": "BreadcrumbList",
         "itemListElement": [
-            {"@type": "ListItem", "position": 1, "name": "UA Homes", "item": public_app_url()},
+            {"@type": "ListItem", "position": 1, "name": "UA-Dim", "item": public_app_url()},
             {"@type": "ListItem", "position": 2, "name": listing["city"], "item": city_link},
             {"@type": "ListItem", "position": 3, "name": listing["district"], "item": district_link},
             {"@type": "ListItem", "position": 4, "name": listing["title"], "item": canonical},
@@ -7711,7 +7710,7 @@ def listing_page(lid: int):
     organization_ld = {
         "@context": "https://schema.org",
         "@type": "Organization",
-        "name": "UA Homes",
+        "name": "UA-Dim",
         "url": public_app_url(),
         "logo": f"{base}/favicon.png",
         "description": "Платформа для пошуку нерухомості в Україні: квартири, будинки, комерція, оренда та єОселя.",
@@ -7723,7 +7722,7 @@ def listing_page(lid: int):
         "url": canonical,
         "description": desc_seo,
         "inLanguage": "uk-UA",
-        "isPartOf": {"@type": "WebSite", "name": "UA Homes", "url": public_app_url()},
+        "isPartOf": {"@type": "WebSite", "name": "UA-Dim", "url": public_app_url()},
         "speakable": {
             "@type": "SpeakableSpecification",
             "cssSelector": ["#listing-title", "#listing-desc", "#trust-summary"],
@@ -7744,7 +7743,7 @@ def listing_page(lid: int):
         },
         {
             "q": "Де подивитися схожі оголошення?",
-            "a": "Відкрийте сторінку в застосунку UA Homes, щоб побачити рекомендації, карту, створити алерт і зберегти об'єкт в обране."
+            "a": "Відкрийте каталог UA-Dim, щоб побачити рекомендації, карту, створити алерт і зберегти об'єкт в обране."
         },
     ]
     faq_ld = {
@@ -7768,22 +7767,7 @@ def listing_page(lid: int):
     if listing.get("has_video_tour"): trust_badges.append("🎥 Відео-тур")
     trust_html = " &nbsp;·&nbsp; ".join(trust_badges) if trust_badges else ""
     listing_status_html = f'<span style="background:#fef3c7;color:#92400e;padding:3px 10px;border-radius:20px;font-size:13px;font-weight:700">{listing_status_label}</span>'
-    seller_type_html = f'<span style="background:#ede9fe;color:#5b21b6;padding:3px 10px;border-radius:20px;font-size:13px;font-weight:700">{seller_type_label}</span>'
-    moderation_html = f'<span style="background:{moderation_tone[0]};color:{moderation_tone[1]};padding:3px 10px;border-radius:20px;font-size:13px;font-weight:700">{moderation_label}</span>'
-    verified_listing_html = (
-        f'<span style="background:{verified_listing_tone[0]};color:{verified_listing_tone[1]};padding:3px 10px;'
-        f'border-radius:20px;font-size:13px;font-weight:700">'
-        f'{"✅ " if listing.get("verified_listing") else ""}{escape(verified_listing_label)}</span>'
-    )
     e_oselya_html = '<span style="background:#2563eb;color:#fff;padding:3px 10px;border-radius:20px;font-size:13px;font-weight:700">єОселя</span>' if listing.get("e_oselya") else ""
-    trust_cards_html = "".join(
-        [
-            f'<div class="meta-card"><b>{listing.get("trust_score", 0)}%</b><span>довіра</span></div>',
-            f'<div class="meta-card"><b>{trust_count}</b><span>перевірок</span></div>',
-            f'<div class="meta-card"><b>{media_count}</b><span>турів</span></div>',
-            f'<div class="meta-card"><b>{escape(published_label or "—")}</b><span>оновлено</span></div>',
-        ]
-    )
     trust_flow_html = "".join(
         f'<div class="flow-card"><b>{escape(title)}</b><span>{escape(value)}</span></div>'
         for title, value in trust_flow_items
@@ -7862,7 +7846,7 @@ def listing_page(lid: int):
   <link rel="preconnect" href="https://images.unsplash.com" crossorigin/>
   <meta property="og:locale" content="uk_UA"/>
   <meta property="og:type" content="website"/>
-  <meta property="og:site_name" content="UA Homes"/>
+  <meta property="og:site_name" content="UA-Dim"/>
   <meta property="og:title" content="{escape(title_seo)}"/>
   <meta property="og:description" content="{escape(desc_seo)}"/>
   <meta property="og:url" content="{canonical}"/>
@@ -7888,10 +7872,13 @@ def listing_page(lid: int):
     h1{{font-size:clamp(1.3rem,5vw,1.9rem);font-weight:900;margin:12px 0 6px;line-height:1.2}}
     .breadcrumbs{{display:flex;flex-wrap:wrap;gap:6px;font-size:13px;color:#64748b;margin-bottom:12px}}
     .hero{{background:linear-gradient(135deg,#0f172a,#1e3a8a);border-radius:24px;padding:18px;color:#fff;box-shadow:0 20px 45px rgba(15,23,42,.16);margin-bottom:16px}}
-    .hero-actions{{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}}
+    .hero-actions{{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}}
     .hero-note{{display:inline-flex;align-items:center;gap:8px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.08);padding:6px 10px;border-radius:999px;font-size:12px;font-weight:700}}
-    .price{{font-size:2rem;font-weight:900;color:#1d4ed8;margin:10px 0 4px}}
-    .per-sqm{{font-size:14px;color:#64748b;margin-bottom:12px}}
+    .hero-summary{{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-top:16px}}
+    .price{{font-size:2rem;font-weight:900;color:#fff;margin:0;line-height:1.1}}
+    .per-sqm{{font-size:13px;color:#bfdbfe;margin-top:5px}}
+    .hero-facts{{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:7px}}
+    .hero-facts span{{border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.1);padding:6px 9px;border-radius:999px;font-size:12px;font-weight:700;color:#fff}}
     .meta-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:16px 0}}
     .meta-card{{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;text-align:center}}
     .meta-card b{{display:block;font-size:1.1rem;color:#1e293b}}
@@ -7902,118 +7889,126 @@ def listing_page(lid: int):
     .flow-card span{{font-size:14px;font-weight:700;color:#0f172a}}
     .section{{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:16px 20px;margin:14px 0}}
     .trust{{font-size:13px;color:#15803d;background:#f0fdf4;padding:8px 12px;border-radius:10px;margin:8px 0}}
-    .trust-note{{margin-top:10px;padding:12px 14px;border-radius:12px;background:#fff7ed;color:#9a3412;font-size:13px;border:1px solid #fed7aa}}
-    .back-btn{{display:inline-block;background:#1d4ed8;color:#fff;padding:12px 24px;border-radius:12px;font-weight:700;font-size:15px}}
-    .share-btn{{display:inline-block;background:#f1f5f9;color:#1e293b;padding:10px 18px;border-radius:12px;font-weight:600;margin-left:8px;font-size:14px;cursor:pointer;border:1px solid #e2e8f0}}
-    @media(max-width:600px){{.meta-grid{{grid-template-columns:repeat(2,1fr)}} .hero-actions{{flex-direction:column}} .share-btn{{margin-left:0}}}}
+    .tag-list{{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}}
+    .verification-summary{{display:flex;flex-wrap:wrap;gap:6px 16px;margin:10px 0 14px;padding:12px 14px;border-radius:14px;background:#f0fdf4;color:#166534;font-size:13px;border:1px solid #bbf7d0}}
+    .detail-grid{{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(220px,.8fr);gap:14px;margin:14px 0}}
+    .related-card{{background:#fff;border:1px solid #dbeafe;border-radius:16px;padding:16px 20px}}
+    .related-links{{display:flex;flex-direction:column;gap:8px;margin-top:10px}}
+    .related-links a{{display:block;border-radius:10px;background:#eff6ff;padding:9px 11px;font-size:13px;font-weight:700}}
+    .disclosure{{margin:12px 0;border:1px solid #e2e8f0;border-radius:16px;background:#fff;overflow:hidden}}
+    .disclosure summary{{display:flex;min-height:54px;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;cursor:pointer;font-weight:800;list-style:none}}
+    .disclosure summary::-webkit-details-marker{{display:none}}
+    .disclosure summary::after{{content:"+";font-size:20px;color:#64748b}}
+    .disclosure[open] summary::after{{content:"−"}}
+    .disclosure-content{{border-top:1px solid #e2e8f0;padding:16px 18px}}
+    .disclosure-content h3{{margin:18px 0 8px;font-size:1rem}}
+    .disclosure-content h3:first-child{{margin-top:0}}
+    .report-card{{margin-top:14px;padding:14px 16px;border:1px solid #fed7aa;border-radius:16px;background:#fff7ed}}
+    .primary-btn,.secondary-btn,.copy-btn{{display:inline-flex;min-height:44px;align-items:center;justify-content:center;border-radius:12px;font-weight:700;font-size:14px;cursor:pointer}}
+    .primary-btn{{background:#2563eb;color:#fff;padding:12px 20px}}
+    .secondary-btn,.copy-btn{{background:#f8fafc;color:#1e293b;padding:10px 16px;border:1px solid #e2e8f0}}
+    @media(max-width:700px){{body{{padding-right:16px;padding-left:16px}} .hero{{padding:16px}} .hero-summary{{align-items:flex-start;flex-direction:column;gap:12px}} .hero-facts{{justify-content:flex-start}} .hero-actions{{display:grid;grid-template-columns:1fr 1fr}} .primary-btn{{grid-column:1/-1}} .primary-btn,.secondary-btn,.copy-btn{{padding-right:10px;padding-left:10px;text-align:center}} .meta-grid{{grid-template-columns:repeat(2,1fr)}} .detail-grid{{grid-template-columns:1fr}}}}
   </style>
 </head>
 <body>
   <nav class="breadcrumbs">
-    <a href="{public_app_url()}">UA Homes</a><span>›</span>
+    <a href="{public_app_url()}">UA-Dim</a><span>›</span>
     <a href="{city_link}">{escape(listing["city"])}</a><span>›</span>
     <a href="{district_link}">{escape(listing["district"])}</a><span>›</span>
     <span>{escape(listing["title"][:40])}…</span>
   </nav>
 
   <section class="hero">
-    <div class="hero-note">UA Homes · {moderation_label}</div>
+    <div class="hero-note">UA-Dim · {moderation_label}</div>
     <h1 id="listing-title" style="color:#fff;margin-top:14px">{escape(listing["title"])}</h1>
-    <p id="listing-desc" style="margin:0;color:#cbd5e1">{escape(listing["city"])}, {escape(listing["district"])} · {listing_type_label} · {listing_status_label} · {trust_score_label} · {owner_verification_label}</p>
+    <p id="listing-desc" style="margin:0;color:#cbd5e1">{escape(listing["city"])}, {escape(listing["district"])} · {listing_type_label} · {listing_status_label}</p>
+    <div class="hero-summary">
+      <div>
+        <div class="price" id="listing-price">{price_label}</div>
+        <div class="per-sqm">${per_sqm:,}/м² · опубліковано {escape(published_label or "—")}</div>
+      </div>
+      <div class="hero-facts" aria-label="Основні характеристики">{quick_facts_html}</div>
+    </div>
     <div class="hero-actions">
-      <a href="{app_link}" class="back-btn">← Відкрити в застосунку</a>
-      <a href="{app_link}" class="share-btn" style="margin-left:0">🔔 Отримати схожі та зберегти</a>
-      <button class="share-btn" onclick="navigator.clipboard&&navigator.clipboard.writeText(location.href).then(()=>this.textContent='✅ Скопійовано!')">🔗 Скопіювати посилання</button>
+      <a href="{escape(contact_link, quote=True)}" class="primary-btn">Запитати про об’єкт</a>
+      <a href="{app_link}" class="secondary-btn">До каталогу UA-Dim</a>
+      <button type="button" class="copy-btn" onclick="navigator.clipboard&&navigator.clipboard.writeText(location.href).then(()=>this.textContent='Скопійовано')">Скопіювати посилання</button>
     </div>
   </section>
 
   {photos_html}
   {videos_html}
 
-  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+  <div class="tag-list" aria-label="Характеристики оголошення">
     <span style="background:#f1f5f9;padding:3px 10px;border-radius:20px;font-size:13px;font-weight:600">{escape(listing.get('property_type',''))}</span>
     <span style="background:#f1f5f9;padding:3px 10px;border-radius:20px;font-size:13px;font-weight:600">{escape(listing.get('condition_type',''))}</span>
     <span style="background:{'#dcfce7' if listing_type_label=='Продаж' else '#fef9c3'};padding:3px 10px;border-radius:20px;font-size:13px;font-weight:700;color:#166534">{listing_type_label}</span>
     {listing_status_html}
-    {moderation_html}
-    {seller_type_html}
-    {verified_listing_html}
     {e_oselya_html}
     {f'<span style="color:#f59e0b;font-weight:700">★ {avg_rating}</span>' if avg_rating else ''}
   </div>
 
-  {f'<div class="trust">{trust_html}</div>' if trust_html else ''}
-  <div class="trust-note">Trust-flow: {escape(moderation_label)} · {escape(owner_verification_label)} · {escape(phone_verification_label)}</div>
-  <div class="trust-note" style="background:#f0fdf4;color:#166534;border-color:#bbf7d0">Верифікація оголошення (окремо від модерації та власника): <strong>{escape(verified_listing_label)}</strong></div>
-
-  <div class="price" id="listing-price">{price_label}</div>
-  <div class="per-sqm">{escape(listing["city"])}, {escape(listing["district"])} · ${per_sqm:,}/м² · опубліковано {escape(published_label or "—")}</div>
-
-  <div class="meta-grid">
-    {f'<div class="meta-card"><b>{listing["rooms"]}</b><span>кімнат</span></div>' if listing["rooms"] else ''}
-    <div class="meta-card"><b>{listing["area"]} м²</b><span>площа</span></div>
-    {f'<div class="meta-card"><b>{listing["floor"]}/{listing["total_floors"]}</b><span>поверх</span></div>' if listing.get("floor") else ''}
-    {f'<div class="meta-card"><b>{listing["year_built"]}</b><span>рік будови</span></div>' if listing.get("year_built") else ''}
-    <div class="meta-card"><b>👁 {listing["views"]}</b><span>переглядів</span></div>
+  <div class="verification-summary" id="trust-summary">
+    <span><strong>Модерація:</strong> {escape(moderation_label)}</span>
+    <span><strong>Продавець:</strong> {escape(seller_type_label)}</span>
+    <span><strong>Оголошення:</strong> {escape(verified_listing_label)}</span>
   </div>
 
-  <div class="meta-grid" id="trust-summary">
-    {trust_cards_html}
-  </div>
-
-  <div class="section" style="background:#f8fafc;border-color:#dbeafe">
-    <h2 style="margin-top:0">Статуси перевірки та модерації</h2>
-    <p style="margin:0;color:#334155">Ми показуємо не лише бейджі, а й реальний workflow перевірки оголошення.</p>
-    <div class="flow-grid">
-      {trust_flow_html}
-    </div>
-  </div>
-
-  {f'<div class="section"><h2 style="margin-top:0">Опис</h2><p style="margin:0;color:#334155">{escape(listing.get("description",""))}</p></div>' if listing.get("description") else ''}
-
-  <div class="section" style="background:#eff6ff;border-color:#bfdbfe">
-    <h2 style="margin-top:0;color:#1d4ed8">Чому це оголошення виглядає надійно</h2>
-    <p style="margin:0;color:#334155">Статус об'єкта: <strong>{listing_status_label}</strong>. Модерація: <strong>{moderation_label}</strong>. Тип продавця: <strong>{seller_type_label}</strong>. Довіра: <strong>{listing.get("trust_score",0)}/100</strong>.</p>
-    <p style="margin:10px 0 0;color:#475569">{escape(", ".join(trust_items) if trust_items else "Оголошення ще не має додаткових trust-сигналів, але сторінка вже підготовлена під production SEO та конверсію.")}</p>
-    <p style="margin:10px 0 0;color:#475569">Верифікація власника: <strong>{escape(owner_verification_label)}</strong>. Верифікація телефону: <strong>{escape(phone_verification_label)}</strong>.</p>
+  <div class="detail-grid">
+    {f'<section class="section" style="margin:0"><h2 style="margin-top:0">Опис</h2><p style="margin:0;color:#334155">{escape(listing.get("description",""))}</p></section>' if listing.get("description") else ''}
+    <aside class="related-card">
+      <h2 style="margin:0;font-size:1rem">Схожі об’єкти</h2>
+      <div class="related-links">
+        <a href="{city_link}">{escape(listing["city"])}</a>
+        <a href="{district_link}">{escape(listing["district"])}</a>
+        <a href="{app_link}">Відкрити каталог із фільтрами</a>
+      </div>
+    </aside>
   </div>
 
   {map_html}
 
-  <div class="section">
-    <h2 style="margin-top:0">Відгуки {f"({len(reviews)})" if reviews else ""}</h2>
-    {reviews_html}
-    <p style="margin-top:12px"><a href="{app_link}">Залишити відгук у застосунку →</a></p>
-  </div>
+  <details class="disclosure" id="verification-details">
+    <summary>Перевірки та історія</summary>
+    <div class="disclosure-content">
+      <p style="margin:0;color:#475569">Показуємо окремо модерацію, власника, телефон і документи — без об’єднання різних перевірок в один бейдж.</p>
+      {f'<div class="trust">{trust_html}</div>' if trust_html else ''}
+      <div class="flow-grid">
+        {trust_flow_html}
+      </div>
+      <h3>Історія змін</h3>
+      <p style="margin:0 0 10px;color:#475569">Ціна, статус, тип, кімнати, площа та верифікація.</p>
+      {history_html}
+    </div>
+  </details>
 
-  <div class="section" style="background:#eff6ff;border-color:#bfdbfe">
-    <h2 style="margin-top:0;color:#1d4ed8">Подивитись інші об'єкти</h2>
-    <p style="margin:0 0 10px"><a href="{city_link}">Всі об'єкти: {escape(listing["city"])}</a></p>
-    <p style="margin:0"><a href="{district_link}">{escape(listing["district"])} — повний список</a></p>
-    <p style="margin-top:10px"><a href="{app_link}" class="back-btn" style="font-size:14px;padding:10px 18px">Відкрити з фільтрами →</a></p>
-  </div>
+  <details class="disclosure">
+    <summary>Ціна та відповіді на запитання</summary>
+    <div class="disclosure-content">
+      <h3>Порівняння цін</h3>
+      <p style="margin:0 0 10px;color:#475569">На основі реальних активних оголошень цього міста, району та типу нерухомості.</p>
+      {price_stats_html}
+      <h3>Часті запитання</h3>
+      {faq_html}
+    </div>
+  </details>
 
-  <div class="section">
-    <h2 style="margin-top:0">FAQ по оголошенню</h2>
-    {faq_html}
-  </div>
+  <details class="disclosure">
+    <summary>Відгуки {f"({len(reviews)})" if reviews else ""}</summary>
+    <div class="disclosure-content">
+      {reviews_html}
+      <p style="margin:12px 0 0"><a href="{app_link}">Залишити відгук у UA-Dim →</a></p>
+    </div>
+  </details>
 
-  <div class="section" style="background:#f8fafc;border-color:#dbeafe">
-    <h2 style="margin-top:0">Порівняння цін по схожих об'єктах</h2>
-    <p style="margin:0 0 10px;color:#334155">Розраховано лише на реальних опублікованих та активних оголошеннях цього міста, району, типу нерухомості та типу угоди.</p>
-    {price_stats_html}
-  </div>
-
-  <div class="section" style="background:#f8fafc;border-color:#dbeafe">
-    <h2 style="margin-top:0">Історія змін оголошення</h2>
-    <p style="margin:0 0 10px;color:#334155">Показані лише публічно значущі зміни (ціна, статус, тип, кімнати, площа, верифікація).</p>
-    {history_html}
-  </div>
-
-  <div class="section" style="background:#fff7ed;border-color:#fed7aa">
-    <h2 style="margin-top:0;color:#9a3412">Помітили проблему з цим оголошенням?</h2>
-    <p style="margin:0 0 10px;color:#475569">Повідомте нам про шахрайство, дублікат, неправдиву ціну чи інші проблеми — модерація перевірить сигнал.</p>
-    <button type="button" class="share-btn" id="openReportBtn" style="margin-left:0">🚩 Повідомити про проблему</button>
+  <div class="report-card">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div>
+        <strong style="color:#9a3412">Помітили проблему?</strong>
+        <p style="margin:3px 0 0;color:#475569;font-size:13px">Модерація перевірить шахрайство, дублікат або неправдиву ціну.</p>
+      </div>
+      <button type="button" class="secondary-btn" id="openReportBtn">Повідомити</button>
+    </div>
     <dialog id="reportDialog" style="border:none;border-radius:16px;padding:0;max-width:440px;width:92vw;box-shadow:0 20px 45px rgba(15,23,42,.2)">
       <form method="dialog" id="reportForm" style="padding:20px">
         <h3 style="margin:0 0 12px">Повідомити про проблему</h3>
@@ -8026,8 +8021,8 @@ def listing_page(lid: int):
         <p id="reportError" role="alert" style="color:#be123c;font-size:13px;display:none;margin:0 0 10px"></p>
         <p id="reportSuccess" role="status" style="color:#166534;font-size:13px;display:none;margin:0 0 10px">Дякуємо! Скаргу надіслано на перевірку.</p>
         <div style="display:flex;gap:8px;justify-content:flex-end">
-          <button type="button" id="reportCancel" class="share-btn" style="margin-left:0">Скасувати</button>
-          <button type="submit" id="reportSubmit" class="back-btn" style="padding:10px 18px;font-size:14px">Надіслати</button>
+          <button type="button" id="reportCancel" class="secondary-btn">Скасувати</button>
+          <button type="submit" id="reportSubmit" class="primary-btn">Надіслати</button>
         </div>
       </form>
     </dialog>

@@ -155,18 +155,42 @@
 }
 
 @media (max-width: 760px) {
+  .ua-privacy-banner {
+    right: .75rem;
+    bottom: max(.75rem, env(safe-area-inset-bottom));
+    left: .75rem;
+  }
+
   .ua-privacy-banner__content {
     align-items: stretch;
     flex-direction: column;
+    gap: .75rem;
+    padding: .875rem;
+    border-radius: 1rem;
+  }
+
+  .ua-privacy-banner h2 {
+    font-size: 1rem;
+  }
+
+  .ua-privacy-banner p {
+    margin-top: .25rem;
+    font-size: .8125rem;
+    line-height: 1.4;
   }
 
   .ua-privacy-actions {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: .375rem;
   }
 
   .ua-privacy-actions button {
     width: 100%;
+    min-width: 0;
+    padding: .55rem .35rem;
+    font-size: .75rem;
+    line-height: 1.2;
   }
 }
 

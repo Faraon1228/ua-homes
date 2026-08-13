@@ -14,5 +14,15 @@ void main() {
     expect(find.text('UA-Dim mobile shell'), findsOneWidget);
     expect(uaDimProductionUrl, contains('ua-dim.com'));
     expect(uaDimProductionUrl, contains('source=ua-dim-app'));
+    expect(uaDimProductionUrl, contains('release=20260813-seller-detail'));
+    expect(isUaDimInternalUri(Uri.parse(uaDimProductionUrl)), isTrue);
+    expect(
+      isUaDimInternalUri(Uri.parse('https://feedback.ua-dim.com/contact')),
+      isTrue,
+    );
+    expect(
+      isUaDimInternalUri(Uri.parse('mailto:feedback@ua-dim.com')),
+      isFalse,
+    );
   });
 }
