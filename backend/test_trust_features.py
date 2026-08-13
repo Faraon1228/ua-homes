@@ -23,6 +23,7 @@ os.environ["UA_HOMES_SECRET"] = "stage-five-test-secret-at-least-32-bytes"
 os.environ.pop("DATABASE_URL", None)
 
 app_module = importlib.import_module("app")
+media_migration = importlib.import_module("migrate_legacy_listing_media")
 
 
 class TrustFeatureTests(unittest.TestCase):
@@ -321,6 +322,47 @@ class TrustFeatureTests(unittest.TestCase):
         )
         self.assertEqual(blocked_edit.status_code, 409)
         self.assertEqual(blocked_edit.get_json()["code"], "legacy_media_pending")
+
+    def test_legacy_media_migration_preserves_schema_and_concurrent_edits(self):
+        data_uri = "data:image/jpeg;base64," + base64.b64encode(b"legacy-photo").decode("ascii")
+        db = sqlite3.connect(":memory:")
+        db.execute("CREATE TABLE listings (id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT, images TEXT)")
+        db.execute(
+            "INSERT INTO listings (id, user_id, title, images) VALUES (1, 7, 'Legacy', ?)",
+            (json.dumps([data_uri]),),
+        )
+        db.commit()
+
+        rows = media_migration.load_candidates(db, [])
+        with mock.patch.object(
+            media_migration.cloudinary.uploader,
+            "upload",
+            return_value={"secure_url": "https://res.cloudinary.com/demo/image/upload/recovered.jpg"},
+        ):
+            stats = media_migration.migrate(db, rows, apply=True)
+        self.assertEqual(stats["migrated"], 1)
+        self.assertEqual(stats["failed"], 0)
+        stored = json.loads(db.execute("SELECT images FROM listings WHERE id = 1").fetchone()[0])
+        self.assertEqual(
+            stored,
+            ["https://res.cloudinary.com/demo/image/upload/recovered.jpg"],
+        )
+
+        db.execute("UPDATE listings SET images = ? WHERE id = 1", (json.dumps([data_uri]),))
+        db.commit()
+        stale_rows = media_migration.load_candidates(db, [])
+        concurrent_value = json.dumps(["https://example.test/concurrent.jpg"])
+        db.execute("UPDATE listings SET images = ? WHERE id = 1", (concurrent_value,))
+        db.commit()
+        with mock.patch.object(
+            media_migration.cloudinary.uploader,
+            "upload",
+            return_value={"secure_url": "https://res.cloudinary.com/demo/image/upload/stale.jpg"},
+        ):
+            conflict_stats = media_migration.migrate(db, stale_rows, apply=True)
+        self.assertEqual(conflict_stats["conflicts"], 1)
+        self.assertEqual(db.execute("SELECT images FROM listings WHERE id = 1").fetchone()[0], concurrent_value)
+        db.close()
 
     def test_upload_signing_uses_epoch_time_and_private_s3_requires_delivery_url(self):
         with app_module.app.test_request_context():

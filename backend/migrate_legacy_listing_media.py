@@ -125,7 +125,7 @@ def migrate(db: sqlite3.Connection, rows: list[sqlite3.Row], apply: bool) -> dic
             cursor = db.execute(
                 """
                 UPDATE listings
-                SET images = ?, updated_at = CURRENT_TIMESTAMP
+                SET images = ?
                 WHERE id = ? AND images = ?
                 """,
                 (json.dumps(updated_images), row["id"], row["images"]),
