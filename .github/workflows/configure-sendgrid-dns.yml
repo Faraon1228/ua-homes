@@ -1,0 +1,92 @@
+name: Configure SendGrid DNS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  configure:
+    name: Ensure Netlify DNS records
+    runs-on: ubuntu-latest
+    env:
+      NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+    steps:
+      - name: Add missing SendGrid records
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${NETLIFY_AUTH_TOKEN}" ]]; then
+            echo "::error::NETLIFY_AUTH_TOKEN is not configured."
+            exit 1
+          fi
+
+          api="https://api.netlify.com/api/v1"
+          auth_header="Authorization: Bearer ${NETLIFY_AUTH_TOKEN}"
+          zone_id="$(
+            curl --fail --silent --show-error \
+              --header "${auth_header}" \
+              "${api}/dns_zones" |
+              jq -r '.[] | select(.name == "ua-dim.com") | .id' |
+              head -n 1
+          )"
+
+          if [[ -z "${zone_id}" || "${zone_id}" == "null" ]]; then
+            echo "::error::Netlify DNS zone ua-dim.com was not found."
+            exit 1
+          fi
+
+          records="$(
+            curl --fail --silent --show-error \
+              --header "${auth_header}" \
+              "${api}/dns_zones/${zone_id}/dns_records"
+          )"
+
+          ensure_record() {
+            local type="$1"
+            local hostname="$2"
+            local value="$3"
+            local existing_values
+
+            existing_values="$(
+              jq -r \
+                --arg type "${type}" \
+                --arg hostname "${hostname}" \
+                '.[] | select(.type == $type and .hostname == $hostname) | .value | sub("\\.$"; "")' \
+                <<<"${records}"
+            )"
+
+            if grep -Fxq "${value}" <<<"${existing_values}"; then
+              echo "${type} ${hostname} already configured."
+              return
+            fi
+
+            if [[ -n "${existing_values}" ]]; then
+              echo "::error::Conflicting ${type} record exists for ${hostname}."
+              exit 1
+            fi
+
+            payload="$(
+              jq -cn \
+                --arg type "${type}" \
+                --arg hostname "${hostname}" \
+                --arg value "${value}" \
+                '{type: $type, hostname: $hostname, value: $value, ttl: 3600}'
+            )"
+            curl --fail --silent --show-error \
+              --request POST \
+              --header "${auth_header}" \
+              --header "Content-Type: application/json" \
+              --data "${payload}" \
+              "${api}/dns_zones/${zone_id}/dns_records" >/dev/null
+            echo "Added ${type} ${hostname}."
+          }
+
+          ensure_record CNAME url9864.ua-dim.com sendgrid.net
+          ensure_record CNAME 111877269.ua-dim.com sendgrid.net
+          ensure_record CNAME em4143.ua-dim.com u111877269.wl020.sendgrid.net
+          ensure_record CNAME s1._domainkey.ua-dim.com s1.domainkey.u111877269.wl020.sendgrid.net
+          ensure_record CNAME s2._domainkey.ua-dim.com s2.domainkey.u111877269.wl020.sendgrid.net
+          ensure_record TXT _dmarc.ua-dim.com "v=DMARC1; p=none;"
