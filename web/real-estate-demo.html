@@ -59,6 +59,8 @@
   <link rel="preload" as="script" href="vendor/react.production.min.js?v=e7ca5f4"/>
   <link rel="preload" as="script" href="vendor/react-dom.production.min.js?v=e7ca5f4"/>
   <link rel="stylesheet" href="ua-homes.css?v=seller-20260813-r2"/>
+  <link rel="stylesheet" href="privacy-consent.css?v=20260813-1"/>
+  <script defer src="privacy-consent.js?v=20260813-1"></script>
   <script defer src="vendor/react.production.min.js?v=e7ca5f4"></script>
   <script defer src="vendor/react-dom.production.min.js?v=e7ca5f4"></script>
   <style>
@@ -107,8 +109,6 @@
 </head>
 <body class="min-h-screen bg-slate-100 text-slate-900">
 <a class="skip-link" href="#main-content">Перейти до основного вмісту</a>
-<!-- Google Tag Manager (noscript) -->
-<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-KVWMVQGM" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <header class="sticky top-0 z-50 border-b border-slate-200 bg-white">
   <div class="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3">
     <div class="flex min-w-0 items-center gap-3">
@@ -160,17 +160,19 @@
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       const detail = { query: input.value };
-      window.dataLayer = window.dataLayer || [];
-      window.dataLayer.push({
-        event: 'ua_search_performed',
-        event_source: 'hero',
-        search_query: detail.query,
-      });
-      window.__UA_ANALYTICS_PENDING_EVENTS__ = window.__UA_ANALYTICS_PENDING_EVENTS__ || [];
-      window.__UA_ANALYTICS_PENDING_EVENTS__.push({
-        name: 'search_performed',
-        params: { event_source: 'hero', search_query: detail.query },
-      });
+      if (window.uaConsent && window.uaConsent.allows('analytics')) {
+        window.dataLayer = window.dataLayer || [];
+        window.dataLayer.push({
+          event: 'ua_search_performed',
+          event_source: 'hero',
+          search_query: detail.query,
+        });
+        window.__UA_ANALYTICS_PENDING_EVENTS__ = window.__UA_ANALYTICS_PENDING_EVENTS__ || [];
+        window.__UA_ANALYTICS_PENDING_EVENTS__.push({
+          name: 'search_performed',
+          params: { event_source: 'hero', search_query: detail.query },
+        });
+      }
       window.__UA_PENDING_HERO_SEARCH__ = detail;
       window.dispatchEvent(new CustomEvent('uah:hero-search', { detail }));
       window.dispatchEvent(new CustomEvent('uah:meaningful-interaction', { detail: { source: 'hero-search' } }));
@@ -205,25 +207,38 @@
     let clsValue = 0;
     let lcpEntry = null;
 
-    const sessionId = (() => {
+    let sessionId = "";
+    const getAnalyticsSessionId = () => {
+      if (sessionId) return sessionId;
       const existing = window.sessionStorage.getItem(OBS_SESSION_KEY);
-      if (existing) return existing;
+      if (existing) {
+        sessionId = existing;
+        return sessionId;
+      }
       const generated =
         (window.crypto && typeof window.crypto.randomUUID === "function"
           ? window.crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
       window.sessionStorage.setItem(OBS_SESSION_KEY, generated);
-      return generated;
-    })();
+      sessionId = generated;
+      return sessionId;
+    };
 
-    const postTelemetry = (path, payload) =>
-      fetch(`${API_BASE}${path}`, {
+    const postTelemetry = (path, payload) => {
+      if (!window.uaConsent || !window.uaConsent.allows("analytics")) {
+        return Promise.resolve();
+      }
+      return fetch(`${API_BASE}${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "omit",
         keepalive: true,
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, session_id: getAnalyticsSessionId() }),
       }).catch(() => {});
+    };
+
+    const telemetryPageUrl = () =>
+      `${window.location.origin}${window.location.pathname}${window.location.search}`;
 
     const reportWebVital = (name, value, rating, extra) => {
       if (!name || Number.isNaN(Number(value))) return;
@@ -234,9 +249,8 @@
         name,
         value: Number(value),
         rating: rating || null,
-        page_url: window.location.href,
+        page_url: telemetryPageUrl(),
         source: "real-estate-demo-shell",
-        session_id: sessionId,
         id: extra?.id || null,
         navigation_type: extra?.navigationType || null,
         delta: typeof extra?.delta === "number" ? extra.delta : null,
@@ -248,8 +262,7 @@
         event_type: type,
         message: String(message || "").slice(0, 1200),
         source: "real-estate-demo-shell",
-        page_url: window.location.href,
-        session_id: sessionId,
+        page_url: telemetryPageUrl(),
         payload: details || null,
       });
     };
@@ -343,35 +356,7 @@
   })();
 </script>
 <script defer src="real-estate-app.js?v=seller-20260813-r2"></script>
-<script>
-  (function () {
-    window.dataLayer = window.dataLayer || [];
-    let loaded = false;
-    const loadAnalytics = () => {
-      if (loaded) return;
-      loaded = true;
-      const script = document.createElement('script');
-      script.src = 'analytics.js?v=ua-ga4-02';
-      script.async = true;
-      document.body.appendChild(script);
-    };
-    const loadOnIntent = () => {
-      window.__UA_ANALYTICS_INTENT__ = true;
-      loadAnalytics();
-    };
-    window.addEventListener('uah:meaningful-interaction', loadOnIntent, { once: true });
-    ['pointerdown', 'keydown', 'touchstart'].forEach((name) => {
-      window.addEventListener(name, loadOnIntent, { once: true, capture: true, passive: true });
-    });
-    window.addEventListener('load', () => {
-      if ('requestIdleCallback' in window) {
-        requestIdleCallback(loadAnalytics, { timeout: 2000 });
-      } else {
-        setTimeout(loadAnalytics, 0);
-      }
-    }, { once: true });
-  })();
-</script>
+<script defer src="analytics-loader.js?v=20260813-1"></script>
 <script>
   (function () {
     let loadPromise = null;
@@ -455,6 +440,23 @@
     }, { once: true });
   })();
 </script>
+<footer class="border-t border-slate-200 bg-slate-950 px-4 py-8 text-slate-300">
+  <div class="mx-auto flex max-w-7xl flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+    <div>
+      <p class="font-black text-white">UA-Dim</p>
+      <p class="mt-1 text-sm">© 2026 · Сервіс пошуку нерухомості в Україні</p>
+    </div>
+    <nav aria-label="Правова інформація" class="flex flex-wrap items-center gap-x-5 gap-y-3 text-sm">
+      <a class="min-h-11 content-center underline-offset-4 hover:text-white hover:underline" href="/privacy.html">Конфіденційність</a>
+      <a class="min-h-11 content-center underline-offset-4 hover:text-white hover:underline" href="/terms.html">Умови користування</a>
+      <a class="min-h-11 content-center underline-offset-4 hover:text-white hover:underline" href="/cookie-policy.html">Cookies</a>
+      <button type="button" data-open-privacy-settings class="min-h-11 rounded-xl border border-slate-600 px-3 text-sm font-bold text-white hover:border-slate-400">
+        Налаштування приватності
+      </button>
+      <a class="min-h-11 content-center underline-offset-4 hover:text-white hover:underline" href="mailto:feedback@ua-dim.com">Зв’язатися</a>
+    </nav>
+  </div>
+</footer>
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {

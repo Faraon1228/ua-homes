@@ -16,6 +16,8 @@
 (function () {
   'use strict';
 
+  if (!window.uaConsent || !window.uaConsent.allows('analytics')) return;
+
   // ── ID (замініть на реальний після реєстрації в GA4) ──
   var GA4_MEASUREMENT_ID = 'G-LJSB794FJK';
 
@@ -31,6 +33,10 @@
   }
   window.gtag = window.gtag || gtag;
 
+  function safePageLocation() {
+    return location.origin + location.pathname + location.search;
+  }
+
   // ── Load the single GA4 path (async, after critical rendering) ─
   function loadGA4() {
     if (!IS_CONFIGURED) return;
@@ -38,14 +44,18 @@
     script.async = true;
     script.src = 'https://www.googletagmanager.com/gtag/js?id=' + GA4_MEASUREMENT_ID;
     document.head.appendChild(script);
+    gtag('consent', 'default', {
+      ad_storage: 'denied',
+      ad_user_data: 'denied',
+      ad_personalization: 'denied',
+      analytics_storage: 'granted'
+    });
     gtag('js', new Date());
     gtag('config', GA4_MEASUREMENT_ID, {
-      page_location: location.href,
+      page_location: safePageLocation(),
       page_title: document.title,
       send_page_view: true,
-      debug_mode: IS_DEV,
-      ads_storage: 'denied',
-      analytics_storage: 'granted'
+      debug_mode: IS_DEV
     });
     (window.__UA_ANALYTICS_PENDING_EVENTS__ || []).forEach(function (entry) {
       gtag('event', entry.name, entry.params || {});
@@ -55,6 +65,7 @@
 
   // ── Universal event tracker ────────────────────────────────────
   function track(eventName, params) {
+    if (!window.uaConsent || !window.uaConsent.allows('analytics')) return;
     var payload = Object.assign({ event_source: 'ua_dim' }, params || {});
 
     // GA4 via gtag
@@ -148,7 +159,13 @@
   window.dataLayer.push = function () {
     for (var i = 0; i < arguments.length; i++) {
       var item = arguments[i];
-      if (item && item.event === 'uah_lead_funnel' && IS_CONFIGURED) {
+      if (
+        item &&
+        item.event === 'uah_lead_funnel' &&
+        IS_CONFIGURED &&
+        window.uaConsent &&
+        window.uaConsent.allows('analytics')
+      ) {
         gtag('event', 'lead_funnel_' + (item.action || 'event'), {
           funnel_action: item.action,
           funnel_intent: item.intent,
@@ -198,9 +215,13 @@
     var current = location.pathname + location.search;
     if (current !== lastPath) {
       lastPath = current;
-      if (IS_CONFIGURED) {
+      if (
+        IS_CONFIGURED &&
+        window.uaConsent &&
+        window.uaConsent.allows('analytics')
+      ) {
         gtag('event', 'page_view', {
-          page_location: location.href,
+          page_location: safePageLocation(),
           page_title: document.title
         });
       }
@@ -221,12 +242,21 @@
   // ── Web Vitals → GA4 ─────────────────────────────────────────
   // Requires web-vitals library loaded externally, or uses PerformanceObserver
   function observeLCP() {
-    if (!IS_CONFIGURED || !window.PerformanceObserver) return;
+    if (
+      !IS_CONFIGURED ||
+      !window.PerformanceObserver ||
+      !window.uaConsent ||
+      !window.uaConsent.allows('analytics')
+    ) return;
     try {
       var po = new PerformanceObserver(function (list) {
         var entries = list.getEntries();
         var last = entries[entries.length - 1];
-        if (last) {
+        if (
+          last &&
+          window.uaConsent &&
+          window.uaConsent.allows('analytics')
+        ) {
           gtag('event', 'web_vitals', {
             metric_name: 'LCP',
             metric_value: Math.round(last.startTime),
@@ -245,6 +275,7 @@
       if (IS_DEV) {
         console.info('[UA Analytics] Not configured. Replace GA4_MEASUREMENT_ID in analytics.js');
       }
+
     } else {
       var loaded = false;
       var loadAnalytics = function () {

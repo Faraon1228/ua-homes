@@ -1,0 +1,347 @@
+.ua-privacy-banner {
+  position: fixed;
+  z-index: 9998;
+  right: 1rem;
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  left: 1rem;
+  color: #e2e8f0;
+}
+
+.ua-privacy-banner[hidden] {
+  display: none;
+}
+
+.ua-privacy-banner__content {
+  display: flex;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid #475569;
+  border-radius: 1.25rem;
+  background: #0f172a;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, .35);
+}
+
+.ua-privacy-banner h2,
+.ua-privacy-dialog h2 {
+  margin: 0;
+  color: #fff;
+  font-size: 1.125rem;
+  line-height: 1.4;
+}
+
+.ua-privacy-banner p,
+.ua-privacy-option p {
+  margin: .35rem 0 0;
+  line-height: 1.5;
+}
+
+.ua-privacy-banner a,
+.ua-privacy-dialog a {
+  color: #bfdbfe;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ua-privacy-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: .5rem;
+}
+
+.ua-privacy-actions button,
+.ua-privacy-close {
+  min-width: 44px;
+  min-height: 44px;
+  padding: .65rem .9rem;
+  border: 1px solid #64748b;
+  border-radius: .85rem;
+  background: #1e293b;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ua-privacy-actions .ua-privacy-primary {
+  border-color: #2563eb;
+  background: #2563eb;
+}
+
+.ua-privacy-actions button:focus-visible,
+.ua-privacy-close:focus-visible,
+.ua-privacy-option input:focus-visible {
+  outline: 3px solid #93c5fd;
+  outline-offset: 2px;
+}
+
+.ua-privacy-dialog {
+  width: min(38rem, calc(100% - 2rem));
+  max-height: calc(100dvh - 2rem);
+  padding: 0;
+  overflow: auto;
+  border: 1px solid #475569;
+  border-radius: 1.25rem;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+.ua-privacy-dialog::backdrop {
+  background: rgba(15, 23, 42, .72);
+}
+
+.ua-privacy-dialog__panel {
+  padding: 1.25rem;
+}
+
+.ua-privacy-dialog__heading,
+.ua-privacy-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.ua-privacy-eyebrow {
+  margin: 0 0 .25rem;
+  color: #93c5fd;
+  font-size: .75rem;
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.ua-privacy-close {
+  padding: 0;
+  font-size: 1.5rem;
+}
+
+.ua-privacy-option {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid #475569;
+  border-radius: 1rem;
+  background: #1e293b;
+}
+
+.ua-privacy-option strong {
+  color: #fff;
+}
+
+.ua-privacy-option span {
+  color: #a7f3d0;
+  font-size: .8rem;
+  font-weight: 800;
+}
+
+.ua-privacy-option input {
+  width: 1.5rem;
+  height: 1.5rem;
+  min-height: 1.5rem;
+  flex: 0 0 auto;
+  accent-color: #2563eb;
+}
+
+.ua-privacy-links {
+  margin: 1rem 0;
+}
+
+.ua-privacy-actions--dialog {
+  justify-content: flex-end;
+}
+
+@media (max-width: 760px) {
+  .ua-privacy-banner__content {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ua-privacy-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .ua-privacy-actions button {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ua-privacy-banner,
+  .ua-privacy-dialog {
+    scroll-behavior: auto;
+  }
+}
+
+.ua-legal-page {
+  margin: 0;
+  background: #f8fafc;
+  color: #1e293b;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.65;
+}
+
+.ua-legal-page > header,
+.ua-legal-page > footer {
+  padding: 1rem;
+  background: #0f172a;
+  color: #cbd5e1;
+}
+
+.ua-legal-page > header nav,
+.ua-legal-page > footer {
+  max-width: 54rem;
+  margin: 0 auto;
+}
+
+.ua-legal-page .breadcrumb {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  align-items: center;
+  gap: .75rem;
+  list-style: none;
+}
+
+.ua-legal-page main {
+  padding: clamp(1.25rem, 4vw, 3rem) 1rem;
+}
+
+.ua-legal-page article {
+  max-width: 54rem;
+  margin: 0 auto;
+  padding: clamp(1.25rem, 4vw, 3rem);
+  border: 1px solid #e2e8f0;
+  border-radius: 1.5rem;
+  background: #fff;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, .08);
+}
+
+.ua-legal-page h1,
+.ua-legal-page h2,
+.ua-legal-page h3 {
+  color: #0f172a;
+  line-height: 1.25;
+}
+
+.ua-legal-page h1 {
+  margin: 0;
+  font-size: clamp(2rem, 7vw, 3rem);
+}
+
+.ua-legal-page h2 {
+  margin: 2.25rem 0 .75rem;
+  font-size: 1.45rem;
+}
+
+.ua-legal-page h3 {
+  margin: 1.5rem 0 .5rem;
+  font-size: 1.1rem;
+}
+
+.ua-legal-page p,
+.ua-legal-page ul {
+  margin: .75rem 0;
+}
+
+.ua-legal-page article a {
+  color: #1d4ed8;
+  overflow-wrap: anywhere;
+  text-underline-offset: 2px;
+}
+
+.ua-legal-page > header a,
+.ua-legal-page > footer a {
+  color: #bfdbfe;
+}
+
+.ua-legal-page .meta {
+  color: #475569;
+}
+
+.ua-legal-page table {
+  display: block;
+  width: 100%;
+  margin: 1rem 0;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.ua-legal-page caption {
+  margin-bottom: .5rem;
+  color: #334155;
+  font-weight: 800;
+  text-align: left;
+}
+
+.ua-legal-page th,
+.ua-legal-page td {
+  min-width: 9rem;
+  padding: .75rem;
+  border: 1px solid #cbd5e1;
+  text-align: left;
+  vertical-align: top;
+}
+
+.ua-legal-page th {
+  background: #eff6ff;
+  color: #172554;
+}
+
+.ua-legal-page code {
+  border-radius: .35rem;
+  background: #e2e8f0;
+  padding: .1rem .3rem;
+  color: #0f172a;
+}
+
+.ua-legal-page .consent-action {
+  margin-top: 2rem;
+}
+
+.ua-legal-page [data-open-privacy-settings] {
+  min-height: 44px;
+  padding: .7rem 1rem;
+  border: 0;
+  border-radius: .85rem;
+  background: #1d4ed8;
+  color: #fff;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.ua-legal-page [data-open-privacy-settings]:focus-visible,
+.ua-legal-page article a:focus-visible,
+.ua-legal-page > header a:focus-visible,
+.ua-legal-page > footer a:focus-visible {
+  outline: 3px solid #60a5fa;
+  outline-offset: 3px;
+}
+
+.ua-legal-page > footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.ua-legal-page > footer p {
+  margin: 0;
+}
+
+@media (max-width: 520px) {
+  .ua-legal-page article {
+    border-radius: 1rem;
+  }
+
+  .ua-legal-page .breadcrumb {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: .25rem;
+  }
+}

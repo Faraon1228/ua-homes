@@ -851,6 +851,31 @@ class TrustFeatureTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNone(row[0], "no code must be stored when Twilio send fails")
 
+    def test_sitemap_includes_legal_pages(self):
+        response = self.client.get("/sitemap.xml")
+        self.assertEqual(response.status_code, 200)
+        sitemap = response.get_data(as_text=True)
+        self.assertIn("/privacy.html</loc>", sitemap)
+        self.assertIn("/terms.html</loc>", sitemap)
+        self.assertIn("/cookie-policy.html</loc>", sitemap)
+
+    def test_public_shell_gates_analytics_behind_consent(self):
+        web_dir = os.path.join(os.path.dirname(BACKEND_DIR), "web")
+        with open(os.path.join(web_dir, "real-estate-demo.html"), encoding="utf-8") as handle:
+            app_shell = handle.read()
+        with open(os.path.join(web_dir, "launch.html"), encoding="utf-8") as handle:
+            launch_shell = handle.read()
+        with open(os.path.join(web_dir, "analytics-loader.js"), encoding="utf-8") as handle:
+            analytics_loader = handle.read()
+
+        self.assertIn("privacy-consent.js", app_shell)
+        self.assertIn("analytics-loader.js", app_shell)
+        self.assertIn("privacy-consent.js", launch_shell)
+        self.assertIn("analytics-loader.js", launch_shell)
+        self.assertNotIn("googletagmanager.com/ns.html", app_shell)
+        self.assertNotIn("googletagmanager.com/ns.html", launch_shell)
+        self.assertIn("!analyticsAllowed()", analytics_loader)
+
 
 if __name__ == "__main__":
     unittest.main()

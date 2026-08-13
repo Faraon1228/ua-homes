@@ -8027,6 +8027,9 @@ def sitemap_xml():
 
     items = [
         f"<url><loc>{public_app_url()}</loc></url>",
+        f"<url><loc>{base}/privacy.html</loc></url>",
+        f"<url><loc>{base}/terms.html</loc></url>",
+        f"<url><loc>{base}/cookie-policy.html</loc></url>",
     ]
     seen_cities = set()
     for row in rows:

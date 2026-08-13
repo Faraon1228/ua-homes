@@ -1,8 +1,13 @@
 // UA-Dim Service Worker — PWA offline support
-const CACHE = 'ua-dim-v4-seller';
+const CACHE = 'ua-dim-v5-legal';
 const OFFLINE_ASSETS = [
   '/real-estate-demo.html',
   '/ua-homes-manifest.json',
+  '/privacy.html',
+  '/terms.html',
+  '/cookie-policy.html',
+  '/privacy-consent.css',
+  '/privacy-consent.js',
 ];
 
 // On install: cache the shell

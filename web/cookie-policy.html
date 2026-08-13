@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Політика використання файлів cookie — UA-Dim</title>
+  <meta name="description" content="Яке браузерне сховище та файли cookie використовує UA-Dim, навіщо вони потрібні та як керувати своїми налаштуваннями." />
+  <link rel="canonical" href="https://ua-dim.com/cookie-policy.html" />
+  <link rel="stylesheet" href="/privacy-consent.css" />
+</head>
+<body class="ua-legal-page">
+  <header>
+    <nav aria-label="Навігація сторінкою">
+      <ol class="breadcrumb">
+        <li><a href="/real-estate-demo.html">← UA-Dim</a></li>
+        <li aria-current="page">Політика використання файлів cookie</li>
+      </ol>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <h1>Політика використання файлів cookie та браузерного сховища UA-Dim</h1>
+      <p class="meta">Остання редакція: <time datetime="2026-08-13">13 серпня 2026 р.</time></p>
+
+      <p>Ця сторінка пояснює, які файли cookie та інші механізми браузерного зберігання використовує <strong>UA-Dim</strong> (<a href="https://ua-dim.com">https://ua-dim.com</a>), для чого вони потрібні та як ви можете ними керувати.</p>
+
+      <section id="what-are-cookies">
+        <h2>1. Що таке файли cookie та браузерне сховище</h2>
+        <p>Файли cookie — це невеликі текстові файли, що зберігаються у вашому браузері. На додаток до cookie, сучасні сайти також використовують <code>localStorage</code> та <code>sessionStorage</code>. Разом ці механізми допомагають сайту «пам'ятати» ваші дії між сесіями.</p>
+      </section>
+
+      <section id="categories">
+        <h2>2. Категорії сховища, що ми використовуємо</h2>
+
+        <h3>2.1 Необхідне сховище</h3>
+        <p>Ці дані потрібні для базової роботи сервісу. Вони не вимагають згоди, оскільки без них ви не зможете отримати послугу, яку запитуєте.</p>
+
+        <table>
+          <caption>Необхідне сховище</caption>
+          <thead>
+            <tr>
+              <th scope="col">Назва / ключ</th>
+              <th scope="col">Тип</th>
+              <th scope="col">Призначення</th>
+              <th scope="col">Термін зберігання</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>uaDim.authToken</code></td>
+              <td>localStorage</td>
+              <td>Токен автентифікації — підтримує ваш вхід у систему</td>
+              <td>До виходу або закінчення терміну дії</td>
+            </tr>
+            <tr>
+              <td><code>uaDim.currentUser</code></td>
+              <td>localStorage</td>
+              <td>Базовий профіль поточного користувача для відображення інтерфейсу</td>
+              <td>До виходу або очищення</td>
+            </tr>
+            <tr>
+              <td><code>re.*</code>, зокрема <code>re.savedSearches</code> і <code>re.favoriteIds</code></td>
+              <td>localStorage</td>
+              <td>Ваші збережені фільтри, обрані оголошення та збережені пошуки</td>
+              <td>До ручного очищення даних сайту у браузері</td>
+            </tr>
+            <tr>
+              <td><code>uaDim.privacyConsent.v1</code></td>
+              <td>localStorage</td>
+              <td>Зберігає ваш вибір щодо аналітичних cookie, щоб не запитувати його повторно</td>
+              <td>До ручного очищення або відкликання</td>
+            </tr>
+            <tr>
+              <td>PWA / Service Worker cache</td>
+              <td>Cache API</td>
+              <td>Кешування ресурсів для роботи сервісу в офлайн-режимі та прискорення завантаження</td>
+              <td>Керується браузером / оновленнями SW</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>2.2 Аналітичне сховище</h3>
+        <p>Ці дані збираються <strong>лише після вашої явної згоди</strong>. Ви можете відкликати згоду в будь-який момент (див. розділ 4).</p>
+
+        <table>
+          <caption>Аналітичне сховище (лише за згодою)</caption>
+          <thead>
+            <tr>
+              <th scope="col">Назва</th>
+              <th scope="col">Постачальник</th>
+              <th scope="col">Призначення</th>
+              <th scope="col">Орієнтовний термін</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>_ga</code></td>
+              <td>Google Analytics 4</td>
+              <td>Унікальний ідентифікатор відвідувача для агрегованої аналітики трафіку</td>
+              <td>До 2 років (залежно від налаштувань GA4)</td>
+            </tr>
+            <tr>
+              <td><code>_ga_&lt;ID&gt;</code></td>
+              <td>Google Analytics 4</td>
+              <td>Ідентифікатор сесії для відстеження сеансів у межах одного вимірювання GA4</td>
+              <td>До 2 років</td>
+            </tr>
+            <tr>
+              <td>Діагностичні дані (сесія)</td>
+              <td>UA-Dim (власний ендпоінт)</td>
+              <td>Web Vitals, повідомлення про помилки, URL сторінки, псевдонімний ідентифікатор сесії — для підвищення якості сервісу</td>
+              <td>Ідентифікатор — у межах сесії; серверні події — доки потрібні для діагностики</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Google Analytics 4 <strong>не завантажується</strong> до отримання явної згоди.</p>
+      </section>
+
+      <section id="no-third-party-ads">
+        <h2>3. Що ми не використовуємо</h2>
+        <p>UA-Dim <strong>не використовує</strong> рекламні cookie, пікселі відстеження соцмереж (Facebook Pixel тощо) або cookie для ремаркетингу/профілювання з метою таргетованої реклами.</p>
+      </section>
+
+      <section id="consent-management">
+        <h2>4. Як керувати налаштуваннями</h2>
+
+        <h3>4.1 Панель налаштувань приватності</h3>
+        <p>Натисніть кнопку нижче, щоб відкрити налаштування та змінити або відкликати аналітичну згоду в будь-який момент:</p>
+        <div class="consent-action">
+          <button type="button" data-open-privacy-settings>Налаштування приватності</button>
+        </div>
+        <p>Після відкликання аналітичної згоди Google Analytics 4 та збір діагностичних даних будуть деактивовані для вашого браузера. Вже зібрані Google дані підлягають їхній <a href="https://policies.google.com/privacy" rel="noopener noreferrer" target="_blank">Політиці конфіденційності</a>.</p>
+
+        <h3>4.2 Налаштування браузера</h3>
+        <p>Ви також можете заблокувати або видалити будь-які файли cookie через налаштування свого браузера. Зверніть увагу: видалення необхідного сховища (наприклад, <code>authToken</code>) призведе до виходу з облікового запису та втрати збережених фільтрів і обраних оголошень.</p>
+
+        <h3>4.3 Необхідне сховище не можна вимкнути</h3>
+        <p>Необхідні дані (розділ 2.1) є обов'язковою умовою роботи функцій, які ви запитуєте. Без них, наприклад, неможлива автентифікація або збереження фільтрів. Ці дані не потребують вашої окремої згоди.</p>
+      </section>
+
+      <section id="related">
+        <h2>5. Пов'язані документи</h2>
+        <ul>
+          <li><a href="/privacy.html">Політика конфіденційності</a></li>
+          <li><a href="/terms.html">Умови використання</a></li>
+        </ul>
+      </section>
+
+      <section id="contact">
+        <h2>6. Питання</h2>
+        <p>Якщо у вас є запитання щодо використання cookie або браузерного сховища — пишіть на <a href="mailto:feedback@ua-dim.com">feedback@ua-dim.com</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer>
+    <p>© 2026 UA-Dim. Контакт: <a href="mailto:feedback@ua-dim.com">feedback@ua-dim.com</a></p>
+    <nav aria-label="Правові документи">
+      <a href="/privacy.html">Конфіденційність</a> ·
+      <a href="/terms.html">Умови використання</a> ·
+      <a href="/cookie-policy.html" aria-current="page">Файли cookie</a>
+    </nav>
+  </footer>
+
+  <script src="/privacy-consent.js" defer></script>
+</body>
+</html>
