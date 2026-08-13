@@ -66,8 +66,9 @@ a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.18);
+  outline: 3px solid #1d4ed8;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.9);
 }
 
 .bg-white {
@@ -81,7 +82,7 @@ textarea:focus-visible {
 
 .bg-blue-600,
 .bg-blue-700 {
-  background: linear-gradient(135deg, var(--ua-primary) 0%, #3b82f6 100%) !important;
+  background: linear-gradient(135deg, var(--ua-primary-strong) 0%, #1e40af 100%) !important;
   box-shadow: 0 14px 35px rgba(37, 99, 235, 0.24) !important;
 }
 
@@ -99,8 +100,10 @@ textarea:focus-visible {
 
 .text-slate-600,
 .text-slate-500,
+.text-slate-400,
 .text-gray-600,
-.text-gray-500 {
+.text-gray-500,
+.text-gray-400 {
   color: var(--ua-muted) !important;
 }
 
@@ -140,7 +143,7 @@ textarea {
 
 input::placeholder,
 textarea::placeholder {
-  color: #94a3b8;
+  color: #64748b;
 }
 
 button.min-h-\[44px\],
@@ -239,6 +242,26 @@ select:focus,
 textarea:focus {
   border-color: var(--ua-primary) !important;
   box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.14) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  button:hover,
+  a:hover,
+  .market-card:hover,
+  .listing-card:hover,
+  .panel-card:hover,
+  .card-shell:hover {
+    transform: none !important;
+  }
 }
 
 .market-card:hover,

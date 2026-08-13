@@ -108,7 +108,7 @@
       price: 799,
       period: 'міс',
       badge: null,
-      color: '#0d9488',
+      color: '#0f766e',
       features: [
         '30 оголошень',
         'Профіль ріелтора',
@@ -197,7 +197,8 @@
     }
     .ua-pm-close {
       position:absolute;top:16px;right:20px;background:transparent;border:none;
-      color:#94a3b8;font-size:22px;cursor:pointer;line-height:1;padding:4px;
+      color:#cbd5e1;font-size:22px;cursor:pointer;line-height:1;padding:4px;
+      min-width:44px;min-height:44px;
     }
     .ua-pm-close:hover{color:#f1f5f9}
     .ua-pm-title {
@@ -205,7 +206,7 @@
       text-align:center;margin:0 0 6px;
     }
     .ua-pm-sub {
-      text-align:center;color:#94a3b8;font-size:14px;margin:0 0 20px;
+      text-align:center;color:#cbd5e1;font-size:14px;margin:0 0 20px;
     }
     .ua-pm-tabs {
       display:flex;gap:10px;justify-content:center;margin:0 0 24px;flex-wrap:wrap;
@@ -219,7 +220,8 @@
     .ua-pm-tab:hover{border-color:#64748b}
     .ua-pm-tab--active{background:#2563eb;border-color:#2563eb;color:#fff}
     .ua-pm-tab-label{font-size:15px;font-weight:700}
-    .ua-pm-tab-hint{font-size:11px;opacity:.75}
+    .ua-pm-tab-hint{font-size:11px;opacity:1}
+    .ua-pm-tab--active .ua-pm-tab-hint{color:#fff}
     .ua-pm-grid {
       display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;
     }
@@ -230,38 +232,42 @@
     }
     .ua-pm-card:hover:not(.ua-pm-card--disabled){transform:translateY(-4px);border-color:var(--plan-color)}
     .ua-pm-card--popular{border-color:#7c3aed;box-shadow:0 0 0 1px #7c3aed30}
-    .ua-pm-card--disabled{opacity:.7}
+    .ua-pm-card--disabled{border-style:dashed}
     .ua-pm-badge {
       position:absolute;top:-12px;left:50%;transform:translateX(-50%);
       background:var(--plan-color);color:#fff;font-size:11px;font-weight:700;
       padding:3px 12px;border-radius:999px;white-space:nowrap;
     }
-    .ua-pm-name {font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
+    .ua-pm-name {font-size:13px;font-weight:700;color:#cbd5e1;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
     .ua-pm-price {font-size:32px;font-weight:900;color:#f1f5f9;line-height:1}
-    .ua-pm-price span {font-size:14px;font-weight:500;color:#64748b}
+    .ua-pm-price span {font-size:14px;font-weight:500;color:#cbd5e1}
     .ua-pm-features {list-style:none;padding:0;margin:16px 0;display:flex;flex-direction:column;gap:8px;flex:1}
     .ua-pm-features li {font-size:13px;color:#cbd5e1;display:flex;gap:8px;align-items:flex-start}
     .ua-pm-features li::before {content:"✓";color:#22c55e;font-weight:700;flex-shrink:0}
     .ua-pm-limits li::before {content:"–";color:#ef4444}
-    .ua-pm-limits li {color:#64748b}
+    .ua-pm-limits li {color:#cbd5e1}
     .ua-pm-btn {
       margin-top:auto;padding:12px;border-radius:12px;font-weight:700;font-size:14px;
-      border:none;cursor:pointer;transition:opacity .15s,transform .1s;
+      border:none;cursor:pointer;transition:opacity .15s,transform .1s;min-height:44px;
       background:var(--plan-color);color:#fff;width:100%;
     }
     .ua-pm-btn:hover:not(:disabled){opacity:.85;transform:scale(.98)}
-    .ua-pm-btn:disabled{background:#334155;color:#64748b;cursor:default}
+    .ua-pm-btn:disabled{background:#475569;color:#f8fafc;cursor:default}
     .ua-pm-loading {
-      text-align:center;padding:40px;color:#94a3b8;
+      text-align:center;padding:40px;color:#cbd5e1;
     }
     .ua-pm-success {
       text-align:center;padding:40px;
     }
     .ua-pm-success h2{color:#22c55e;font-size:24px;margin:0 0 8px}
-    .ua-pm-success p{color:#94a3b8;font-size:14px;margin:0}
+    .ua-pm-success p{color:#cbd5e1;font-size:14px;margin:0}
     .ua-pm-error-banner {
       background:#450a0a;border:1px solid #7f1d1d;border-radius:10px;
       padding:12px 16px;color:#fca5a5;font-size:13px;margin-bottom:16px;display:none;
+    }
+    #ua-premium-modal button:focus-visible,
+    #ua-premium-modal a:focus-visible {
+      outline:3px solid #93c5fd;outline-offset:3px;
     }
     @keyframes ua-fade-in{from{opacity:0}to{opacity:1}}
     @keyframes ua-slide-up{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
@@ -278,7 +284,7 @@
       background:linear-gradient(135deg,#7c3aed,#2563eb);
       color:#fff;font-size:13px;font-weight:600;
       padding:8px 16px;border-radius:10px;border:none;cursor:pointer;
-      display:inline-flex;align-items:center;gap:6px;
+      display:inline-flex;align-items:center;gap:6px;min-height:44px;
       transition:opacity .15s,transform .1s;white-space:nowrap;
     }
     #ua-upgrade-cta:hover{opacity:.9;transform:scale(.98)}
@@ -293,7 +299,7 @@
     #ua-premium-bar button {
       background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.4);
       color:#fff;font-size:12px;font-weight:700;padding:4px 14px;border-radius:999px;
-      cursor:pointer;transition:background .15s;
+      cursor:pointer;transition:background .15s;min-height:44px;min-width:44px;
     }
     #ua-premium-bar button:hover{background:rgba(255,255,255,.35)}
     #ua-premium-bar button:focus-visible{outline:3px solid rgba(255,255,255,.85);outline-offset:2px}
@@ -307,10 +313,18 @@
         padding:7px 72px 7px 12px;gap:8px;
       }
       #ua-premium-bar button {
-        padding:3px 9px;font-size:10px;flex-shrink:0;
+        padding:3px 9px;font-size:11px;flex-shrink:0;
       }
       #ua-premium-bar-close {
         right:8px;font-size:16px;
+      }
+    }
+    @media(prefers-reduced-motion:reduce){
+      #ua-premium-backdrop,#ua-premium-modal,#ua-premium-modal *,#ua-premium-bar,#ua-premium-bar *{
+        animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;
+      }
+      .ua-pm-card:hover:not(.ua-pm-card--disabled),.ua-pm-btn:hover:not(:disabled),#ua-upgrade-cta:hover{
+        transform:none;
       }
     }
   `;
@@ -339,7 +353,7 @@
       '<div class="ua-pm-price">' + (plan.price === 0 ? '₴0' : '₴' + plan.price) + '<span>/' + plan.period + '</span></div>' +
       '<ul class="ua-pm-features">' + features + '</ul>' +
       (limits ? '<ul class="ua-pm-features ua-pm-limits">' + limits + '</ul>' : '') +
-      '<button class="ua-pm-btn" data-plan-id="' + plan.id + '"' + (plan.disabled ? ' disabled' : '') + '>' + plan.cta + '</button>' +
+      '<button class="ua-pm-btn" data-plan-id="' + plan.id + '" aria-label="' + plan.cta + ' — тариф ' + plan.name + '"' + (plan.disabled ? ' disabled' : '') + '>' + plan.cta + '</button>' +
       '</div>'
     );
   }
@@ -350,11 +364,11 @@
 
   function renderAudienceTabs() {
     return (
-      '<div class="ua-pm-tabs" role="tablist">' +
+      '<div class="ua-pm-tabs" role="group" aria-label="Тип користувача">' +
       AUDIENCES.map(function (a) {
         return (
           '<button class="ua-pm-tab' + (a.id === activeAudience ? ' ua-pm-tab--active' : '') + '"' +
-          ' role="tab" aria-selected="' + (a.id === activeAudience) + '" data-audience="' + a.id + '">' +
+          ' aria-pressed="' + (a.id === activeAudience) + '" data-audience="' + a.id + '">' +
           '<span class="ua-pm-tab-label">' + a.label + '</span>' +
           '<span class="ua-pm-tab-hint">' + a.hint + '</span>' +
           '</button>'
@@ -390,16 +404,16 @@
     var backdrop = document.createElement('div');
     backdrop.id = 'ua-premium-backdrop';
     backdrop.innerHTML = (
-      '<div id="ua-premium-modal" role="dialog" aria-modal="true" aria-label="Тарифи UA-Dim">' +
+      '<div id="ua-premium-modal" role="dialog" aria-modal="true" aria-labelledby="ua-pm-title" aria-describedby="ua-pm-description">' +
       '<button class="ua-pm-close" id="ua-pm-close-btn" aria-label="Закрити">×</button>' +
-      '<h2 class="ua-pm-title">🏆 Тарифи UA-Dim</h2>' +
-      '<p class="ua-pm-sub">Окремі пакети для власників житла та ріелторів</p>' +
+      '<h2 class="ua-pm-title" id="ua-pm-title">🏆 Тарифи UA-Dim</h2>' +
+      '<p class="ua-pm-sub" id="ua-pm-description">Окремі пакети для власників житла та ріелторів</p>' +
       renderAudienceTabs() +
-      '<div id="ua-pm-error" class="ua-pm-error-banner"></div>' +
+      '<div id="ua-pm-error" class="ua-pm-error-banner" role="alert"></div>' +
       '<div class="ua-pm-grid" id="ua-pm-grid">' +
       renderGrid() +
       '</div>' +
-      '<p style="text-align:center;color:#475569;font-size:12px;margin-top:24px">Оплата через LiqPay · Захищено SSL · Скасування у будь-який момент</p>' +
+      '<p style="text-align:center;color:#cbd5e1;font-size:12px;margin-top:24px">Оплата через LiqPay · Захищено SSL · Скасування у будь-який момент</p>' +
       '</div>'
     );
     return backdrop;
@@ -414,7 +428,7 @@
     var errBanner = document.getElementById('ua-pm-error');
     errBanner.style.display = 'none';
 
-    grid.innerHTML = '<div class="ua-pm-loading">⏳ Підготовка оплати через LiqPay…</div>';
+    grid.innerHTML = '<div class="ua-pm-loading" role="status" aria-live="polite">⏳ Підготовка оплати через LiqPay…</div>';
 
     var payload = {
       plan_id: plan.id,
@@ -480,13 +494,13 @@
     var modal = document.getElementById('ua-premium-modal');
     if (!modal) return;
     modal.innerHTML = (
-      '<div class="ua-pm-success">' +
+      '<div class="ua-pm-success" role="status" aria-live="polite">' +
       '<div style="font-size:56px;margin-bottom:16px">🎉</div>' +
       '<h2>' + (isDemo ? '⚙️ Тест-режим активовано' : '✅ Оплата успішна!') + '</h2>' +
       '<p>' + (isDemo ? 'LiqPay ключі не налаштовані — демо-режим' : 'Тариф «' + plan.name + '» підключено.') + '</p>' +
       '<p style="margin-top:8px">Деталі надіслані на вашу пошту</p>' +
       '<button id="ua-pm-success-close" ' +
-        'style="margin-top:24px;background:#22c55e;color:#fff;border:none;padding:12px 32px;border-radius:12px;font-weight:700;cursor:pointer;font-size:15px">Добре</button>' +
+        'style="margin-top:24px;background:#15803d;color:#fff;border:none;padding:12px 32px;border-radius:12px;font-weight:700;cursor:pointer;font-size:15px;min-height:44px">Добре</button>' +
       '</div>'
     );
     document.getElementById('ua-pm-success-close').addEventListener('click', closeModal);
@@ -555,7 +569,7 @@
     if (!modal) return;
     var focusable = Array.from(
       modal.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')
-    );
+    ).filter(function (element) { return element.getClientRects().length > 0; });
     if (!focusable.length) return;
     var first = focusable[0];
     var last = focusable[focusable.length - 1];
@@ -587,6 +601,7 @@
     bar.id = 'ua-premium-bar';
     bar.setAttribute('role', 'region');
     bar.setAttribute('aria-label', 'Пропозиція тарифів UA-Dim');
+    bar.setAttribute('aria-live', 'polite');
     bar.innerHTML = (
       '<span>🚀 Отримайте ТОП-позицію — <strong>перший місяць зі знижкою 50%</strong></span>' +
       '<button id="ua-premium-bar-open">Дивитись тарифи</button>' +

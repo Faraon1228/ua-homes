@@ -94,6 +94,12 @@
   force = true
 
 [[redirects]]
+  from = "/sitemap.xml"
+  to = "https://backend-production-51964.up.railway.app/sitemap.xml"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/agencies"
   to = "https://backend-production-51964.up.railway.app/agencies"
   status = 200

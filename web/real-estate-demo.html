@@ -32,6 +32,12 @@
   <link rel="apple-touch-icon" href="icons/Icon-192.png"/>
   <title>UA-Dim.com — нерухомість в Україні</title>
   <script>
+    window.addEventListener('beforeinstallprompt', (event) => {
+      event.preventDefault();
+      window.__UA_DEFERRED_INSTALL_PROMPT__ = event;
+    }, { once: true });
+  </script>
+  <script>
     (function () {
       const configured = window.UA_HOMES_API || "__UA_HOMES_API__";
       if (!configured || configured === "__UA_HOMES_API__") return;
@@ -63,6 +69,7 @@
     button,[role="button"]{font-weight:700}
     button,input,select,textarea{min-height:44px;touch-action:manipulation}
     input,select,textarea{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+    input::placeholder,textarea::placeholder{color:#64748b}
     textarea{min-height:auto}
     @supports(padding:max(0px)){body{padding-bottom:max(1rem,env(safe-area-inset-bottom))}}
     .modal-backdrop{animation:fadeIn .15s ease}
@@ -72,7 +79,8 @@
     .gallery-img{transition:opacity .25s}
     .gallery-img{filter:blur(8px);opacity:.88;transition:transform .25s ease,filter .35s ease,opacity .35s ease}
     .gallery-img.is-loaded{filter:blur(0);opacity:1}
-    .star-btn{background:none;border:none;padding:0;min-height:auto;cursor:pointer;line-height:1;font-size:1.5rem}
+    .star-btn{background:none;border:none;padding:0;min-height:44px;min-width:44px;cursor:pointer;line-height:1;font-size:1.5rem}
+    button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:1!important;cursor:not-allowed}
     .leaflet-container{border-radius:1.25rem}
     .compare-bar{animation:slideUp .2s ease}
     .market-card{transition:transform .2s ease,box-shadow .2s ease}
@@ -89,15 +97,19 @@
     .app-shell-skeleton{max-width:80rem;margin:0 auto;padding:1.5rem 1rem 2rem}
     .app-shell-shimmer{background:linear-gradient(90deg,#e2e8f0 25%,#f8fafc 37%,#e2e8f0 63%);background-size:400% 100%;animation:appShellShimmer 1.4s ease infinite}
     @keyframes appShellShimmer{0%{background-position:100% 50%}100%{background-position:0 50%}}
+    .skip-link{position:fixed;left:1rem;top:-5rem;z-index:9999;border-radius:.75rem;background:#fff;color:#0f172a;padding:.75rem 1rem;font-weight:800;box-shadow:0 10px 30px rgba(15,23,42,.25)}
+    .skip-link:focus{top:1rem;outline:3px solid #1d4ed8;outline-offset:2px}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}.gallery-img{filter:none!important;opacity:1!important}}
     ::-webkit-scrollbar{width:6px;height:6px}
     ::-webkit-scrollbar-track{background:#f1f5f9}
     ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:9999px}
   </style>
 </head>
 <body class="min-h-screen bg-slate-100 text-slate-900">
+<a class="skip-link" href="#main-content">Перейти до основного вмісту</a>
 <!-- Google Tag Manager (noscript) -->
 <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-KVWMVQGM" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
-<header class="sticky top-0 z-50 border-b border-slate-200 bg-white/95 backdrop-blur">
+<header class="sticky top-0 z-50 border-b border-slate-200 bg-white">
   <div class="mx-auto flex max-w-7xl items-center px-4 py-3">
     <div class="flex items-center gap-3">
       <div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-blue-700 text-sm font-black text-white shadow-lg shadow-slate-900/20">UA</div>
@@ -108,16 +120,19 @@
     </div>
   </div>
 </header>
-<section data-role="homepage-hero" class="flex min-h-[calc(100svh-69px)] items-center overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(37,99,235,.28),transparent_42%),linear-gradient(145deg,#0f172a_0%,#1e3a8a_52%,#0f766e_100%)]">
+<main id="main-content" tabindex="-1">
+<section data-role="homepage-hero" aria-labelledby="homepage-title" class="flex min-h-[calc(100svh-69px)] items-center overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(37,99,235,.28),transparent_42%),linear-gradient(145deg,#0f172a_0%,#1e3a8a_52%,#0f766e_100%)]">
   <div class="mx-auto w-full max-w-5xl px-4 py-12 sm:py-16">
     <div class="mx-auto max-w-3xl text-center">
-      <div class="mx-auto flex h-20 w-20 items-center justify-center rounded-[28px] border border-white/20 bg-white/10 text-2xl font-black text-white shadow-2xl shadow-slate-950/30 backdrop-blur sm:h-24 sm:w-24 sm:text-3xl">UA</div>
+      <div class="mx-auto flex h-20 w-20 items-center justify-center rounded-[28px] border border-white/20 bg-white/10 text-2xl font-black text-white shadow-2xl shadow-slate-950/30 sm:h-24 sm:w-24 sm:text-3xl">UA</div>
       <p class="mt-5 text-sm font-black uppercase tracking-[0.3em] text-blue-200">UA-Dim</p>
-      <h1 class="mt-3 text-4xl font-black leading-tight text-white sm:text-5xl lg:text-6xl">Знайдіть житло в Україні</h1>
+      <h1 id="homepage-title" class="mt-3 text-4xl font-black leading-tight text-white sm:text-5xl lg:text-6xl">Знайдіть житло в Україні</h1>
       <p class="mx-auto mt-4 max-w-2xl text-base leading-relaxed text-slate-200 sm:text-lg">Введіть місто, район, житловий комплекс або важливу для вас характеристику.</p>
       <form id="hero-property-form" role="search" aria-label="Пошук житла" class="mx-auto mt-8 flex max-w-3xl flex-col gap-3 rounded-[28px] border border-white/20 bg-white/95 p-3 text-left shadow-2xl shadow-slate-950/30 sm:flex-row sm:items-center sm:rounded-[32px]">
-        <label for="hero-property-search" class="sr-only">Пошук за містом, районом або ключовими словами</label>
-        <input id="hero-property-search" type="search" placeholder="Наприклад, Київ, Печерськ або єОселя" class="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-base text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-200"/>
+        <div class="relative min-w-0 flex-1">
+          <label for="hero-property-search" class="pointer-events-none absolute left-4 top-1.5 z-10 text-[10px] font-bold uppercase tracking-wide text-slate-700">Де шукаєте житло?</label>
+          <input id="hero-property-search" type="search" placeholder="Наприклад, Київ, Печерськ або єОселя" class="w-full min-w-0 rounded-2xl border border-slate-200 bg-white px-4 pb-2 pt-5 text-base text-slate-900 outline-none transition placeholder:text-slate-600 focus:border-blue-500 focus:ring-2 focus:ring-blue-200"/>
+        </div>
         <button type="submit" class="w-full shrink-0 rounded-2xl bg-blue-600 px-6 py-3.5 text-base font-black text-white shadow-lg shadow-blue-600/25 transition hover:bg-blue-700 sm:w-auto">Знайти житло</button>
       </form>
     </div>
@@ -387,9 +402,11 @@
     window.addEventListener('scroll', loadPremiumAfterScroll, { passive: true });
   })();
 </script>
-<div id="marketplace-extensions-root" aria-live="polite">
+<div id="marketplace-extensions-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+<div id="marketplace-extensions-root">
   <div id="marketplace-extensions-sentinel" style="height:1px" aria-hidden="true"></div>
 </div>
+</main>
 <script>
   (function () {
     let loaded = false;
@@ -402,6 +419,10 @@
       script.src = 'marketplace-extensions.js?v=ua-marketplace-extensions-02';
       script.async = true;
       script.crossOrigin = 'anonymous';
+      script.addEventListener('load', () => {
+        const status = document.getElementById('marketplace-extensions-status');
+        if (status) status.textContent = 'Додаткові сервіси завантажено.';
+      }, { once: true });
       document.body.appendChild(script);
     };
 

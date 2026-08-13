@@ -24,11 +24,23 @@
         padding: 1.35rem;
       }
 
-      .ua-card h2 {
+      .ua-card h3 {
         font-size: 1.3rem;
         font-weight: 800;
         color: #0f172a;
         margin: 0 0 0.35rem;
+      }
+
+      .ua-marketplace-extensions .ua-sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
       }
 
       .ua-card p {
@@ -77,6 +89,7 @@
 
       .ua-form-field input,
       .ua-form-field select {
+        min-height: 44px;
         border: 1px solid #dbeafe;
         border-radius: 14px;
         padding: .75rem .9rem;
@@ -95,6 +108,7 @@
 
       .ua-submit-button,
       .ua-secondary-button {
+        min-height: 44px;
         border: none;
         border-radius: 999px;
         padding: .8rem 1rem;
@@ -122,6 +136,15 @@
       .ua-submit-button:hover,
       .ua-secondary-button:hover {
         transform: translateY(-1px);
+      }
+
+      .ua-submit-button:focus-visible,
+      .ua-secondary-button:focus-visible,
+      .ua-form-field input:focus-visible,
+      .ua-form-field select:focus-visible,
+      .ua-switch input:focus-visible {
+        outline: 3px solid #1d4ed8;
+        outline-offset: 2px;
       }
 
       .ua-result-box {
@@ -204,6 +227,20 @@
           grid-template-columns: 1fr;
         }
       }
+
+      @media (prefers-reduced-motion: reduce) {
+        .ua-marketplace-extensions *,
+        .ua-marketplace-extensions *::before,
+        .ua-marketplace-extensions *::after {
+          animation-duration: .01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: .01ms !important;
+        }
+        .ua-submit-button:hover,
+        .ua-secondary-button:hover {
+          transform: none;
+        }
+      }
     `;
     document.head.appendChild(style);
   }
@@ -272,11 +309,13 @@
   function createExtensions() {
     const container = document.createElement('section');
     container.className = 'ua-marketplace-extensions';
+    container.setAttribute('aria-labelledby', 'ua-marketplace-heading');
     container.innerHTML = `
+      <h2 id="ua-marketplace-heading" class="ua-sr-only">Додаткові сервіси для пошуку житла</h2>
       <div class="ua-extension-grid">
         <div class="ua-card">
           <div class="ua-pill">🏦 Іпотека v2</div>
-          <h2>Порівняйте умови за 60 секунд</h2>
+          <h3>Порівняйте умови за 60 секунд</h3>
           <p>Підберіть ставку під єОселя, перегляньте щомісячний платіж та відправте заявку в один клік.</p>
           <form class="ua-mortgage-form" id="ua-mortgage-form">
             <div class="ua-form-row">
@@ -335,7 +374,7 @@
             </div>
             <button type="submit" class="ua-submit-button">Надіслати заявку</button>
           </form>
-          <div class="ua-result-box" id="ua-mortgage-result">
+          <div class="ua-result-box" id="ua-mortgage-result" aria-live="polite" aria-atomic="true">
             <div class="ua-mini-stats">
               <span>Ставка: 12% / 17%</span>
               <span>Рішення за день</span>
@@ -343,11 +382,11 @@
             <div>Платіж: <strong id="ua-payment">—</strong></div>
             <div>Загалом: <strong id="ua-total">—</strong></div>
           </div>
-          <div class="ua-success" id="ua-submit-success" aria-live="polite"></div>
+          <div class="ua-success" id="ua-submit-success" role="status" aria-live="polite" aria-atomic="true"></div>
         </div>
         <div class="ua-card">
           <div class="ua-pill">🏗️ Новобудови</div>
-          <h2>ЖК з планами поверхів і прозорими умовами</h2>
+          <h3>ЖК з планами поверхів і прозорими умовами</h3>
           <p>Переходьте від перегляду до покупки через сторінки ЖК, де вже є поетапна розбивка по будівлях і поверхах.</p>
           <div class="ua-developments">
             <div class="ua-dev-card">
@@ -428,9 +467,12 @@
       const phone = phoneInput.value.trim();
       const email = emailInput.value.trim();
       if (!name || (!phone && !email)) {
+        successEl.setAttribute('role', 'alert');
         successEl.textContent = 'Вкажіть імʼя та телефон або email.';
         return;
       }
+      form.setAttribute('aria-busy', 'true');
+      successEl.setAttribute('role', 'status');
       successEl.textContent = 'Надсилаємо заявку...';
       try {
         const response = await fetch(`${API_BASE}/api/leads`, {
@@ -463,7 +505,10 @@
           eoselya: eOselya,
         });
       } catch (error) {
+        successEl.setAttribute('role', 'alert');
         successEl.textContent = error.message || 'Помилка відправки';
+      } finally {
+        form.removeAttribute('aria-busy');
       }
     });
 

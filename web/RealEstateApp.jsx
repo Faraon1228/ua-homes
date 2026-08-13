@@ -333,6 +333,62 @@ function formatTrustHistoryValue(fieldName, value) {
   return String(value);
 }
 
+function getPreferredScrollBehavior() {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+}
+
+function useAccessibleDialog(isOpen, onClose, dialogRef, initialFocusRef) {
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+
+    const previousFocus = document.activeElement;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusFrame = window.requestAnimationFrame(() => {
+      initialFocusRef.current?.focus();
+    });
+
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+
+      const focusable = [
+        ...dialogRef.current.querySelectorAll(
+          'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+        ),
+      ].filter((element) => element.getClientRects().length > 0);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+      previousFocus?.focus?.();
+    };
+  }, [dialogRef, initialFocusRef, isOpen]);
+}
+
 function TrustDialog({ property, authToken, onClose }) {
   const dialogRef = useRef(null);
   const closeButtonRef = useRef(null);
@@ -365,7 +421,7 @@ function TrustDialog({ property, authToken, onClose }) {
         ...dialogRef.current.querySelectorAll(
           'button:not([disabled]),a[href],select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
         ),
-      ];
+      ].filter((element) => element.getClientRects().length > 0);
       if (!focusable.length) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
@@ -479,6 +535,7 @@ function TrustDialog({ property, authToken, onClose }) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="trust-dialog-title"
+        aria-describedby="trust-dialog-description"
         className="max-h-[92svh] w-full overflow-y-auto rounded-t-[30px] bg-white p-5 shadow-2xl sm:max-w-2xl sm:rounded-[30px] sm:p-6"
         onMouseDown={(event) => event.stopPropagation()}
       >
@@ -488,6 +545,9 @@ function TrustDialog({ property, authToken, onClose }) {
             <h2 id="trust-dialog-title" className="mt-1 truncate text-2xl font-black text-slate-900">
               {property.title}
             </h2>
+            <p id="trust-dialog-description" className="mt-1 text-sm text-slate-600">
+              Перевірка оголошення, тип продавця, статистика ціни та історія змін.
+            </p>
           </div>
           <button
             ref={closeButtonRef}
@@ -516,7 +576,7 @@ function TrustDialog({ property, authToken, onClose }) {
         </div>
 
         {trustLoading ? (
-          <p className="mt-5 rounded-2xl bg-slate-50 p-4 text-sm font-semibold text-slate-500">Завантажуємо статистику та історію…</p>
+          <p role="status" aria-live="polite" className="mt-5 rounded-2xl bg-slate-50 p-4 text-sm font-semibold text-slate-600">Завантажуємо статистику та історію…</p>
         ) : trustError ? (
           <p role="alert" className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-700">
             {trustError}
@@ -587,9 +647,13 @@ function TrustDialog({ property, authToken, onClose }) {
               Повідомити про шахрайство
             </button>
           ) : (
-            <form onSubmit={submitReport} className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
+            <form
+              onSubmit={submitReport}
+              aria-busy={reportSubmitting}
+              className="rounded-2xl border border-rose-200 bg-rose-50 p-4"
+            >
               <h3 className="font-black text-rose-900">Скарга на оголошення</h3>
-              <p className="mt-1 text-xs text-rose-700">Скарга потрапить у backend модерації; контактні дані публічно не показуються.</p>
+              <p id="report-help" className="mt-1 text-xs text-rose-700">Скарга потрапить у backend модерації; контактні дані публічно не показуються.</p>
               <label className="mt-4 block text-xs font-black uppercase tracking-wide text-slate-600" htmlFor="report-reason">
                 Причина
               </label>
@@ -618,11 +682,12 @@ function TrustDialog({ property, authToken, onClose }) {
                 required
                 rows={4}
                 placeholder="Опишіть конкретні ознаки проблеми…"
+                aria-describedby={`report-help${reportError ? " report-error" : ""}${reportStatus ? " report-status" : ""}`}
                 className="mt-1 w-full rounded-xl border border-rose-200 bg-white p-3 text-sm"
               />
-              <div aria-live="polite" className="mt-2 text-sm">
-                {reportError ? <p className="font-semibold text-rose-700">{reportError}</p> : null}
-                {reportStatus ? <p className="font-semibold text-emerald-700">{reportStatus}</p> : null}
+              <div className="mt-2 text-sm">
+                {reportError ? <p id="report-error" role="alert" className="font-semibold text-rose-700">{reportError}</p> : null}
+                {reportStatus ? <p id="report-status" role="status" aria-live="polite" className="font-semibold text-emerald-700">{reportStatus}</p> : null}
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
@@ -748,7 +813,11 @@ function ListingsMapView({ properties, onShowList }) {
 
     mappedProperties.forEach((property) => {
       const point = [Number(property.latitude), Number(property.longitude)];
-      const marker = Leaflet.marker(point);
+      const marker = Leaflet.marker(point, {
+        title: property.title,
+        alt: `${property.title}, ${property.city}, ${property.district}`,
+        keyboard: false,
+      });
       const popup = document.createElement("div");
       const title = document.createElement("strong");
       title.textContent = property.title;
@@ -770,7 +839,11 @@ function ListingsMapView({ properties, onShowList }) {
   }, [mapReady, mappedProperties]);
 
   return (
-    <div id="listings-map" className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
+    <div
+      id="listings-map"
+      aria-busy={!mapReady && !mapError}
+      className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm"
+    >
       <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-sm font-black text-slate-900">
@@ -794,8 +867,20 @@ function ListingsMapView({ properties, onShowList }) {
           </button>
         ) : null}
       </div>
+      <p id="map-access-help" className="sr-only">
+        Оголошення на карті доступні як посилання нижче. Усі результати також доступні в режимі списку.
+      </p>
+      <ul className="sr-only">
+        {mappedProperties.map((property) => (
+          <li key={`map-access-${property.id}`}>
+            <a href={`/listing/${property.id}`}>
+              {property.title}, {property.city}, {property.district}
+            </a>
+          </li>
+        ))}
+      </ul>
       {mapError ? (
-        <div className="px-5 py-16 text-center">
+        <div role="alert" className="px-5 py-16 text-center">
           <p className="font-bold text-rose-700">{mapError}</p>
           <p className="mt-2 text-sm text-slate-500">Результати залишаються доступними у режимі списку.</p>
           <button
@@ -813,10 +898,11 @@ function ListingsMapView({ properties, onShowList }) {
             className="h-[420px] w-full sm:h-[520px]"
             role="region"
             aria-label={`Карта результатів: координати мають ${mappedProperties.length} із ${properties.length}`}
+            aria-describedby="map-access-help"
           />
           {!mapReady ? (
             <div className="absolute inset-0 grid place-items-center bg-slate-50">
-              <p className="text-sm font-semibold text-slate-500">Завантажуємо карту…</p>
+              <p role="status" aria-live="polite" className="text-sm font-semibold text-slate-600">Завантажуємо карту…</p>
             </div>
           ) : null}
         </div>
@@ -1039,8 +1125,12 @@ function SmartSearchPage({
               дивіться релевантні результати.
             </p>
             <div className="mt-6 rounded-[28px] border border-blue-100 bg-blue-50 p-4">
+              <label htmlFor="smart-search-query" className="mb-2 block text-xs font-black uppercase tracking-wide text-blue-800">
+                Ключові слова
+              </label>
               <div className="flex flex-col gap-3 sm:flex-row">
                 <input
+                  id="smart-search-query"
                   ref={keywordInputRef}
                   type="text"
                   value={keywordDraft}
@@ -1144,7 +1234,7 @@ function SmartSearchPage({
             </div>
 
             <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4">
-              <p className="text-xs font-black uppercase tracking-wide text-rose-600">Обрані</p>
+              <p className="text-xs font-black uppercase tracking-wide text-rose-700">Обрані</p>
               <p className="mt-1 text-sm text-slate-600">
                 {favoriteIds.length ? `Збережено ${favoriteIds.length} об'єктів.` : "Додайте об'єкти в обране."}
               </p>
@@ -1283,7 +1373,7 @@ function PhotoGallery({ images, title, href, priority = false }) {
           <button
             type="button"
             onClick={prev}
-            className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full bg-black/50 px-3 py-1 text-white hover:bg-black/70"
+            className="absolute left-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/70 p-0 text-white hover:bg-black/85"
             aria-label="Попереднє фото"
           >
             ‹
@@ -1291,7 +1381,7 @@ function PhotoGallery({ images, title, href, priority = false }) {
           <button
             type="button"
             onClick={next}
-            className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full bg-black/50 px-3 py-1 text-white hover:bg-black/70"
+            className="absolute right-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/70 p-0 text-white hover:bg-black/85"
             aria-label="Наступне фото"
           >
             ›
@@ -1322,7 +1412,7 @@ function ListingCard({ property, favorite, onToggleFavorite, onOpenTrust, priori
             </span>
           ) : null}
           {verifiedSeller ? (
-            <span className="rounded-full bg-emerald-600 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-white shadow-md">
+            <span className="rounded-full bg-emerald-700 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-white shadow-md">
               ✓ Перевірений продавець
             </span>
           ) : null}
@@ -1355,7 +1445,7 @@ function ListingCard({ property, favorite, onToggleFavorite, onOpenTrust, priori
 
         <h3 className="mt-4 line-clamp-2 text-xl font-black leading-snug text-slate-900">
           {href ? (
-            <a href={href} className="transition hover:text-blue-700">
+            <a href={href} className="inline-flex min-h-[44px] items-center transition hover:text-blue-700">
               {property.title}
             </a>
           ) : (
@@ -1423,6 +1513,12 @@ export default function RealEstateApp() {
   const mobileFiltersTriggerRef = useRef(null);
   const mobileFiltersDrawerRef = useRef(null);
   const mobileFiltersCloseRef = useRef(null);
+  const eOselyaDialogRef = useRef(null);
+  const eOselyaCloseRef = useRef(null);
+  const planDialogRef = useRef(null);
+  const planCloseRef = useRef(null);
+  const listingDialogRef = useRef(null);
+  const listingCloseRef = useRef(null);
   const [cityFilter, setCityFilter] = useState(() => getStored("re.cityFilter", "Всі"));
   const [propertyTypeFilter, setPropertyTypeFilter] = useState(() => getStored("re.propertyType", "Всі"));
   const [onlyEOselya, setOnlyEOselya] = useState(
@@ -1525,6 +1621,11 @@ export default function RealEstateApp() {
     }
   };
 
+  const closeEOselyaCalculator = () => {
+    setShowEOselyaCalculator(false);
+    window.requestAnimationFrame(() => mobileFiltersTriggerRef.current?.focus());
+  };
+
   useEffect(() => {
     window.localStorage.setItem(RESULTS_VIEW_MODE_KEY, resultsView);
   }, [resultsView]);
@@ -1549,7 +1650,7 @@ export default function RealEstateApp() {
         ...mobileFiltersDrawerRef.current.querySelectorAll(
           'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
         ),
-      ];
+      ].filter((element) => element.getClientRects().length > 0);
       if (!focusable.length) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
@@ -1745,6 +1846,7 @@ export default function RealEstateApp() {
   useEffect(() => {
     const handleInstallPrompt = (e) => {
       e.preventDefault();
+      window.__UA_DEFERRED_INSTALL_PROMPT__ = null;
       if (!pwaInstalled) setPwaInstallPrompt(e);
     };
     const handleInstalled = () => {
@@ -1754,6 +1856,11 @@ export default function RealEstateApp() {
       window.localStorage.setItem(PWA_INSTALLED_KEY, "true");
       window.sessionStorage.setItem(PWA_SESSION_HIDDEN_KEY, "true");
     };
+    const deferredInstallPrompt = window.__UA_DEFERRED_INSTALL_PROMPT__;
+    if (deferredInstallPrompt) {
+      window.__UA_DEFERRED_INSTALL_PROMPT__ = null;
+      if (!pwaInstalled) setPwaInstallPrompt(deferredInstallPrompt);
+    }
     window.addEventListener("beforeinstallprompt", handleInstallPrompt);
     window.addEventListener("appinstalled", handleInstalled);
     return () => {
@@ -1942,7 +2049,7 @@ export default function RealEstateApp() {
     const targetId = panelId === "profile" ? "auth" : panelId;
     const target = document.getElementById(targetId);
     if (target) {
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      target.scrollIntoView({ behavior: getPreferredScrollBehavior(), block: "start" });
     }
   };
   const activeFilters = useMemo(() => {
@@ -2500,6 +2607,15 @@ export default function RealEstateApp() {
     }
   };
 
+  useAccessibleDialog(
+    showEOselyaCalculator,
+    closeEOselyaCalculator,
+    eOselyaDialogRef,
+    eOselyaCloseRef
+  );
+  useAccessibleDialog(planLimitPrompt !== null, () => setPlanLimitPrompt(null), planDialogRef, planCloseRef);
+  useAccessibleDialog(showCreateListingModal, closeListingModal, listingDialogRef, listingCloseRef);
+
   useEffect(() => {
     if (smartSearchMode) return undefined;
     const heroInput = document.getElementById("hero-property-search");
@@ -2510,7 +2626,7 @@ export default function RealEstateApp() {
       setKeywordSearch(query);
       window.__UA_PENDING_HERO_SEARCH__ = null;
       window.requestAnimationFrame(() => {
-        document.getElementById("results")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        document.getElementById("results")?.scrollIntoView({ behavior: getPreferredScrollBehavior(), block: "start" });
       });
     };
     window.addEventListener("uah:hero-search", handleHeroSearch);
@@ -2577,7 +2693,7 @@ export default function RealEstateApp() {
       const anchor = document.getElementById("add");
       if (anchor) {
         const top = anchor.getBoundingClientRect().top + window.scrollY - 96;
-        window.scrollTo({ top: Math.max(top, 0), behavior: "smooth" });
+        window.scrollTo({ top: Math.max(top, 0), behavior: getPreferredScrollBehavior() });
       }
       if (!currentUser) {
         setAuthMode("register");
@@ -2597,20 +2713,27 @@ export default function RealEstateApp() {
       {showEOselyaCalculator ? (
        <div
          className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/70 px-4 py-6 backdrop-blur-sm"
-         onClick={() => setShowEOselyaCalculator(false)}
+         onClick={closeEOselyaCalculator}
        >
          <div
+           ref={eOselyaDialogRef}
+           role="dialog"
+           aria-modal="true"
+           aria-labelledby="eoselya-dialog-title"
+           aria-describedby="eoselya-dialog-description"
            className="w-full max-w-lg rounded-[28px] border border-slate-200 bg-white p-5 shadow-2xl shadow-slate-950/20"
            onClick={(event) => event.stopPropagation()}
          >
            <div className="flex items-start justify-between gap-3">
              <div>
                <p className="text-[11px] font-black uppercase tracking-[0.28em] text-blue-700">Калькулятор єОселя</p>
-               <h3 className="mt-1 text-2xl font-black text-slate-900">Розрахунок комісії</h3>
+               <h2 id="eoselya-dialog-title" className="mt-1 text-2xl font-black text-slate-900">Розрахунок комісії</h2>
              </div>
              <button
+               ref={eOselyaCloseRef}
                type="button"
-               onClick={() => setShowEOselyaCalculator(false)}
+               onClick={closeEOselyaCalculator}
+               aria-label="Закрити калькулятор єОселя"
                className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100"
              >
                ✕ Закрити
@@ -2618,8 +2741,9 @@ export default function RealEstateApp() {
            </div>
 
            <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 p-4">
-             <label className="block text-xs font-black uppercase tracking-wide text-blue-700">Вартість об’єкта, ₴</label>
+             <label htmlFor="eoselya-property-price" className="block text-xs font-black uppercase tracking-wide text-blue-700">Вартість об’єкта, ₴</label>
              <input
+               id="eoselya-property-price"
                type="number"
                min="0"
                inputMode="numeric"
@@ -2671,7 +2795,7 @@ export default function RealEstateApp() {
              </div>
            </div>
 
-           <p className="mt-4 text-sm text-slate-600">
+           <p id="eoselya-dialog-description" className="mt-4 text-sm text-slate-600">
              Введіть вартість об’єкта, щоб миттєво побачити розмір комісії для єОселя за тарифами 3% або 7%.
            </p>
          </div>
@@ -2705,12 +2829,12 @@ export default function RealEstateApp() {
             <div id="publish" className="scroll-mt-28 rounded-[28px] border border-amber-200 bg-gradient-to-br from-amber-50 via-white to-orange-50 p-5 shadow-sm">
               <div className="mb-4 h-1.5 rounded-full bg-gradient-to-r from-amber-500 to-orange-500" />
               <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-amber-600 text-lg text-white shadow-lg shadow-amber-200">
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-amber-700 text-lg text-white shadow-lg shadow-amber-200">
                   ➕
                 </div>
                 <div>
                   <p className="text-[11px] font-black uppercase tracking-wide text-amber-700">Публікація</p>
-                  <h3 className="text-lg font-black text-slate-900">Створіть оголошення за 2 хвилини</h3>
+                  <h2 className="text-lg font-black text-slate-900">Створіть оголошення за 2 хвилини</h2>
                 </div>
               </div>
               <p className="mt-3 text-sm text-slate-600">Публікуйте новий об'єкт, додавайте фото і одразу розміщуйте його в каталозі.</p>
@@ -2718,7 +2842,7 @@ export default function RealEstateApp() {
                 <button
                   type="button"
                   onClick={openCreateListingModal}
-                  className="rounded-2xl bg-amber-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-amber-700"
+                  className="rounded-2xl bg-amber-700 px-4 py-2 text-sm font-bold text-white transition hover:bg-amber-800"
                 >
                   ➕ Створити оголошення
                 </button>
@@ -2743,7 +2867,7 @@ export default function RealEstateApp() {
                     {currentUser ? currentUser.name : "Увійдіть у профіль"}
                   </h2>
                 </div>
-                <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${currentUser ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-700"}`}>
+                <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${currentUser ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-700"}`}>
                   {currentUser ? cabinet.badge : "Потрібен вхід"}
                 </span>
               </div>
@@ -2786,12 +2910,17 @@ export default function RealEstateApp() {
                 </div>
               ) : null}
 
-              {authError ? <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{authError}</div> : null}
-              {authSuccess ? <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{authSuccess}</div> : null}
-              {listingMessage ? <div className="mt-3 rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700">{listingMessage}</div> : null}
+              {authError ? <div id="auth-error" role="alert" className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{authError}</div> : null}
+              {authSuccess ? <div id="auth-success" role="status" aria-live="polite" className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{authSuccess}</div> : null}
+              {listingMessage ? <div id="listing-message" role="status" aria-live="polite" className="mt-3 rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">{listingMessage}</div> : null}
 
               {!currentUser ? (
-                <form onSubmit={handleAuthSubmit} className="mt-4 space-y-3">
+                <form
+                  onSubmit={handleAuthSubmit}
+                  aria-describedby={`${authError ? "auth-error " : ""}${authSuccess ? "auth-success" : ""}`.trim() || undefined}
+                  aria-busy={authLoading}
+                  className="mt-4 space-y-3"
+                >
                   {authMode === "register" ? (
                     <div className="space-y-2">
                       <p className="text-xs font-black uppercase tracking-wide text-slate-500">Тип кабінету</p>
@@ -2816,28 +2945,49 @@ export default function RealEstateApp() {
                     </div>
                   ) : null}
                   {authMode === "register" ? (
+                    <div>
+                      <label htmlFor="auth-name" className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-600">
+                        Ваше ім&apos;я
+                      </label>
+                      <input
+                        id="auth-name"
+                        type="text"
+                        autoComplete="name"
+                        value={authForm.name}
+                        onChange={(event) => updateAuthForm("name", event.target.value)}
+                        placeholder="Наприклад, Олена"
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                      />
+                    </div>
+                  ) : null}
+                  <div>
+                    <label htmlFor="auth-email" className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-600">
+                      Email
+                    </label>
                     <input
-                      type="text"
-                      value={authForm.name}
-                      onChange={(event) => updateAuthForm("name", event.target.value)}
-                      placeholder="Ваше ім'я"
+                      id="auth-email"
+                      type="email"
+                      autoComplete="email"
+                      value={authForm.email}
+                      onChange={(event) => updateAuthForm("email", event.target.value)}
+                      placeholder="name@example.com"
                       className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
                     />
-                  ) : null}
-                  <input
-                    type="email"
-                    value={authForm.email}
-                    onChange={(event) => updateAuthForm("email", event.target.value)}
-                    placeholder="Email"
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
-                  />
-                  <input
-                    type="password"
-                    value={authForm.password}
-                    onChange={(event) => updateAuthForm("password", event.target.value)}
-                    placeholder="Пароль"
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
-                  />
+                  </div>
+                  <div>
+                    <label htmlFor="auth-password" className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-600">
+                      Пароль
+                    </label>
+                    <input
+                      id="auth-password"
+                      type="password"
+                      autoComplete={authMode === "login" ? "current-password" : "new-password"}
+                      value={authForm.password}
+                      onChange={(event) => updateAuthForm("password", event.target.value)}
+                      placeholder="Щонайменше 8 символів"
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                    />
+                  </div>
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="submit"
@@ -3156,6 +3306,7 @@ export default function RealEstateApp() {
                 role={showMobileFilters ? "dialog" : undefined}
                 aria-modal={showMobileFilters ? "true" : undefined}
                 aria-labelledby="mobile-filters-title"
+                aria-describedby="mobile-filters-description"
                 onMouseDown={(event) => event.stopPropagation()}
                 className="ml-auto h-full w-full max-w-md overflow-y-auto bg-gradient-to-br from-blue-50 via-white to-cyan-50 p-5 shadow-2xl lg:h-auto lg:max-w-none lg:overflow-visible lg:rounded-[28px] lg:border lg:border-blue-200 lg:shadow-sm"
               >
@@ -3171,7 +3322,7 @@ export default function RealEstateApp() {
                       </h2>
                     </div>
                   </div>
-                  <p className="mt-2 text-sm text-slate-500">Оберіть місто, бюджет, кімнати та збережіть запит для наступного разу.</p>
+                  <p id="mobile-filters-description" className="mt-2 text-sm text-slate-600">Оберіть місто, бюджет, кімнати та збережіть запит для наступного разу.</p>
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">
                   <button
@@ -3225,7 +3376,9 @@ export default function RealEstateApp() {
 
               <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Full-text пошук</p>
+                  <label htmlFor="filters-keyword-search" className="text-xs font-black uppercase tracking-wide text-slate-600">
+                    Пошук за ключовими словами
+                  </label>
                   <button
                     type="button"
                     onClick={clearKeywordSearch}
@@ -3236,6 +3389,7 @@ export default function RealEstateApp() {
                 </div>
                 <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                   <input
+                    id="filters-keyword-search"
                     type="text"
                     value={keywordDraft}
                     onChange={(e) => setKeywordDraft(e.target.value)}
@@ -3295,7 +3449,7 @@ export default function RealEstateApp() {
                         key={entry.id}
                         className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
                       >
-                        <button type="button" onClick={() => openSavedSearch(entry)} className="hover:text-blue-700">
+                        <button type="button" onClick={() => openSavedSearch(entry)} className="inline-flex min-h-[44px] items-center hover:text-blue-700">
                           {entry.name}
                         </button>
                         <button
@@ -3303,7 +3457,7 @@ export default function RealEstateApp() {
                           onClick={() =>
                             setSavedSearches((current) => current.filter((item) => item.id !== entry.id))
                           }
-                          className="text-rose-500 hover:text-rose-700"
+                          className="inline-flex h-11 w-11 items-center justify-center text-rose-700 hover:text-rose-900"
                           aria-label={`Видалити пошук ${entry.name}`}
                         >
                           ✕
@@ -3316,8 +3470,9 @@ export default function RealEstateApp() {
 
               <div className="mt-4 grid grid-cols-1 gap-4">
                 <div>
-                  <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Місто</label>
+                  <label htmlFor="filter-city" className="text-xs font-bold uppercase tracking-wide text-slate-600">Місто</label>
                   <select
+                    id="filter-city"
                     value={cityFilter}
                     onChange={(e) => setCityFilter(e.target.value)}
                     className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
@@ -3331,8 +3486,9 @@ export default function RealEstateApp() {
                 </div>
 
                 <div>
-                  <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Тип нерухомості</label>
+                  <label htmlFor="filter-property-type" className="text-xs font-bold uppercase tracking-wide text-slate-600">Тип нерухомості</label>
                   <select
+                    id="filter-property-type"
                     value={propertyTypeFilter}
                     onChange={(event) => setPropertyTypeFilter(event.target.value)}
                     className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
@@ -3345,77 +3501,103 @@ export default function RealEstateApp() {
                   </select>
                 </div>
 
-                <div>
-                  <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Ціна, $</label>
+                <fieldset>
+                  <legend className="text-xs font-bold uppercase tracking-wide text-slate-600">Ціна, $</legend>
                   <div className="mt-1 grid grid-cols-2 gap-2">
-                    <input
-                      type="number"
-                      min="0"
-                      placeholder="від"
-                      value={minPrice}
-                      onChange={(e) => setMinPrice(e.target.value)}
-                      className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
-                    />
-                    <input
-                      type="number"
-                      min="0"
-                      placeholder="до"
-                      value={maxPrice}
-                      onChange={(e) => setMaxPrice(e.target.value)}
-                      className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
-                    />
+                    <label htmlFor="filter-price-min" className="text-xs font-semibold text-slate-600">
+                      Від
+                      <input
+                        id="filter-price-min"
+                        type="number"
+                        min="0"
+                        placeholder="0"
+                        value={minPrice}
+                        onChange={(e) => setMinPrice(e.target.value)}
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                      />
+                    </label>
+                    <label htmlFor="filter-price-max" className="text-xs font-semibold text-slate-600">
+                      До
+                      <input
+                        id="filter-price-max"
+                        type="number"
+                        min="0"
+                        placeholder="Без межі"
+                        value={maxPrice}
+                        onChange={(e) => setMaxPrice(e.target.value)}
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                      />
+                    </label>
                   </div>
-                </div>
+                </fieldset>
+
+                <fieldset>
+                  <legend className="text-xs font-bold uppercase tracking-wide text-slate-600">Кімнати</legend>
+                  <div className="mt-1 grid grid-cols-2 gap-2">
+                    <label htmlFor="filter-rooms-min" className="text-xs font-semibold text-slate-600">
+                      Від
+                      <input
+                        id="filter-rooms-min"
+                        type="number"
+                        min="0"
+                        placeholder="0"
+                        value={minRooms}
+                        onChange={(e) => setMinRooms(e.target.value)}
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                      />
+                    </label>
+                    <label htmlFor="filter-rooms-max" className="text-xs font-semibold text-slate-600">
+                      До
+                      <input
+                        id="filter-rooms-max"
+                        type="number"
+                        min="0"
+                        placeholder="Без межі"
+                        value={maxRooms}
+                        onChange={(e) => setMaxRooms(e.target.value)}
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                      />
+                    </label>
+                  </div>
+                </fieldset>
+
+                <fieldset>
+                  <legend className="text-xs font-bold uppercase tracking-wide text-slate-600">Площа, м²</legend>
+                  <div className="mt-1 grid grid-cols-2 gap-2">
+                    <label htmlFor="filter-area-min" className="text-xs font-semibold text-slate-600">
+                      Від
+                      <input
+                        id="filter-area-min"
+                        type="number"
+                        min="0"
+                        placeholder="0"
+                        value={minArea}
+                        onChange={(e) => setMinArea(e.target.value)}
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                      />
+                    </label>
+                    <label htmlFor="filter-area-max" className="text-xs font-semibold text-slate-600">
+                      До
+                      <input
+                        id="filter-area-max"
+                        type="number"
+                        min="0"
+                        placeholder="Без межі"
+                        value={maxArea}
+                        onChange={(e) => setMaxArea(e.target.value)}
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                      />
+                    </label>
+                  </div>
+                </fieldset>
 
                 <div>
-                  <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Кімнати</label>
-                  <div className="mt-1 grid grid-cols-2 gap-2">
-                    <input
-                      type="number"
-                      min="0"
-                      placeholder="від"
-                      value={minRooms}
-                      onChange={(e) => setMinRooms(e.target.value)}
-                      className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
-                    />
-                    <input
-                      type="number"
-                      min="0"
-                      placeholder="до"
-                      value={maxRooms}
-                      onChange={(e) => setMaxRooms(e.target.value)}
-                      className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Площа, м²</label>
-                  <div className="mt-1 grid grid-cols-2 gap-2">
-                    <input
-                      type="number"
-                      min="0"
-                      placeholder="від"
-                      value={minArea}
-                      onChange={(e) => setMinArea(e.target.value)}
-                      className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
-                    />
-                    <input
-                      type="number"
-                      min="0"
-                      placeholder="до"
-                      value={maxArea}
-                      onChange={(e) => setMaxArea(e.target.value)}
-                      className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Сортування</label>
+                  <label htmlFor="filter-sort" className="text-xs font-bold uppercase tracking-wide text-slate-600">Сортування</label>
                   <select
+                    id="filter-sort"
                     value={sortBy}
                     onChange={(e) => setSortBy(e.target.value)}
+                    aria-describedby="filter-sort-help"
                     className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
                   >
                     <option value="relevance">Найбільш релевантні</option>
@@ -3424,7 +3606,7 @@ export default function RealEstateApp() {
                     <option value="area-desc">Більша площа спочатку</option>
                     <option value="area-asc">Менша площа спочатку</option>
                   </select>
-                  <p className="mt-1 text-xs text-slate-500">Авто: дешевші спочатку для єОселя</p>
+                  <p id="filter-sort-help" className="mt-1 text-xs text-slate-600">Авто: дешевші спочатку для єОселя</p>
                 </div>
               </div>
 
@@ -3443,7 +3625,10 @@ export default function RealEstateApp() {
                   </label>
                   <button
                     type="button"
-                    onClick={() => setShowEOselyaCalculator(true)}
+                    onClick={() => {
+                      if (!window.matchMedia("(min-width: 1024px)").matches) closeMobileFilters(false);
+                      setShowEOselyaCalculator(true);
+                    }}
                     className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700 transition hover:bg-blue-100"
                   >
                     Калькулятор 3% / 7%
@@ -3482,7 +3667,7 @@ export default function RealEstateApp() {
                     window.requestAnimationFrame(() => {
                       const results = document.getElementById("results");
                       results?.focus({ preventScroll: true });
-                      results?.scrollIntoView({ behavior: "smooth", block: "start" });
+                      results?.scrollIntoView({ behavior: getPreferredScrollBehavior(), block: "start" });
                     });
                   }}
                   className="w-full rounded-2xl bg-blue-600 px-4 py-3 text-sm font-black text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700"
@@ -3496,7 +3681,7 @@ export default function RealEstateApp() {
             <div className="rounded-[28px] border border-rose-200 bg-rose-50 p-5 shadow-sm">
               <div className="flex flex-col gap-3">
                 <div>
-                  <p className="text-xs font-black uppercase tracking-wide text-rose-600">Обрані</p>
+                  <p className="text-xs font-black uppercase tracking-wide text-rose-700">Обрані</p>
                   <p className="mt-1 text-sm text-slate-600">
                     {favoriteStats.count
                       ? `Збережено ${favoriteStats.count} об'єктів, середня ціна $${favoriteStats.avgPrice.toLocaleString(
@@ -3593,7 +3778,7 @@ export default function RealEstateApp() {
                         <button
                           type="button"
                           onClick={() => toggleFavorite(property)}
-                          className="text-rose-500 hover:text-rose-700"
+                          className="inline-flex h-11 w-11 items-center justify-center text-rose-700 hover:text-rose-900"
                           aria-label={`Прибрати ${property.title} з обраного`}
                         >
                           ✕
@@ -3610,6 +3795,7 @@ export default function RealEstateApp() {
             <div
               id="results"
               tabIndex={-1}
+              aria-busy={catalogLoading}
               className="scroll-mt-24 rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm outline-none"
             >
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -3622,6 +3808,13 @@ export default function RealEstateApp() {
                       ? `Показано ${visibleProperties.length} з ${filteredProperties.length}`
                       : "Нічого не знайдено"}
                   </h2>
+                  <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+                    {catalogLoading
+                      ? "Оголошення завантажуються."
+                      : `Показано ${visibleProperties.length} з ${filteredProperties.length} оголошень у режимі ${
+                          resultsView === "map" ? "карти" : "списку"
+                        }.`}
+                  </p>
                   <p className="mt-1 text-sm text-slate-600">
                     {catalogError
                       ? catalogError
@@ -3666,6 +3859,7 @@ export default function RealEstateApp() {
                   <button
                     type="button"
                     onClick={() => setShowFavoritesOnly((current) => !current)}
+                    aria-pressed={showFavoritesOnly}
                     className={`rounded-2xl px-4 py-2 text-sm font-bold transition ${
                       showFavoritesOnly
                         ? "bg-rose-600 text-white hover:bg-rose-700"
@@ -3681,27 +3875,31 @@ export default function RealEstateApp() {
                   >
                     Скинути фільтри
                   </button>
-                  <select
-                    value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value)}
-                    className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
-                  >
-                    <option value="relevance">Релевантність</option>
-                    <option value="price-asc">Дешевші</option>
-                    <option value="price-desc">Дорожчі</option>
-                    <option value="area-desc">Більша площа</option>
-                    <option value="area-asc">Менша площа</option>
-                  </select>
+                  <label htmlFor="results-sort" className="inline-flex min-h-[44px] items-center gap-2 text-xs font-bold text-slate-600">
+                    <span>Сортування</span>
+                    <select
+                      id="results-sort"
+                      value={sortBy}
+                      onChange={(e) => setSortBy(e.target.value)}
+                      className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                    >
+                      <option value="relevance">Релевантність</option>
+                      <option value="price-asc">Дешевші</option>
+                      <option value="price-desc">Дорожчі</option>
+                      <option value="area-desc">Більша площа</option>
+                      <option value="area-asc">Менша площа</option>
+                    </select>
+                  </label>
                 </div>
               </div>
             </div>
 
             {catalogError ? (
-             <div className="rounded-[28px] border border-rose-200 bg-rose-50 p-4 shadow-sm">
+             <div role="alert" className="rounded-[28px] border border-rose-200 bg-rose-50 p-4 shadow-sm">
                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                  <div>
                    <p className="text-sm font-bold text-rose-700">Каталог тимчасово недоступний</p>
-                   <p className="mt-1 text-sm text-rose-600">{catalogError}</p>
+                   <p className="mt-1 text-sm text-rose-700">{catalogError}</p>
                  </div>
                  <button
                    type="button"
@@ -3771,6 +3969,9 @@ export default function RealEstateApp() {
             <div className="flex min-w-0 items-start gap-3">
               <span aria-hidden="true" className="shrink-0 text-xl">📱</span>
               <div>
+                <span className="sr-only" role="status" aria-live="polite">
+                  Доступна пропозиція встановлення UA-Dim.
+                </span>
                 <p className="text-sm font-black text-slate-900">
                   {canPromptPwaInstall ? "UA-Dim можна встановити як застосунок" : "Додайте UA-Dim на головний екран"}
                 </p>
@@ -3812,11 +4013,24 @@ export default function RealEstateApp() {
       {trustDialog}
 
       {planLimitPrompt ? (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/70 px-4 py-8">
-          <div className="w-full max-w-md rounded-[32px] border border-slate-200 bg-white p-6 shadow-2xl">
-            <p className="text-xs font-black uppercase tracking-wide text-rose-600">Ліміт тарифу</p>
-            <h3 className="mt-1 text-xl font-black text-slate-900">Потрібен більший пакет</h3>
-            <p className="mt-2 text-sm text-slate-600">{planLimitPrompt.message}</p>
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/70 px-4 py-8"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setPlanLimitPrompt(null);
+          }}
+        >
+          <div
+            ref={planDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="plan-limit-title"
+            aria-describedby="plan-limit-description"
+            className="w-full max-w-md rounded-[32px] border border-slate-200 bg-white p-6 shadow-2xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <p className="text-xs font-black uppercase tracking-wide text-rose-700">Ліміт тарифу</p>
+            <h2 id="plan-limit-title" className="mt-1 text-xl font-black text-slate-900">Потрібен більший пакет</h2>
+            <p id="plan-limit-description" className="mt-2 text-sm text-slate-600">{planLimitPrompt.message}</p>
             <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
               <p>
                 Поточний тариф: <span className="font-bold">{planLimitPrompt.planName}</span>
@@ -3837,6 +4051,7 @@ export default function RealEstateApp() {
                 Переглянути тарифи
               </button>
               <button
+                ref={planCloseRef}
                 type="button"
                 onClick={() => setPlanLimitPrompt(null)}
                 className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
@@ -3849,36 +4064,57 @@ export default function RealEstateApp() {
       ) : null}
 
       {showCreateListingModal ? (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 px-4 py-8">
-          <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-[32px] border border-slate-200 bg-white p-6 shadow-2xl">
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 px-4 py-8"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeListingModal();
+          }}
+        >
+          <div
+            ref={listingDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="listing-dialog-title"
+            aria-describedby="listing-dialog-description"
+            className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-[32px] border border-slate-200 bg-white p-6 shadow-2xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">
                   {editingListingId ? "Редагувати оголошення" : "Створити оголошення"}
                 </p>
-                <h3 className="mt-1 text-2xl font-black text-slate-900">Профільне оголошення</h3>
-                <p className="mt-2 text-sm text-slate-600">
+                <h2 id="listing-dialog-title" className="mt-1 text-2xl font-black text-slate-900">Профільне оголошення</h2>
+                <p id="listing-dialog-description" className="mt-2 text-sm text-slate-600">
                   {editingListingId
                     ? "Змініть поля, збережіть і оголошення залишиться опублікованим на сайті."
                     : "Після відправки оголошення одразу з'явиться в профілі та на сайті."}
                 </p>
               </div>
               <button
+                ref={listingCloseRef}
                 type="button"
                 onClick={() => {
                   closeListingModal();
                   setListingMessage("");
                 }}
+                aria-label="Закрити форму оголошення"
                 className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700"
               >
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handleCreateListing} className="mt-6 grid gap-4 md:grid-cols-2">
+            <form
+              onSubmit={handleCreateListing}
+              aria-busy={listingSubmitting}
+              aria-describedby={listingMessage ? "listing-message" : undefined}
+              className="mt-6 grid gap-4 md:grid-cols-2"
+            >
               <div className="md:col-span-2">
-                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Назва</label>
+                <label htmlFor="listing-title" className="text-xs font-bold uppercase tracking-wide text-slate-600">Назва</label>
                 <input
+                  id="listing-title"
                   required
                   value={listingForm.title}
                   onChange={(event) => updateListingField("title", event.target.value)}
@@ -3887,8 +4123,9 @@ export default function RealEstateApp() {
                 />
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Місто</label>
+                <label htmlFor="listing-city" className="text-xs font-bold uppercase tracking-wide text-slate-600">Місто</label>
                 <input
+                  id="listing-city"
                   required
                   value={listingForm.city}
                   onChange={(event) => updateListingField("city", event.target.value)}
@@ -3897,8 +4134,9 @@ export default function RealEstateApp() {
                 />
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Район</label>
+                <label htmlFor="listing-district" className="text-xs font-bold uppercase tracking-wide text-slate-600">Район</label>
                 <input
+                  id="listing-district"
                   required
                   value={listingForm.district}
                   onChange={(event) => updateListingField("district", event.target.value)}
@@ -3907,8 +4145,9 @@ export default function RealEstateApp() {
                 />
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Тип об'єкта</label>
+                <label htmlFor="listing-property-type" className="text-xs font-bold uppercase tracking-wide text-slate-600">Тип об&apos;єкта</label>
                 <select
+                  id="listing-property-type"
                   value={listingForm.propertyType}
                   onChange={(event) => updateListingField("propertyType", event.target.value)}
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
@@ -3920,8 +4159,9 @@ export default function RealEstateApp() {
                 </select>
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Стан</label>
+                <label htmlFor="listing-condition" className="text-xs font-bold uppercase tracking-wide text-slate-600">Стан</label>
                 <select
+                  id="listing-condition"
                   value={listingForm.conditionType}
                   onChange={(event) => updateListingField("conditionType", event.target.value)}
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
@@ -3933,8 +4173,9 @@ export default function RealEstateApp() {
                 </select>
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Ціна, $</label>
+                <label htmlFor="listing-price" className="text-xs font-bold uppercase tracking-wide text-slate-600">Ціна, $</label>
                 <input
+                  id="listing-price"
                   required
                   type="number"
                   min="1"
@@ -3944,8 +4185,9 @@ export default function RealEstateApp() {
                 />
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Кімнат</label>
+                <label htmlFor="listing-rooms" className="text-xs font-bold uppercase tracking-wide text-slate-600">Кімнат</label>
                 <input
+                  id="listing-rooms"
                   required
                   type="number"
                   min="0"
@@ -3955,8 +4197,9 @@ export default function RealEstateApp() {
                 />
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Площа, м²</label>
+                <label htmlFor="listing-area" className="text-xs font-bold uppercase tracking-wide text-slate-600">Площа, м²</label>
                 <input
+                  id="listing-area"
                   required
                   type="number"
                   min="1"
@@ -3966,8 +4209,9 @@ export default function RealEstateApp() {
                 />
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Поверх</label>
+                <label htmlFor="listing-floor" className="text-xs font-bold uppercase tracking-wide text-slate-600">Поверх</label>
                 <input
+                  id="listing-floor"
                   type="number"
                   min="1"
                   value={listingForm.floor}
@@ -3976,8 +4220,9 @@ export default function RealEstateApp() {
                 />
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Загалом поверхів</label>
+                <label htmlFor="listing-total-floors" className="text-xs font-bold uppercase tracking-wide text-slate-600">Загалом поверхів</label>
                 <input
+                  id="listing-total-floors"
                   type="number"
                   min="1"
                   value={listingForm.totalFloors}
@@ -3986,8 +4231,9 @@ export default function RealEstateApp() {
                 />
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Рік будівництва</label>
+                <label htmlFor="listing-year-built" className="text-xs font-bold uppercase tracking-wide text-slate-600">Рік будівництва</label>
                 <input
+                  id="listing-year-built"
                   type="number"
                   min="1900"
                   value={listingForm.yearBuilt}
@@ -3996,8 +4242,9 @@ export default function RealEstateApp() {
                 />
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Тип пропозиції</label>
+                <label htmlFor="listing-offer-type" className="text-xs font-bold uppercase tracking-wide text-slate-600">Тип пропозиції</label>
                 <select
+                  id="listing-offer-type"
                   value={listingForm.listingType}
                   onChange={(event) => updateListingField("listingType", event.target.value)}
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
@@ -4008,16 +4255,18 @@ export default function RealEstateApp() {
               </div>
               <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 md:col-span-2">
                 <input
+                  id="listing-eoselya"
                   type="checkbox"
                   checked={listingForm.eOselya}
                   onChange={(event) => updateListingField("eOselya", event.target.checked)}
                   className="h-5 w-5"
                 />
-                <label className="text-sm font-semibold text-slate-700">Під єОселя</label>
+                <label htmlFor="listing-eoselya" className="text-sm font-semibold text-slate-700">Під єОселя</label>
               </div>
               <div className="md:col-span-2">
-                <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Опис</label>
+                <label htmlFor="listing-description" className="text-xs font-bold uppercase tracking-wide text-slate-600">Опис</label>
                 <textarea
+                  id="listing-description"
                   rows="4"
                   value={listingForm.description}
                   onChange={(event) => updateListingField("description", event.target.value)}
@@ -4073,7 +4322,7 @@ export default function RealEstateApp() {
                           {selectedListingFilePreviews.map((preview, previewIndex) => (
                             <div key={preview.id} className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                               <img src={preview.src} alt={preview.name} className="h-28 w-full object-cover" />
-                              <span className="absolute left-2 top-2 rounded-full bg-emerald-600 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white shadow">
+                              <span className="absolute left-2 top-2 rounded-full bg-emerald-700 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white shadow">
                                 Готово
                               </span>
                               <div className="border-t border-slate-100 px-3 py-1.5 text-xs font-medium text-slate-600 truncate">
@@ -4082,8 +4331,8 @@ export default function RealEstateApp() {
                               <button
                                 type="button"
                                 onClick={() => removeSelectedListingFile(previewIndex)}
-                                className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white text-xs font-bold hover:bg-red-600 transition"
-                                title="Видалити фото"
+                                className="absolute right-1.5 top-1.5 flex h-11 w-11 items-center justify-center rounded-full bg-black/75 text-white text-xs font-bold hover:bg-red-700 transition"
+                                aria-label={`Видалити фото ${preview.name}`}
                               >
                                 ✕
                               </button>
@@ -4101,7 +4350,8 @@ export default function RealEstateApp() {
                               <button
                                 type="button"
                                 onClick={() => removeSelectedListingFile(fileIndex)}
-                                className="ml-1 text-blue-400 hover:text-red-600 font-black"
+                                className="ml-1 inline-flex h-11 w-11 items-center justify-center text-blue-700 hover:text-red-700 font-black"
+                                aria-label={`Видалити фото ${file.name}`}
                               >
                                 ✕
                               </button>
@@ -4115,16 +4365,22 @@ export default function RealEstateApp() {
                 <div className="mt-3 space-y-2">
                   {listingForm.images.map((image, index) => (
                     <div key={`${index}-${image}`} className="flex items-center gap-2">
-                      <input
-                        value={image}
-                        onChange={(event) => updateListingImage(index, event.target.value)}
-                        placeholder={`Посилання на фото ${index + 1}`}
-                        className="flex-1 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
-                      />
+                      <label htmlFor={`listing-image-${index}`} className="min-w-0 flex-1 text-xs font-semibold text-slate-600">
+                        Посилання на фото {index + 1}
+                        <input
+                          id={`listing-image-${index}`}
+                          type="url"
+                          value={image}
+                          onChange={(event) => updateListingImage(index, event.target.value)}
+                          placeholder="https://…"
+                          className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                        />
+                      </label>
                       {listingForm.images.length > 1 ? (
                         <button
                           type="button"
                           onClick={() => removeListingImageField(index)}
+                          aria-label={`Видалити поле посилання на фото ${index + 1}`}
                           className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
                         >
                           ✕
@@ -4174,6 +4430,34 @@ export default function RealEstateApp() {
 if (typeof document !== "undefined") {
   const root = document.getElementById("root");
   if (root && window.ReactDOM?.createRoot) {
-    window.ReactDOM.createRoot(root).render(React.createElement(RealEstateApp));
+    const renderApp = () => {
+      if (root.dataset.mounted === "true") return;
+      root.dataset.mounted = "true";
+      window.ReactDOM.createRoot(root).render(React.createElement(RealEstateApp));
+    };
+    const hero = document.querySelector('[data-role="homepage-hero"]');
+    const canObserveHeroPaint =
+      hero &&
+      "PerformanceObserver" in window &&
+      PerformanceObserver.supportedEntryTypes?.includes("largest-contentful-paint");
+
+    if (canObserveHeroPaint) {
+      const observer = new PerformanceObserver((list) => {
+        const heroPainted = list.getEntries().some((entry) => {
+          const element = entry.element;
+          return !element || element === hero || hero.contains(element);
+        });
+        if (!heroPainted) return;
+        observer.disconnect();
+        window.setTimeout(renderApp, 0);
+      });
+      observer.observe({ type: "largest-contentful-paint", buffered: true });
+      window.setTimeout(() => {
+        observer.disconnect();
+        renderApp();
+      }, 250);
+    } else {
+      window.requestAnimationFrame(renderApp);
+    }
   }
 }

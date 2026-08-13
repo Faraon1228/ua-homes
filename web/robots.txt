@@ -1,5 +1,6 @@
 User-agent: *
 Allow: /
 Disallow: /admin/
+Disallow: /api/admin/
 
-Sitemap: __UA_HOMES_PUBLIC_URL__/sitemap.xml
+Sitemap: https://ua-dim.com/sitemap.xml
