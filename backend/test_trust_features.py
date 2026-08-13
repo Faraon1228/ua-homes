@@ -688,6 +688,28 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertNotIn("?reset_token=", text_body)
         self.assertNotIn("?reset_token=", html_body)
 
+    def test_sendgrid_uses_bearer_authorization(self):
+        response = mock.MagicMock()
+        response.status = 202
+        response.__enter__.return_value = response
+        with (
+            mock.patch.dict(os.environ, {"SENDGRID_API_KEY": "test-sendgrid-key"}),
+            mock.patch("urllib.request.urlopen", return_value=response) as urlopen,
+        ):
+            sent = app_module._send_email(
+                "recipient@example.test",
+                "Subject",
+                "Text",
+                "<p>Text</p>",
+            )
+
+        self.assertTrue(sent)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(
+            request.get_header("Authorization"),
+            "Bearer " + "test-sendgrid-key",
+        )
+
     def test_reset_password_token_hash_expiry_single_use_and_login(self):
         """Full reset flow: token stored as hash, bcrypt password set, replay rejected, login works."""
         import hashlib, datetime as dt

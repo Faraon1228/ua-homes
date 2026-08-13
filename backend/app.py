@@ -2843,7 +2843,7 @@ def _send_email(to_email: str, subject: str, body_text: str, body_html: str) -> 
             }).encode()
             req = _req.Request("https://api.sendgrid.com/v3/mail/send",
                 data=payload,
-                headers={"Authorization": f"******", "Content-Type": "application/json"},
+                headers={"Authorization": "Bearer " + sg_key, "Content-Type": "application/json"},
                 method="POST")
             with _req.urlopen(req, timeout=10) as r:
                 return r.status in (200, 202)
