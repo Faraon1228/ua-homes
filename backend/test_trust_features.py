@@ -1,5 +1,6 @@
 import base64
 import importlib
+import io
 import json
 import os
 import sqlite3
@@ -269,6 +270,57 @@ class TrustFeatureTests(unittest.TestCase):
             headers=self._auth(self.owner_token),
         )
         self.assertEqual(arbitrary_url.status_code, 400)
+
+    def test_legacy_base64_listing_photos_are_rejected_and_not_serialized(self):
+        data_uri = "data:image/jpeg;base64," + base64.b64encode(b"legacy-photo").decode("ascii")
+        payload = {
+            "title": "Legacy image",
+            "city": "Київ",
+            "district": "Печерський",
+            "propertyType": "квартира",
+            "conditionType": "вторинка",
+            "listingType": "sale",
+            "price": 100_000,
+            "rooms": 2,
+            "area": 50,
+            "images": [data_uri],
+        }
+        rejected = self.client.post(
+            "/api/listings",
+            json=payload,
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(rejected.status_code, 422)
+        self.assertIn("images", rejected.get_json()["fields"])
+
+        multipart = self.client.post(
+            "/api/listings",
+            data={
+                "payload": json.dumps({**payload, "images": []}),
+                "images": (io.BytesIO(b"legacy-photo"), "photo.jpg"),
+            },
+            content_type="multipart/form-data",
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(multipart.status_code, 422)
+        self.assertIn("images", multipart.get_json()["fields"])
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE listings SET images = ? WHERE id = ?",
+                (json.dumps([data_uri]), self.target_id),
+            )
+            db.commit()
+        public_listing = self.client.get(f"/api/listings/{self.target_id}").get_json()["listing"]
+        self.assertEqual(public_listing["images"], [app_module.PLACEHOLDER_LISTING_IMAGE])
+
+        blocked_edit = self.client.patch(
+            f"/api/listings/{self.target_id}",
+            json={**payload, "images": []},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(blocked_edit.status_code, 409)
+        self.assertEqual(blocked_edit.get_json()["code"], "legacy_media_pending")
 
     def test_upload_signing_uses_epoch_time_and_private_s3_requires_delivery_url(self):
         with app_module.app.test_request_context():

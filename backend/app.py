@@ -1451,12 +1451,15 @@ def normalize_listing_images(raw_images) -> list[str]:
     fallback = PLACEHOLDER_LISTING_IMAGE
     normalized: list[str] = []
     for image in (raw_images if isinstance(raw_images, list) else []):
-        url = strip(str(image), 2048)
-        if not url:
+        raw_url = str(image or "").strip()
+        if raw_url.startswith("data:image/"):
+            # Historical multipart uploads were stored as large base64 values.
+            # Never serialize a truncated data URI: it cannot render and bloats
+            # every catalog response. The maintenance migration moves intact
+            # values from the database to configured object storage.
             continue
-        # Keep data URIs (base64 uploads) and valid http(s) URLs as-is
-        if url.startswith("data:image/"):
-            normalized.append(url)
+        url = strip(raw_url, 2048)
+        if not url:
             continue
         lowered_url = url.lower()
         if legacy_demo_image_seed(url):
@@ -1477,6 +1480,13 @@ def normalize_listing_images(raw_images) -> list[str]:
     return normalized or [fallback]
 
 
+def has_legacy_data_uri_images(raw_images) -> bool:
+    return any(
+        isinstance(image, str) and image.strip().startswith("data:image/")
+        for image in (raw_images if isinstance(raw_images, list) else [])
+    )
+
+
 def normalize_listing_videos(raw_videos) -> list[str]:
     normalized: list[str] = []
     for video in (raw_videos if isinstance(raw_videos, list) else []):
@@ -1495,17 +1505,9 @@ def normalize_listing_videos(raw_videos) -> list[str]:
 def parse_listing_request_payload() -> tuple[dict, list[str]]:
     """
     Parse listing data from multipart form or JSON.
-    
-    **NEW (v2024):** Supports both:
-    - Legacy: Direct image upload → base64 encoding (for backward compatibility)
-    - Modern: Presigned S3 URLs (recommended for scale)
-    
-    The frontend should use:
-    1. POST /api-backend/images/presigned-url → get upload URL
-    2. PUT direct to S3 with presigned URL
-    3. POST /api-backend/listings with { image_urls: ["https://s3.../path"] }
-    
-    This bypasses the backend entirely for file transfer.
+
+    Media files must be uploaded through the presigned media endpoints first.
+    Multipart file bodies are rejected instead of being persisted as base64.
     """
     data: dict = {}
     image_urls: list[str] = []
@@ -1527,35 +1529,10 @@ def parse_listing_request_payload() -> tuple[dict, list[str]]:
     else:
         data = request.get_json(silent=True) or {}
 
-    # Handle legacy base64 uploads (if S3 not available)
-    # WARNING: This path does NOT scale. Prefer Presigned URLs above.
-    uploaded_images: list[str] = []
-    if request.files and not S3_ENABLED:
-        for upload in request.files.getlist("images"):
-            if not getattr(upload, "filename", None):
-                continue
+    if any(getattr(upload, "filename", None) for upload in request.files.getlist("images")):
+        data["_multipart_media_rejected"] = True
 
-            detected_mimetype = normalize_image_content_type(getattr(upload, "filename", ""), upload.mimetype or "")
-            if not detected_mimetype.startswith("image/"):
-                continue
-            
-            # Size check
-            image_bytes = upload.read()
-            if not image_bytes:
-                continue
-            if len(image_bytes) > MAX_UPLOAD_SIZE:
-                print(f"Warning: Image too large ({len(image_bytes)} bytes), skipping")
-                continue
-            
-            # Only base64 encode if S3 is NOT available (fallback mode)
-            try:
-                encoded = base64.b64encode(image_bytes).decode("ascii")
-                uploaded_images.append(f"data:{detected_mimetype};base64,{encoded}")
-            except Exception as e:
-                print(f"Error encoding image: {e}")
-                continue
-
-    return data, list(dict.fromkeys([*uploaded_images, *image_urls]))
+    return data, list(dict.fromkeys(image_urls))
 
 
 def validate_listing_payload(data: dict, carried_images: list[str] | None = None) -> tuple[dict, dict]:
@@ -1589,7 +1566,7 @@ def validate_listing_payload(data: dict, carried_images: list[str] | None = None
         image_values.extend(str(image).strip() for image in carried_images if str(image).strip())
     if isinstance(images_raw, list):
         image_values.extend(str(image).strip() for image in images_raw if str(image).strip())
-    image_values = list(dict.fromkeys(image_values))[:MAX_IMAGES_PER_LISTING]
+    image_values = list(dict.fromkeys(image_values))
     video_values = normalize_listing_videos(videos_raw)
 
     lat = data.get("latitude")
@@ -1632,6 +1609,25 @@ def validate_listing_payload(data: dict, carried_images: list[str] | None = None
         errors["rooms"] = "Кімнати >= 0"
     if area is None:
         errors["area"] = "Площа > 0"
+    invalid_images = []
+    for image_url in image_values:
+        try:
+            parsed_image_url = urlsplit(image_url)
+        except ValueError:
+            parsed_image_url = None
+        if (
+            image_url.startswith("data:image/")
+            or not parsed_image_url
+            or parsed_image_url.scheme not in {"http", "https"}
+            or not parsed_image_url.hostname
+        ):
+            invalid_images.append(image_url)
+    if data.get("_multipart_media_rejected"):
+        errors["images"] = "Завантажте фото через актуальну форму сайту."
+    elif invalid_images:
+        errors["images"] = "Фото повинні бути завантажені у сховище та мати коректні http(s) URL"
+    elif len(image_values) > MAX_IMAGES_PER_LISTING:
+        errors["images"] = f"Дозволено не більше {MAX_IMAGES_PER_LISTING} фото"
     if isinstance(videos_raw, list) and len([item for item in videos_raw if str(item).strip()]) != len(video_values):
         errors["videos"] = "Відео повинні мати коректні http(s) URL"
     if isinstance(videos_raw, list) and len(videos_raw) > MAX_VIDEOS_PER_LISTING:
@@ -1660,7 +1656,7 @@ def validate_listing_payload(data: dict, carried_images: list[str] | None = None
         "owner_verification_requested": owner_verification_requested,
         "phone_verification_requested": phone_verification_requested,
         "verified_docs": verified_docs,
-        "images_json": json.dumps(image_values),
+        "images_json": json.dumps(image_values[:MAX_IMAGES_PER_LISTING]),
         "videos_json": json.dumps(video_values),
         "lat": lat,
         "lng": lng,
@@ -5791,6 +5787,13 @@ def update_listing(listing_id: int):
     is_admin = bool(actor and actor["role"] == "admin")
     if listing["user_id"] != g.user_id and not is_admin:
         return jsonify(error="Недостатньо прав"), 403
+
+    stored_images = json.loads(listing["images"] or "[]")
+    if has_legacy_data_uri_images(stored_images):
+        return jsonify(
+            error="Фото цього оголошення відновлюються. Спробуйте редагування пізніше.",
+            code="legacy_media_pending",
+        ), 409
 
     data, carried_images = parse_listing_request_payload()
     listing_payload, errors = validate_listing_payload(data, carried_images)
