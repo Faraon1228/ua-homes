@@ -741,6 +741,7 @@ def _init_postgres_db():
                 plan_id         TEXT    NOT NULL DEFAULT 'free',
                 plan_expires_at TEXT,
                 agency_slug     TEXT,
+                auth_token_version INTEGER NOT NULL DEFAULT 0,
                 status          TEXT    NOT NULL DEFAULT 'active',
                 created_at      TEXT    NOT NULL DEFAULT ({db_now_expr()})
             );
@@ -1043,6 +1044,19 @@ def _init_postgres_db():
             ALTER TABLE users ADD COLUMN IF NOT EXISTS agency_slug     TEXT;
             ALTER TABLE listings ADD COLUMN IF NOT EXISTS listing_verification_status TEXT NOT NULL DEFAULT 'unverified';
             ALTER TABLE listings ADD COLUMN IF NOT EXISTS videos TEXT NOT NULL DEFAULT '[]';
+        """)
+        # Email / phone verification columns and password-reset columns (stage-2 auth hardening).
+        cur.execute("""
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified              INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verify_token          TEXT;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verify_expires        TEXT;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS phone                       TEXT;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verify_code          TEXT;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verify_expires        TEXT;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified              INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_token_hash   TEXT;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_expires      TEXT;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_token_version           INTEGER NOT NULL DEFAULT 0;
         """)
         cur.execute(
             "UPDATE users SET account_type = 'owner'"
@@ -2168,6 +2182,7 @@ def init_db():
             plan_id         TEXT    NOT NULL DEFAULT 'free',
             plan_expires_at TEXT,
             agency_slug     TEXT,
+            auth_token_version INTEGER NOT NULL DEFAULT 0,
             status          TEXT    NOT NULL DEFAULT 'active',
             created_at      TEXT    NOT NULL DEFAULT (db_now_expr())
         );
@@ -2553,6 +2568,12 @@ def init_db():
         db.execute("ALTER TABLE users ADD COLUMN plan_expires_at TEXT")
     if "agency_slug" not in user_columns:
         db.execute("ALTER TABLE users ADD COLUMN agency_slug TEXT")
+    if "password_reset_token_hash" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN password_reset_token_hash TEXT")
+    if "password_reset_expires" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN password_reset_expires TEXT")
+    if "auth_token_version" not in user_columns:
+        db.execute("ALTER TABLE users ADD COLUMN auth_token_version INTEGER NOT NULL DEFAULT 0")
     db.execute(
         "UPDATE users SET account_type = 'owner' WHERE account_type IS NULL OR account_type NOT IN ('owner', 'realtor', 'developer')"
     )
@@ -2734,10 +2755,11 @@ def init_db():
 
 # ─── Auth helpers ─────────────────────────────────────────────────────────────
 
-def make_token(user_id: int, email: str) -> str:
+def make_token(user_id: int, email: str, token_version: int = 0) -> str:
     payload = {
         "sub": str(user_id),
         "email": email,
+        "ver": int(token_version or 0),
         "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=JWT_EXP_H),
         "iat": datetime.datetime.utcnow(),
     }
@@ -2746,6 +2768,13 @@ def make_token(user_id: int, email: str) -> str:
 
 def decode_token(token: str) -> dict:
     return jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGO])
+
+
+def token_matches_user_version(payload: dict, user_row) -> bool:
+    try:
+        return int(payload.get("ver", 0)) == int(user_row["auth_token_version"] or 0)
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def require_auth(f):
@@ -2763,8 +2792,11 @@ def require_auth(f):
             return jsonify(error="Невалідний токен"), 401
         user_id = int(payload["sub"])
         db = get_db()
-        user_row = db.execute("SELECT id, email FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not user_row:
+        user_row = db.execute(
+            "SELECT id, email, auth_token_version FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if not user_row or not token_matches_user_version(payload, user_row):
             return jsonify(error="Сесія недійсна — увійдіть знову"), 401
         g.user_id    = user_id
         g.user_email = payload["email"]
@@ -2781,22 +2813,19 @@ def get_optional_actor(db) -> tuple[int | None, bool]:
     except (jwt.ExpiredSignatureError, jwt.PyJWTError):
         return None, False
     user_id = int(payload["sub"])
-    row = db.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
-    return user_id, bool(row and row["role"] == "admin")
+    row = db.execute(
+        "SELECT role, auth_token_version FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if not row or not token_matches_user_version(payload, row):
+        return None, False
+    return user_id, row["role"] == "admin"
 
 
 # ─── Email / SMS helpers ─────────────────────────────────────────────────────
 
-def send_email_verify(to_email: str, token: str) -> bool:
-    """Send verification email. Uses SendGrid if SENDGRID_API_KEY is set,
-    otherwise SMTP (SMTP_HOST/SMTP_USER/SMTP_PASS), or logs to console in dev."""
-    verify_url = f"{PUBLIC_SITE_URL or 'http://localhost:5050'}/api/auth/verify-email?token={token}"
-    subject = "Підтвердіть email — UA Homes"
-    body_text = f"Перейдіть за посиланням для підтвердження: {verify_url}"
-    body_html = f"""<p>Вітаємо у UA Homes!</p>
-<p><a href="{verify_url}">Підтвердити email</a></p>
-<p>Посилання дійсне 24 години.</p>"""
-
+def _send_email(to_email: str, subject: str, body_text: str, body_html: str) -> bool:
+    """Shared email dispatch via SendGrid or SMTP. Returns True on success, False otherwise."""
     sg_key = os.environ.get("SENDGRID_API_KEY", "")
     smtp_host = os.environ.get("SMTP_HOST", "")
 
@@ -2814,7 +2843,7 @@ def send_email_verify(to_email: str, token: str) -> bool:
             }).encode()
             req = _req.Request("https://api.sendgrid.com/v3/mail/send",
                 data=payload,
-                headers={"Authorization": f"Bearer {sg_key}", "Content-Type": "application/json"},
+                headers={"Authorization": f"******", "Content-Type": "application/json"},
                 method="POST")
             with _req.urlopen(req, timeout=10) as r:
                 return r.status in (200, 202)
@@ -2841,21 +2870,46 @@ def send_email_verify(to_email: str, token: str) -> bool:
         except Exception as e:
             app.logger.error("SMTP error: %s", e)
             return False
-    else:
-        if PUBLIC_SITE_URL:
-            app.logger.warning("Email verification is not configured for production (%s)", to_email)
-            return False
-        app.logger.info("EMAIL VERIFY (dev) → %s | URL: %s", to_email, verify_url)
-        return True
+    return False
 
 
-def send_sms_verify(phone: str, code: str) -> bool:
-    """Send SMS verification code. Uses Twilio if TWILIO_* env vars set, else logs."""
+def _email_provider_configured() -> bool:
+    """Return True if at least one email provider (SendGrid or SMTP) is configured."""
+    return bool(os.environ.get("SENDGRID_API_KEY", "") or os.environ.get("SMTP_HOST", ""))
+
+
+def send_email_verify(to_email: str, token: str) -> bool:
+    """Send verification email via the configured provider, or log to console in dev."""
+    verify_url = f"{PUBLIC_SITE_URL or 'http://localhost:5050'}/api/auth/verify-email?token={token}"
+    subject = "Підтвердіть email — UA Homes"
+    body_text = f"Перейдіть за посиланням для підтвердження: {verify_url}"
+    body_html = (
+        f"<p>Вітаємо у UA Homes!</p>"
+        f'<p><a href="{verify_url}">Підтвердити email</a></p>'
+        f"<p>Посилання дійсне 24 години.</p>"
+    )
+    if _email_provider_configured():
+        return _send_email(to_email, subject, body_text, body_html)
+    if PUBLIC_SITE_URL:
+        app.logger.warning("Email verification is not configured for production (%s)", to_email)
+        return False
+    app.logger.info("EMAIL VERIFY (dev) → %s | URL: %s", to_email, verify_url)
+    return True
+
+
+def send_sms_verify(phone: str, code: str):
+    """Send SMS verification code via Twilio.
+
+    Returns:
+        True  — Twilio accepted the message.
+        False — Twilio was configured but returned an error.
+        None  — No Twilio credentials are configured.
+    """
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
     auth_token  = os.environ.get("TWILIO_AUTH_TOKEN", "")
     from_phone  = os.environ.get("TWILIO_FROM_PHONE", "")
-    msg = f"Ваш код підтвердження UA Homes: {code}"
     if account_sid and auth_token and from_phone:
+        msg = f"Ваш код підтвердження UA Homes: {code}"
         try:
             import urllib.request as _req, urllib.parse as _parse, base64 as _b64
             payload = _parse.urlencode({"To": phone, "From": from_phone, "Body": msg}).encode()
@@ -2870,9 +2924,7 @@ def send_sms_verify(phone: str, code: str) -> bool:
         except Exception as e:
             app.logger.error("Twilio error: %s", e)
             return False
-    else:
-        app.logger.info("SMS VERIFY (dev) → %s | Code: %s", phone, code)
-        return True
+    return None  # No provider configured
 
 
 def send_alert_listing_email(to_email: str, alert_name: str, listing: dict) -> bool:
@@ -4308,7 +4360,11 @@ def login():
 
     plan_id, _plan = resolve_user_plan(row)
     return jsonify(
-        token=make_token(row["id"], row["email"]),
+        token=make_token(
+            row["id"],
+            row["email"],
+            row["auth_token_version"] if _has_key(row, "auth_token_version") else 0,
+        ),
         user={
             "id": row["id"],
             "name": row["name"],
@@ -4420,6 +4476,109 @@ def resend_verification():
     return jsonify(ok=True)
 
 
+@app.route("/api/auth/forgot-password", methods=["POST"])
+@limiter.limit("5 per hour")
+def forgot_password():
+    """Request a password reset link. Non-enumerating: returns 200 for any email."""
+    import hashlib as _hashlib
+    data = request.get_json(silent=True) or {}
+    email = strip(data.get("email", ""), 254).lower()
+    if not validate_email(email):
+        return jsonify(error="Invalid email"), 400
+
+    # Fail clearly before claiming delivery when no provider is configured in production.
+    if _production_secret_required() and not _email_provider_configured():
+        return jsonify(error="Email delivery is not configured"), 503
+
+    db = get_db()
+    row = db.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+    if not row:
+        # Non-enumerating response: do not reveal whether the address exists.
+        return jsonify(ok=True)
+
+    raw_token = secrets.token_hex(32)
+    token_hash = _hashlib.sha256(raw_token.encode()).hexdigest()
+    expires = (datetime.datetime.utcnow() + datetime.timedelta(minutes=30)).isoformat()
+    db.execute(
+        "UPDATE users SET password_reset_token_hash=?, password_reset_expires=? WHERE id=?",
+        (token_hash, expires, row["id"]),
+    )
+    db.commit()
+
+    reset_url = f"{public_app_url()}#reset_token={raw_token}"
+    subject = "Відновлення пароля — UA Homes"
+    body_text = f"Для відновлення пароля перейдіть за посиланням (дійсне 30 хв): {reset_url}"
+    body_html = (
+        f"<p>Ви отримали запит на відновлення пароля для вашого облікового запису UA Homes.</p>"
+        f'<p><a href="{reset_url}">Встановити новий пароль</a></p>'
+        f"<p>Посилання дійсне 30 хвилин. Якщо ви не робили цей запит — проігноруйте листа.</p>"
+    )
+
+    if _email_provider_configured():
+        ok = _send_email(email, subject, body_text, body_html)
+        if not ok:
+            app.logger.error("Password reset email delivery failed for user_id=%s", row["id"])
+            db.execute(
+                "UPDATE users SET password_reset_token_hash=NULL, password_reset_expires=NULL WHERE id=?",
+                (row["id"],),
+            )
+            db.commit()
+            # Keep the response non-enumerating even when delivery fails for a real account.
+            return jsonify(ok=True)
+    else:
+        # Dev-only fallback: log reset URL; never reached in production.
+        app.logger.info("PASSWORD RESET (dev) → %s | URL: %s", email, reset_url)
+
+    return jsonify(ok=True)
+
+
+@app.route("/api/auth/reset-password", methods=["POST"])
+@limiter.limit("10 per hour")
+def reset_password():
+    """Consume a password-reset token and set a new password."""
+    import hashlib as _hashlib
+    data = request.get_json(silent=True) or {}
+    raw_token = strip(data.get("token", ""), 200)
+    new_pw = strip(data.get("password", ""), 128)
+
+    if not raw_token:
+        return jsonify(error="Token required"), 400
+    if len(new_pw) < 8:
+        return jsonify(error="Password must be at least 8 characters"), 422
+
+    token_hash = _hashlib.sha256(raw_token.encode()).hexdigest()
+    db = get_db()
+    row = db.execute(
+        "SELECT id, password_reset_expires FROM users WHERE password_reset_token_hash = ?",
+        (token_hash,),
+    ).fetchone()
+
+    if not row:
+        return jsonify(error="Invalid or expired reset token"), 400
+
+    expires = row["password_reset_expires"] or ""
+    try:
+        if datetime.datetime.fromisoformat(expires) < datetime.datetime.utcnow():
+            return jsonify(error="Reset token has expired"), 400
+    except Exception:
+        return jsonify(error="Invalid reset token"), 400
+
+    hashed = bcrypt.hashpw(new_pw.encode(), bcrypt.gensalt(rounds=12)).decode()
+    # Set both legacy password and password_hash columns; clear token to prevent replay.
+    cursor = db.execute(
+        "UPDATE users SET password=?, password_hash=?,"
+        " password_reset_token_hash=NULL, password_reset_expires=NULL,"
+        " auth_token_version=auth_token_version + 1"
+        " WHERE id=? AND password_reset_token_hash=?",
+        (hashed, hashed, row["id"], token_hash),
+    )
+    if cursor.rowcount != 1:
+        db.rollback()
+        return jsonify(error="Invalid or expired reset token"), 400
+    db.commit()
+    return jsonify(ok=True)
+
+
 @app.route("/api/auth/send-phone-code", methods=["POST"])
 @require_auth
 @limiter.limit("5 per hour")
@@ -4428,7 +4587,29 @@ def send_phone_code():
     phone = strip(data.get("phone", ""), 20)
     if not phone or not re.match(r"^\+?\d{7,15}$", phone):
         return jsonify(error="Невірний формат номера телефону"), 422
+
+    is_prod = _production_secret_required()
+    account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
+    auth_token  = os.environ.get("TWILIO_AUTH_TOKEN", "")
+    from_phone  = os.environ.get("TWILIO_FROM_PHONE", "")
+    twilio_configured = bool(account_sid and auth_token and from_phone)
+
+    # In production, refuse immediately if no SMS provider is available.
+    if is_prod and not twilio_configured:
+        return jsonify(error="SMS delivery is not configured"), 503
+
     code = str(secrets.randbelow(900000) + 100000)  # 6-digit code
+    result = send_sms_verify(phone, code)
+
+    if result is False:
+        # Twilio was configured but the send failed — do not persist the code.
+        return jsonify(error="SMS delivery failed"), 502
+
+    if result is None and is_prod:
+        # Should not reach here after the guard above, but be defensive.
+        return jsonify(error="SMS delivery is not configured"), 503
+
+    # Only persist the code after a confirmed send (True) or in dev with no provider (None, non-prod).
     expires = (datetime.datetime.utcnow() + datetime.timedelta(minutes=10)).isoformat()
     db = get_db()
     db.execute(
@@ -4436,8 +4617,10 @@ def send_phone_code():
         (phone, code, expires, g.user_id)
     )
     db.commit()
-    send_sms_verify(phone, code)
-    return jsonify(ok=True, dev_code=code if not os.environ.get("TWILIO_ACCOUNT_SID") else None)
+
+    # Expose dev_code only when there is no provider and we are not in production.
+    dev_code = code if (result is None and not is_prod) else None
+    return jsonify(ok=True, dev_code=dev_code)
 
 
 @app.route("/api/auth/verify-phone", methods=["POST"])
@@ -5880,9 +6063,14 @@ def create_listing_alert():
         try:
             payload = decode_token(auth[7:])
             user_id = int(payload["sub"])
-            row = db.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
-            if row:
+            row = db.execute(
+                "SELECT email, auth_token_version FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            if row and token_matches_user_version(payload, row):
                 email = row["email"]
+            else:
+                user_id = None
         except jwt.PyJWTError:
             user_id = None
 

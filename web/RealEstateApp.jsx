@@ -1575,6 +1575,16 @@ export default function RealEstateApp() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState("");
   const [authSuccess, setAuthSuccess] = useState("");
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotDone, setForgotDone] = useState(false);
+  const [forgotError, setForgotError] = useState("");
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetPasswordConfirmation, setResetPasswordConfirmation] = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetError, setResetError] = useState("");
+  const [resetDone, setResetDone] = useState(false);
+  const resetTokenRef = React.useRef(null);
   const [accountTypeSwitching, setAccountTypeSwitching] = useState(false);
   const [planLimitPrompt, setPlanLimitPrompt] = useState(null);
   const [showCreateListingModal, setShowCreateListingModal] = useState(false);
@@ -1992,6 +2002,34 @@ export default function RealEstateApp() {
     return () => authCta.removeEventListener("click", openAuthSection);
   }, [currentUser]);
 
+  // URL fragments stay client-side, keeping reset tokens out of server and CDN logs.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    const token = params.get("reset_token");
+    if (!token) return;
+    resetTokenRef.current = token;
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${window.location.search}#auth`
+    );
+    setAuthMode("reset");
+    setResetPassword("");
+    setResetPasswordConfirmation("");
+    setResetError("");
+    setResetDone(false);
+    const authSection = document.getElementById("auth");
+    if (authSection) {
+      window.requestAnimationFrame(() => {
+        authSection.scrollIntoView({ behavior: getPreferredScrollBehavior(), block: "start" });
+        window.requestAnimationFrame(() => {
+          document.getElementById("auth-reset-password")?.focus({ preventScroll: true });
+        });
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const loadMyListings = async () => {
     if (!authToken) {
       setMyListings([]);
@@ -2319,6 +2357,63 @@ export default function RealEstateApp() {
       setAuthError(error.message || "Не вдалося виконати дію");
     } finally {
       setAuthLoading(false);
+    }
+  };
+
+  const handleForgotSubmit = async (event) => {
+    event.preventDefault();
+    setForgotLoading(true);
+    setForgotDone(false);
+    setForgotError("");
+    try {
+      const response = await fetch(getApiUrl("/auth/forgot-password"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: forgotEmail.trim() }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          response.status === 503
+            ? "Відновлення пароля тимчасово недоступне. Спробуйте пізніше."
+            : result.error || "Не вдалося надіслати запит. Спробуйте ще раз."
+        );
+      }
+      setForgotDone(true);
+    } catch (error) {
+      setForgotError(error.message || "Не вдалося надіслати запит. Спробуйте ще раз.");
+    } finally {
+      setForgotLoading(false);
+    }
+  };
+
+  const handleResetSubmit = async (event) => {
+    event.preventDefault();
+    if (resetPassword !== resetPasswordConfirmation) {
+      setResetError("Паролі не збігаються.");
+      return;
+    }
+    setResetLoading(true);
+    setResetError("");
+    try {
+      const token = resetTokenRef.current;
+      const response = await fetch(getApiUrl("/auth/reset-password"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, password: resetPassword }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(result.error || "Не вдалося скинути пароль.");
+      }
+      resetTokenRef.current = null;
+      setResetDone(true);
+      setResetPassword("");
+      setResetPasswordConfirmation("");
+    } catch (error) {
+      setResetError(error.message || "Не вдалося скинути пароль.");
+    } finally {
+      setResetLoading(false);
     }
   };
 
@@ -3042,6 +3137,139 @@ export default function RealEstateApp() {
               {listingMessage ? <div id="listing-message" role="status" aria-live="polite" className="mt-3 rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">{listingMessage}</div> : null}
 
               {!currentUser ? (
+                authMode === "forgot" ? (
+                  <div className="mt-4 space-y-3">
+                    {forgotDone ? (
+                      <div role="status" aria-live="polite" className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
+                        Якщо акаунт існує, ми надіслали посилання для відновлення пароля на вашу адресу.
+                      </div>
+                    ) : (
+                      <form
+                        onSubmit={handleForgotSubmit}
+                        aria-describedby={forgotError ? "auth-forgot-error" : undefined}
+                        aria-busy={forgotLoading}
+                        className="space-y-3"
+                      >
+                        {forgotError ? <div id="auth-forgot-error" role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{forgotError}</div> : null}
+                        <div>
+                          <label htmlFor="auth-forgot-email" className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-600">
+                            Email
+                          </label>
+                          <input
+                            id="auth-forgot-email"
+                            type="email"
+                            autoComplete="email"
+                            required
+                            value={forgotEmail}
+                            onChange={(event) => setForgotEmail(event.target.value)}
+                            placeholder="name@example.com"
+                            className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                          />
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="submit"
+                            disabled={forgotLoading}
+                            className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
+                          >
+                            {forgotLoading ? "Зачекайте..." : "Надіслати посилання"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setAuthMode("login"); setForgotError(""); setForgotEmail(""); setForgotDone(false); }}
+                            className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                          >
+                            ← Назад до входу
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                    {forgotDone ? (
+                      <button
+                        type="button"
+                        onClick={() => { setAuthMode("login"); setForgotEmail(""); setForgotDone(false); setForgotError(""); }}
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                      >
+                        ← Повернутися до входу
+                      </button>
+                    ) : null}
+                  </div>
+                ) : authMode === "reset" ? (
+                  <div className="mt-4 space-y-3">
+                    {resetDone ? (
+                      <>
+                        <div role="status" aria-live="polite" className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
+                          Пароль успішно оновлено. Тепер можна увійти.
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => { setAuthMode("login"); setResetDone(false); setResetError(""); }}
+                          className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
+                        >
+                          Увійти
+                        </button>
+                      </>
+                    ) : (
+                      <form
+                        onSubmit={handleResetSubmit}
+                        aria-describedby={resetError ? "auth-reset-error" : undefined}
+                        aria-busy={resetLoading}
+                        className="space-y-3"
+                      >
+                        {resetError ? <div id="auth-reset-error" role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{resetError}</div> : null}
+                        <div>
+                          <label htmlFor="auth-reset-password" className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-600">
+                            Новий пароль
+                          </label>
+                          <input
+                            id="auth-reset-password"
+                            type="password"
+                            autoComplete="new-password"
+                            required
+                            minLength={8}
+                            value={resetPassword}
+                            onChange={(event) => setResetPassword(event.target.value)}
+                            placeholder="Щонайменше 8 символів"
+                            className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                            aria-describedby={resetError ? "auth-reset-error" : undefined}
+                          />
+                        </div>
+                        <div>
+                          <label htmlFor="auth-reset-password-confirmation" className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-600">
+                            Підтвердіть новий пароль
+                          </label>
+                          <input
+                            id="auth-reset-password-confirmation"
+                            type="password"
+                            autoComplete="new-password"
+                            required
+                            minLength={8}
+                            value={resetPasswordConfirmation}
+                            onChange={(event) => setResetPasswordConfirmation(event.target.value)}
+                            className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                            aria-describedby={resetError ? "auth-reset-error" : undefined}
+                          />
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="submit"
+                            disabled={resetLoading}
+                            className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
+                          >
+                            {resetLoading ? "Зачекайте..." : "Зберегти новий пароль"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setAuthMode("login"); setResetError(""); setResetPassword(""); setResetPasswordConfirmation(""); resetTokenRef.current = null; }}
+                            className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                          >
+                            Скасувати
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                  </div>
+                ) : (
                 <form
                   onSubmit={handleAuthSubmit}
                   aria-describedby={`${authError ? "auth-error " : ""}${authSuccess ? "auth-success" : ""}`.trim() || undefined}
@@ -3125,13 +3353,23 @@ export default function RealEstateApp() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setAuthMode((current) => (current === "login" ? "register" : "login"))}
+                      onClick={() => { setAuthMode((current) => (current === "login" ? "register" : "login")); setAuthError(""); setAuthSuccess(""); }}
                       className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
                     >
                       {authMode === "login" ? "Створити акаунт" : "Уже є акаунт"}
                     </button>
+                    {authMode === "login" ? (
+                      <button
+                        type="button"
+                        onClick={() => { setAuthMode("forgot"); setAuthError(""); setAuthSuccess(""); setForgotError(""); setForgotEmail(authForm.email); setForgotDone(false); }}
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 hover:text-blue-700"
+                      >
+                        Забули пароль?
+                      </button>
+                    ) : null}
                   </div>
                 </form>
+                )
               ) : (
                 <div className="mt-4 space-y-3">
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">

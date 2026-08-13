@@ -64,6 +64,15 @@ Auth for both endpoints:
 | `TWILIO_AUTH_TOKEN` | Twilio Auth Token |
 | `TWILIO_FROM_PHONE` | Twilio verified phone number |
 
+In production (when `_production_secret_required()` is true), `POST /api/auth/send-phone-code` returns **503** if Twilio credentials are incomplete or missing, and does **not** store a code. If Twilio is configured but the send fails at runtime, the endpoint returns **502** without persisting a code. The `dev_code` field is only returned in non-production environments when no Twilio provider is configured.
+
+## Password reset
+
+Password reset is available via:
+
+- `POST /api/auth/forgot-password` — Accepts `{"email": "..."}`. Rate-limited to 5/hour. Returns a generic 200 regardless of whether the address exists (non-enumerating). In production, returns **503** before claiming delivery if neither SendGrid nor SMTP is configured. A cryptographically random token is generated; only its SHA-256 hash is stored in the database (never the raw value). The reset link keeps the raw token in the URL fragment (`public_app_url()#reset_token=...`) so it is not sent to web-server or CDN logs, and is valid for **30 minutes**.
+- `POST /api/auth/reset-password` — Accepts `{"token": "...", "password": "..."}`. Validates the token against its stored hash, checks the 30-minute expiry, enforces a minimum password length of 8 characters, bcrypt-hashes the new password into both `password` and `password_hash` columns, atomically clears the token to prevent replay, invalidates all previously issued JWT sessions, and returns clear 4xx errors without leaking sensitive data.
+
 ## Gunicorn tuning (optional)
 
 | Variable | Default | Description |

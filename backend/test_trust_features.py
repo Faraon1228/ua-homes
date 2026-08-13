@@ -612,6 +612,245 @@ class TrustFeatureTests(unittest.TestCase):
         proxy.execute("INSERT INTO listing_reports (listing_id) VALUES (?)", (1,))
         self.assertEqual(proxy.lastrowid, 42)
 
+    # ─── Stage-2 auth hardening tests ─────────────────────────────────────────
+
+    def test_forgot_password_schema_migrations_present(self):
+        """password_reset_token_hash / password_reset_expires columns must exist."""
+        with sqlite3.connect(TEST_DB) as db:
+            cols = {row[1] for row in db.execute("PRAGMA table_info(users)")}
+        self.assertIn("password_reset_token_hash", cols)
+        self.assertIn("password_reset_expires", cols)
+        self.assertIn("auth_token_version", cols)
+
+    def test_forgot_password_unknown_email_is_non_enumerating(self):
+        """POST /api/auth/forgot-password returns 200 even for unknown email."""
+        resp = self.client.post(
+            "/api/auth/forgot-password",
+            json={"email": "nobody@example.test"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json().get("ok"))
+
+    def test_forgot_password_missing_provider_in_production_returns_503(self):
+        """In production with no email provider configured, return 503 before claiming delivery."""
+        with (
+            mock.patch.object(app_module, "_production_secret_required", return_value=True),
+            mock.patch.object(app_module, "_email_provider_configured", return_value=False),
+        ):
+            resp = self.client.post(
+                "/api/auth/forgot-password",
+                json={"email": "owner@example.test"},
+            )
+        self.assertEqual(resp.status_code, 503)
+
+    def test_forgot_password_delivery_failure_stays_non_enumerating_and_clears_token(self):
+        """A provider failure must not reveal account existence or leave a usable token."""
+        with (
+            mock.patch.object(app_module, "_production_secret_required", return_value=True),
+            mock.patch.object(app_module, "_email_provider_configured", return_value=True),
+            mock.patch.object(app_module, "_send_email", return_value=False),
+        ):
+            known = self.client.post(
+                "/api/auth/forgot-password",
+                json={"email": "owner@example.test"},
+            )
+            unknown = self.client.post(
+                "/api/auth/forgot-password",
+                json={"email": "nobody@example.test"},
+            )
+
+        self.assertEqual(known.status_code, 200)
+        self.assertEqual(known.get_json(), unknown.get_json())
+        with sqlite3.connect(TEST_DB) as db:
+            row = db.execute(
+                "SELECT password_reset_token_hash, password_reset_expires FROM users WHERE id=?",
+                (self.owner_id,),
+            ).fetchone()
+        self.assertEqual(row, (None, None))
+
+    def test_forgot_password_keeps_reset_token_out_of_request_url(self):
+        """Reset links use a fragment so proxies and access logs do not receive the token."""
+        with (
+            mock.patch.object(app_module, "_production_secret_required", return_value=True),
+            mock.patch.object(app_module, "_email_provider_configured", return_value=True),
+            mock.patch.object(app_module, "_send_email", return_value=True) as send_email,
+        ):
+            response = self.client.post(
+                "/api/auth/forgot-password",
+                json={"email": "owner@example.test"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        text_body = send_email.call_args.args[2]
+        html_body = send_email.call_args.args[3]
+        self.assertIn("#reset_token=", text_body)
+        self.assertIn("#reset_token=", html_body)
+        self.assertNotIn("?reset_token=", text_body)
+        self.assertNotIn("?reset_token=", html_body)
+
+    def test_reset_password_token_hash_expiry_single_use_and_login(self):
+        """Full reset flow: token stored as hash, bcrypt password set, replay rejected, login works."""
+        import hashlib, datetime as dt
+
+        # ── Issue a reset token ──────────────────────────────────────────────
+        raw_token = "test-raw-token-for-reset-flow-abc123"
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        expires = (dt.datetime.utcnow() + dt.timedelta(minutes=30)).isoformat()
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE users SET password_reset_token_hash=?, password_reset_expires=? WHERE id=?",
+                (token_hash, expires, self.owner_id),
+            )
+            db.commit()
+
+        # ── Verify raw token is NOT stored in the DB ─────────────────────────
+        with sqlite3.connect(TEST_DB) as db:
+            row = db.execute(
+                "SELECT password_reset_token_hash FROM users WHERE id=?", (self.owner_id,)
+            ).fetchone()
+        self.assertNotEqual(row[0], raw_token, "Raw token must not be stored")
+        self.assertEqual(row[0], token_hash)
+
+        # ── Reset with valid token ────────────────────────────────────────────
+        resp = self.client.post(
+            "/api/auth/reset-password",
+            json={"token": raw_token, "password": "newpassword123"},
+        )
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+
+        # ── Token fields must be cleared (no replay) ─────────────────────────
+        with sqlite3.connect(TEST_DB) as db:
+            row = db.execute(
+                "SELECT password_reset_token_hash, password_reset_expires, password_hash"
+                " FROM users WHERE id=?",
+                (self.owner_id,),
+            ).fetchone()
+        self.assertIsNone(row[0])
+        self.assertIsNone(row[1])
+        self.assertTrue(bcrypt.checkpw(b"newpassword123", row[2].encode()))
+
+        # ── Login with new password succeeds ─────────────────────────────────
+        login_resp = self.client.post(
+            "/api/auth/login",
+            json={"email": "owner@example.test", "password": "newpassword123"},
+        )
+        self.assertEqual(login_resp.status_code, 200)
+        new_token = login_resp.get_json()["token"]
+        self.assertEqual(
+            self.client.get("/api/auth/me", headers=self._auth(self.owner_token)).status_code,
+            401,
+        )
+        self.assertEqual(
+            self.client.get("/api/auth/me", headers=self._auth(new_token)).status_code,
+            200,
+        )
+
+        # ── Replay of same token is rejected ─────────────────────────────────
+        replay = self.client.post(
+            "/api/auth/reset-password",
+            json={"token": raw_token, "password": "anotherpassword"},
+        )
+        self.assertEqual(replay.status_code, 400)
+
+    def test_reset_password_rejects_expired_token(self):
+        """An expired reset token returns 400 without leaking details."""
+        import hashlib, datetime as dt
+
+        raw_token = "expired-token-xyz"
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        expires = (dt.datetime.utcnow() - dt.timedelta(minutes=1)).isoformat()
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE users SET password_reset_token_hash=?, password_reset_expires=? WHERE id=?",
+                (token_hash, expires, self.owner_id),
+            )
+            db.commit()
+
+        resp = self.client.post(
+            "/api/auth/reset-password",
+            json={"token": raw_token, "password": "validpassword"},
+        )
+        self.assertEqual(resp.status_code, 400)
+        body = resp.get_json()
+        self.assertNotIn("email", str(body))
+        self.assertNotIn(raw_token, str(body))
+
+    def test_reset_password_rejects_short_password(self):
+        resp = self.client.post(
+            "/api/auth/reset-password",
+            json={"token": "any-token", "password": "short"},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_send_phone_code_no_twilio_dev_returns_dev_code(self):
+        """Without Twilio and not in production, dev_code is returned and code is persisted."""
+        with mock.patch.object(app_module, "_production_secret_required", return_value=False):
+            resp = self.client.post(
+                "/api/auth/send-phone-code",
+                json={"phone": "+380501234567"},
+                headers=self._auth(self.owner_token),
+            )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIsNotNone(data.get("dev_code"), "dev_code must be present in dev mode")
+        with sqlite3.connect(TEST_DB) as db:
+            row = db.execute(
+                "SELECT phone_verify_code FROM users WHERE id=?", (self.owner_id,)
+            ).fetchone()
+        self.assertIsNotNone(row[0], "code must be persisted in dev mode")
+
+    def test_send_phone_code_no_twilio_production_returns_503_no_storage(self):
+        """In production without Twilio, 503 is returned and no code is stored."""
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE users SET phone_verify_code=NULL, phone_verify_expires=NULL WHERE id=?",
+                (self.owner_id,),
+            )
+            db.commit()
+
+        with mock.patch.object(app_module, "_production_secret_required", return_value=True):
+            resp = self.client.post(
+                "/api/auth/send-phone-code",
+                json={"phone": "+380501234567"},
+                headers=self._auth(self.owner_token),
+            )
+        self.assertEqual(resp.status_code, 503)
+
+        with sqlite3.connect(TEST_DB) as db:
+            row = db.execute(
+                "SELECT phone_verify_code FROM users WHERE id=?", (self.owner_id,)
+            ).fetchone()
+        self.assertIsNone(row[0], "no code must be stored when 503 is returned")
+
+    def test_send_phone_code_twilio_send_failure_returns_502_no_storage(self):
+        """If Twilio is configured but send fails, return 502 and do not store code."""
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE users SET phone_verify_code=NULL WHERE id=?", (self.owner_id,)
+            )
+            db.commit()
+
+        with (
+            mock.patch.dict(os.environ, {
+                "TWILIO_ACCOUNT_SID": "ACtest",
+                "TWILIO_AUTH_TOKEN": "authtoken",
+                "TWILIO_FROM_PHONE": "+15550000000",
+            }),
+            mock.patch.object(app_module, "send_sms_verify", return_value=False),
+        ):
+            resp = self.client.post(
+                "/api/auth/send-phone-code",
+                json={"phone": "+380501234567"},
+                headers=self._auth(self.owner_token),
+            )
+        self.assertEqual(resp.status_code, 502)
+
+        with sqlite3.connect(TEST_DB) as db:
+            row = db.execute(
+                "SELECT phone_verify_code FROM users WHERE id=?", (self.owner_id,)
+            ).fetchone()
+        self.assertIsNone(row[0], "no code must be stored when Twilio send fails")
+
 
 if __name__ == "__main__":
     unittest.main()

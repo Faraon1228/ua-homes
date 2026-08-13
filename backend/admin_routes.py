@@ -38,14 +38,16 @@ def require_auth_admin(f):
         g.user_email = payload["email"]
         
         # Check admin role
-        from app import get_db
+        from app import get_db, token_matches_user_version
         db = get_db()
         user = db.execute(
-            "SELECT role FROM users WHERE id = ?",
+            "SELECT role, auth_token_version FROM users WHERE id = ?",
             (g.user_id,)
         ).fetchone()
-        
-        if not user or user['role'] != 'admin':
+
+        if not user or not token_matches_user_version(payload, user):
+            return jsonify(error="Invalid token"), 401
+        if user['role'] != 'admin':
             return jsonify(error="Admin access required"), 403
         
         return f(*args, **kwargs)
@@ -259,7 +261,7 @@ def admin_login():
         return jsonify(error="Email and password required"), 400
     
     user = db.execute(
-        "SELECT id, password_hash, role FROM users WHERE email = ?",
+        "SELECT id, password_hash, role, auth_token_version FROM users WHERE email = ?",
         (email,)
     ).fetchone()
     
@@ -274,7 +276,7 @@ def admin_login():
         return jsonify(error="Invalid password"), 401
     
     # Generate token
-    token = make_token(user['id'], email)
+    token = make_token(user['id'], email, user['auth_token_version'])
     
     return jsonify(
         ok=True,
