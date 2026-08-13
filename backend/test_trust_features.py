@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import bcrypt
+
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if BACKEND_DIR not in sys.path:
@@ -150,6 +152,39 @@ class TrustFeatureTests(unittest.TestCase):
 
         realtor = self.client.get(f"/api/listings/{self.realtor_listing_id}").get_json()["listing"]
         self.assertEqual(realtor["seller_type"], "intermediary")
+
+    def test_admin_bootstrap_hashes_password_and_login_page_has_no_credentials(self):
+        email = "secure-admin@example.test"
+        password = "temporary-admin-password"
+        with (
+            mock.patch.object(app_module, "BOOTSTRAP_ADMIN_EMAIL", email),
+            mock.patch.object(app_module, "BOOTSTRAP_ADMIN_PASSWORD", password),
+            mock.patch.object(app_module, "BOOTSTRAP_ADMIN_NAME", "Secure Admin"),
+            sqlite3.connect(TEST_DB) as db,
+        ):
+            app_module._bootstrap_admin_user(db)
+            row = db.execute(
+                "SELECT password, password_hash, role FROM users WHERE email = ?",
+                (email,),
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertNotEqual(row[0], password)
+        self.assertEqual(row[0], row[1])
+        self.assertTrue(bcrypt.checkpw(password.encode(), row[1].encode()))
+        self.assertEqual(row[2], "admin")
+
+        login_page = os.path.join(
+            os.path.dirname(BACKEND_DIR),
+            "web",
+            "admin",
+            "login.html",
+        )
+        with open(login_page, encoding="utf-8") as stream:
+            login_html = stream.read()
+        self.assertNotIn("Demo Credentials:", login_html)
+        self.assertNotIn("handleRegister", login_html)
+        self.assertNotIn("/auth/register", login_html)
 
     def test_seller_create_publishes_media_and_delete_removes_listing(self):
         with sqlite3.connect(TEST_DB) as db:

@@ -281,24 +281,27 @@ def _bootstrap_admin_user(db) -> None:
     email = BOOTSTRAP_ADMIN_EMAIL
     password = BOOTSTRAP_ADMIN_PASSWORD
     name = BOOTSTRAP_ADMIN_NAME
+    password_hash = bcrypt.hashpw(
+        password.encode("utf-8"),
+        bcrypt.gensalt(rounds=12),
+    ).decode("utf-8")
 
     if db.execute("SELECT 1 FROM users WHERE email = ? LIMIT 1", (email,)).fetchone():
         db.execute(
             "UPDATE users SET name = ?, password = ?, password_hash = ?, role = 'admin', status = 'active' WHERE email = ?",
             (
                 name,
-                password,
-                bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8"),
+                password_hash,
+                password_hash,
                 email,
             ),
         )
         db.commit()
         return
 
-    password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
     db.execute(
         "INSERT INTO users (name, email, password, password_hash, role, status) VALUES (?, ?, ?, ?, 'admin', 'active')",
-        (name, email, password, password_hash),
+        (name, email, password_hash, password_hash),
     )
     db.commit()
 
@@ -1148,7 +1151,7 @@ def _seed_postgres(cur):
                 "UPDATE users SET name = %s, password = %s, password_hash = %s, role = 'admin', status = 'active' WHERE email = %s",
                 (
                     BOOTSTRAP_ADMIN_NAME,
-                    BOOTSTRAP_ADMIN_PASSWORD,
+                    password_hash,
                     password_hash,
                     BOOTSTRAP_ADMIN_EMAIL,
                 ),
@@ -1159,7 +1162,7 @@ def _seed_postgres(cur):
                 (
                     BOOTSTRAP_ADMIN_NAME,
                     BOOTSTRAP_ADMIN_EMAIL,
-                    BOOTSTRAP_ADMIN_PASSWORD,
+                    password_hash,
                     password_hash,
                 ),
             )

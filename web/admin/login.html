@@ -19,22 +19,23 @@
             <!-- Login Form -->
             <form onsubmit="handleLogin(event)" class="space-y-4">
                 <div>
-                    <label class="block text-sm font-semibold text-gray-700 mb-2">Email</label>
+                    <label for="email" class="block text-sm font-semibold text-gray-700 mb-2">Email</label>
                     <input 
                         type="email" 
                         id="email" 
-                        placeholder="admin@ua-dim.com" 
+                        autocomplete="username"
                         required 
                         class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
                     >
                 </div>
 
                 <div>
-                    <label class="block text-sm font-semibold text-gray-700 mb-2">Пароль</label>
+                    <label for="password" class="block text-sm font-semibold text-gray-700 mb-2">Пароль</label>
                     <input 
                         type="password" 
                         id="password" 
                         placeholder="••••••••" 
+                        autocomplete="current-password"
                         required 
                         class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
                     >
@@ -48,83 +49,6 @@
                     class="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition"
                 >
                     <i class="fas fa-sign-in-alt mr-2"></i>Увійти
-                </button>
-            </form>
-
-            <!-- Info -->
-            <div class="mt-8 p-4 bg-blue-50 rounded-lg border border-blue-200">
-                <p class="text-xs text-gray-700">
-                    <strong>Demo Credentials:</strong><br>
-                    Email: <code class="bg-gray-200 px-1">admin@ua-dim.com</code><br>
-                    Password: <code class="bg-gray-200 px-1">admin1234</code>
-                </p>
-            </div>
-
-            <!-- Register Link -->
-            <div class="mt-6 text-center">
-                <p class="text-gray-600 text-sm">
-                    Вперше тут? 
-                    <button onclick="showRegister()" class="text-blue-600 hover:underline font-semibold">
-                        Зареєструватися як адмін
-                    </button>
-                </p>
-            </div>
-        </div>
-    </div>
-
-    <!-- Register Modal -->
-    <div id="registerModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div class="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4">
-            <div class="flex justify-between items-center mb-6">
-                <h2 class="text-2xl font-bold text-gray-800">Реєстрація адміна</h2>
-                <button onclick="hideRegister()" class="text-gray-400 hover:text-gray-600">
-                    <i class="fas fa-times text-2xl"></i>
-                </button>
-            </div>
-
-            <form onsubmit="handleRegister(event)" class="space-y-4">
-                <div>
-                    <label class="block text-sm font-semibold text-gray-700 mb-2">Ім'я</label>
-                    <input 
-                        type="text" 
-                        id="regName" 
-                        placeholder="Ім'я адміна" 
-                        required 
-                        class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
-                    >
-                </div>
-
-                <div>
-                    <label class="block text-sm font-semibold text-gray-700 mb-2">Email</label>
-                    <input 
-                        type="email" 
-                        id="regEmail" 
-                        placeholder="admin@ua-dim.com" 
-                        required 
-                        class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
-                    >
-                </div>
-
-                <div>
-                    <label class="block text-sm font-semibold text-gray-700 mb-2">Пароль (8+ символів)</label>
-                    <input 
-                        type="password" 
-                        id="regPassword" 
-                        placeholder="••••••••" 
-                        minlength="8"
-                        required 
-                        class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
-                    >
-                </div>
-
-                <div id="regMessage" class="hidden p-4 rounded-lg text-sm"></div>
-
-                <button 
-                    type="submit" 
-                    id="regBtn"
-                    class="w-full bg-blue-600 text-white font-bold py-2 rounded-lg hover:bg-blue-700 transition"
-                >
-                    Зареєструватися
                 </button>
             </form>
         </div>
@@ -195,64 +119,6 @@
             submitBtn.textContent = 'Увійти';
         }
 
-        // Register handler
-        async function handleRegister(e) {
-            e.preventDefault();
-
-            const name = document.getElementById('regName').value;
-            const email = document.getElementById('regEmail').value;
-            const password = document.getElementById('regPassword').value;
-            const messageEl = document.getElementById('regMessage');
-            const regBtn = document.getElementById('regBtn');
-
-            regBtn.disabled = true;
-            regBtn.textContent = 'Реєстрація...';
-
-            try {
-                const res = await fetch(API_BASE + '/auth/register', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, email, password })
-                });
-
-                const data = await res.json();
-
-                if (res.ok) {
-                    messageEl.classList.remove('hidden', 'bg-red-100', 'text-red-800');
-                    messageEl.classList.add('bg-green-100', 'text-green-800');
-                    messageEl.textContent = '✓ Адмін створений! Входьте через форму зверху.';
-                    setTimeout(() => hideRegister(), 2000);
-                } else {
-                    messageEl.classList.remove('hidden', 'bg-green-100', 'text-green-800');
-                    messageEl.classList.add('bg-red-100', 'text-red-800');
-                    messageEl.textContent = `✗ ${data.error}`;
-                }
-            } catch (err) {
-                messageEl.classList.remove('hidden', 'bg-green-100', 'text-green-800');
-                messageEl.classList.add('bg-red-100', 'text-red-800');
-                messageEl.textContent = '✗ Помилка мережі';
-            }
-
-            regBtn.disabled = false;
-            regBtn.textContent = 'Зареєструватися';
-        }
-
-        // Modal helpers
-        function showRegister() {
-            document.getElementById('registerModal').classList.remove('hidden');
-        }
-
-        function hideRegister() {
-            document.getElementById('registerModal').classList.add('hidden');
-            document.getElementById('regMessage').classList.add('hidden');
-        }
-
-        // Close modal on outside click
-        document.getElementById('registerModal').addEventListener('click', (e) => {
-            if (e.target.id === 'registerModal') {
-                hideRegister();
-            }
-        });
     </script>
 </body>
 </html>

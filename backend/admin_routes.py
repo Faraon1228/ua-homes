@@ -232,7 +232,7 @@ def admin_register():
     # Create admin user
     db.execute(
         "INSERT INTO users (name, email, password, password_hash, role, status) VALUES (?, ?, ?, ?, ?, ?)",
-        (name, email, password, hashed, 'admin', 'active')
+        (name, email, hashed, hashed, 'admin', 'active')
     )
     _refresh_user_growth_summary(db)
     db.commit()
