@@ -69,6 +69,8 @@
 	</array>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Потрібно для вибору фото або відео з галереї у профілі.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Потрібно, щоб додавати фото житла безпосередньо з камери.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Потрібно для локального відлагодження та підключення до Dart VM Service під час розробки.</string>
 	<key>NSBonjourServices</key>

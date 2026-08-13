@@ -13,7 +13,7 @@ Browser → [10MB image] → Backend → RAM (base64) → SQLite BLOB
 
 **After (✅ Scales infinitely):**
 ```
-Browser → [10MB image] → S3 (direct, presigned URL)
+Browser → [photo/video] → S3 (direct, presigned URL)
 Backend (generates URL only) ← Metadata only
 ```
 - Zero server RAM consumed
@@ -110,7 +110,12 @@ aws iam put-user-policy \
   --policy-document file:///tmp/s3-policy.json
 ```
 
-### 6. Configure Railway Environment
+### 6. Configure private media delivery
+
+Keep the bucket private and expose objects through CloudFront (or another authenticated public CDN origin).
+The backend intentionally does not persist direct private-bucket URLs because browsers cannot display them.
+
+### 7. Configure Railway Environment
 
 In Railway dashboard, add these env vars to the backend service:
 
@@ -119,6 +124,7 @@ S3_BUCKET=ua-dim-listings
 S3_REGION=us-east-1
 S3_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE
 S3_SECRET_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+S3_PUBLIC_BASE_URL=https://d123example.cloudfront.net
 ```
 
 ---

@@ -151,6 +151,7 @@ function createInitialListingForm(initialValues = {}) {
     eOselya: false,
     description: "",
     images: [...INITIAL_LISTING_IMAGE_FIELDS],
+    videos: [],
     ...initialValues,
   };
 }
@@ -166,8 +167,8 @@ function getCloudinaryImageUrl(url, width) {
 }
 
 function getFileContentType(file) {
-  if (!file) return "image/jpeg";
-  if (file.type && file.type.startsWith("image/")) return file.type;
+  if (!file) return "";
+  if (file.type && /^(image|video)\//.test(file.type)) return file.type;
 
   const fileName = (file.name || "").toLowerCase();
   const extension = fileName.match(/\.([a-z0-9]+)$/)?.[1] || "";
@@ -183,15 +184,21 @@ function getFileContentType(file) {
     bmp: "image/bmp",
     tif: "image/tiff",
     tiff: "image/tiff",
-    svg: "image/svg+xml",
+    mp4: "video/mp4",
+    mov: "video/quicktime",
+    webm: "video/webm",
+    m4v: "video/x-m4v",
   };
 
-  return extensionMap[extension] || "image/jpeg";
+  return extensionMap[extension] || "";
 }
 
 function mapListingToProperty(listing) {
   const images = Array.isArray(listing?.images)
     ? listing.images.filter(Boolean)
+    : [];
+  const videos = Array.isArray(listing?.videos)
+    ? listing.videos.filter(Boolean)
     : [];
   const latitude =
     listing?.latitude === null || listing?.latitude === undefined || listing?.latitude === ""
@@ -215,6 +222,9 @@ function mapListingToProperty(listing) {
     eOselya: Boolean(listing?.e_oselya ?? listing?.eOselya),
     propertyType: normalizedPropertyType || listing?.property_type || listing?.propertyType || "квартира",
     images,
+    videos,
+    imageCount: Number(listing?.image_count ?? images.length),
+    videoCount: Number(listing?.video_count ?? videos.length),
     description: listing?.description || "",
     status: listing?.status || "published",
     latitude: Number.isFinite(latitude) ? latitude : null,
@@ -905,6 +915,7 @@ function ListingsMapView({ properties, onShowList }) {
               <p role="status" aria-live="polite" className="text-sm font-semibold text-slate-600">Завантажуємо карту…</p>
             </div>
           ) : null}
+
         </div>
       )}
     </div>
@@ -933,6 +944,7 @@ function mapListingToForm(listing) {
     eOselya: Boolean(listing?.e_oselya ?? listing?.eOselya),
     description: listing?.description || "",
     images,
+    videos: Array.isArray(listing?.videos) ? listing.videos.filter(Boolean).slice(0, 2) : [],
   };
 }
 
@@ -945,15 +957,16 @@ function getListingStatusLabel(listing) {
 
 function getListingCompleteness(listing) {
   const images = Array.isArray(listing?.images) ? listing.images.filter(Boolean) : [];
+  const imageCount = Number(listing?.image_count ?? listing?.imageCount ?? images.length);
   const checks = [
-    { id: "photos", label: "3+ фото", points: 30, complete: images.length >= 3 },
+    { id: "photos", label: "3+ фото", points: 30, complete: imageCount >= 3 },
     { id: "description", label: "Повний опис", points: 20, complete: String(listing?.description || "").trim().length >= 100 },
     { id: "phone", label: "Телефон", points: 20, complete: Boolean(listing?.verified_phone || listing?.phone_verified) },
     { id: "tour", label: "Фото або відеотур", points: 15, complete: Boolean(listing?.has_photo_tour || listing?.has_video_tour) },
     { id: "owner", label: "Власник або документи", points: 15, complete: Boolean(listing?.verified_owner || listing?.verified_docs) },
   ];
   const score = checks.reduce((total, item) => total + (item.complete ? item.points : 0), 0);
-  return { score, checks, imagesCount: images.length };
+  return { score, checks, imagesCount: imageCount };
 }
 
 function getListingPipeline(listing) {
@@ -1421,6 +1434,11 @@ function ListingCard({ property, favorite, onToggleFavorite, onOpenTrust, priori
               ✓ Перевірене оголошення
             </span>
           ) : null}
+          {property.videos?.length ? (
+            <span className="rounded-full bg-slate-900 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-white shadow-md">
+              ▶ Відео
+            </span>
+          ) : null}
         </div>
         <button
           type="button"
@@ -1519,6 +1537,8 @@ export default function RealEstateApp() {
   const planCloseRef = useRef(null);
   const listingDialogRef = useRef(null);
   const listingCloseRef = useRef(null);
+  const deleteDialogRef = useRef(null);
+  const deleteCancelRef = useRef(null);
   const [cityFilter, setCityFilter] = useState(() => getStored("re.cityFilter", "Всі"));
   const [propertyTypeFilter, setPropertyTypeFilter] = useState(() => getStored("re.propertyType", "Всі"));
   const [onlyEOselya, setOnlyEOselya] = useState(
@@ -1571,6 +1591,11 @@ export default function RealEstateApp() {
   const [myListingsFilter, setMyListingsFilter] = useState("all");
   const [selectedListingFiles, setSelectedListingFiles] = useState([]);
   const [selectedListingFilePreviews, setSelectedListingFilePreviews] = useState([]);
+  const [selectedListingVideoFiles, setSelectedListingVideoFiles] = useState([]);
+  const [selectedListingVideoPreviews, setSelectedListingVideoPreviews] = useState([]);
+  const [mediaUploadStatus, setMediaUploadStatus] = useState("");
+  const [deleteCandidate, setDeleteCandidate] = useState(null);
+  const [publishSuccess, setPublishSuccess] = useState(null);
   const [liveCatalogListings, setLiveCatalogListings] = useState([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
@@ -1690,7 +1715,10 @@ export default function RealEstateApp() {
     [myListings]
   );
   const myListingPhotoCount = useMemo(
-    () => myListings.reduce((total, item) => total + (Array.isArray(item.images) ? item.images.filter(Boolean).length : 0), 0),
+    () => myListings.reduce(
+      (total, item) => total + Number(item.image_count ?? (Array.isArray(item.images) ? item.images.filter(Boolean).length : 0)),
+      0
+    ),
     [myListings]
   );
   const myListingCounts = useMemo(
@@ -1811,11 +1839,14 @@ export default function RealEstateApp() {
     window.localStorage.setItem(KEYWORD_SEARCH_KEY, keywordSearch);
   }, [keywordSearch]);
 
-  const loadCatalogListings = async () => {
+  const loadCatalogListings = async (fresh = false) => {
     setCatalogLoading(true);
     setCatalogError("");
     try {
-      const response = await fetch(getApiUrl("/listings?status=published&limit=60&sort=newest"));
+      const response = await fetch(
+        getApiUrl("/listings?status=published&limit=60&sort=newest"),
+        fresh ? { cache: "no-store" } : undefined
+      );
       if (!response.ok) throw new Error("Не вдалося завантажити оголошення");
       const data = await response.json();
       const rows = Array.isArray(data.listings) ? data.listings : [];
@@ -1929,13 +1960,44 @@ export default function RealEstateApp() {
     }
   }, [authToken, currentUser]);
 
+  useEffect(() => {
+    const authCta = document.getElementById("header-auth-cta");
+    if (!authCta) return undefined;
+
+    const mobileLabel = authCta.querySelector("[data-header-auth-mobile]");
+    const desktopLabel = authCta.querySelector("[data-header-auth-desktop]");
+    const accessibleLabel = currentUser ? "Відкрити кабінет продавця" : "Увійти або зареєструватися";
+
+    if (mobileLabel) mobileLabel.textContent = currentUser ? "Кабінет" : "Увійти";
+    if (desktopLabel) desktopLabel.textContent = currentUser ? "Кабінет продавця" : "Увійти / Зареєструватися";
+    authCta.setAttribute("aria-label", accessibleLabel);
+
+    const openAuthSection = (event) => {
+      event.preventDefault();
+      if (!currentUser) setAuthMode("login");
+      const authSection = document.getElementById("auth");
+      if (!authSection) return;
+      authSection.scrollIntoView({ behavior: getPreferredScrollBehavior(), block: "start" });
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#auth`);
+      window.requestAnimationFrame(() => {
+        if (currentUser) {
+          authSection.querySelector("button")?.focus({ preventScroll: true });
+        } else {
+          document.getElementById("auth-email")?.focus({ preventScroll: true });
+        }
+      });
+    };
+
+    authCta.addEventListener("click", openAuthSection);
+    return () => authCta.removeEventListener("click", openAuthSection);
+  }, [currentUser]);
+
   const loadMyListings = async () => {
     if (!authToken) {
       setMyListings([]);
       return;
     }
     setMyListingsLoading(true);
-    setListingMessage("");
     try {
       const response = await fetch(getApiUrl("/listings?mine=1&status=all&limit=100&sort=newest"), {
         headers: { Authorization: `Bearer ${authToken}` },
@@ -2271,6 +2333,9 @@ export default function RealEstateApp() {
     setListingForm(createInitialListingForm());
     setSelectedListingFiles([]);
     setSelectedListingFilePreviews([]);
+    setSelectedListingVideoFiles([]);
+    setSelectedListingVideoPreviews([]);
+    setMediaUploadStatus("");
   };
 
   const closeListingModal = () => {
@@ -2279,6 +2344,9 @@ export default function RealEstateApp() {
     setListingForm(createInitialListingForm());
     setSelectedListingFiles([]);
     setSelectedListingFilePreviews([]);
+    setSelectedListingVideoFiles([]);
+    setSelectedListingVideoPreviews([]);
+    setMediaUploadStatus("");
   };
 
   const openCreateListingModal = () => {
@@ -2302,6 +2370,9 @@ export default function RealEstateApp() {
     setListingForm(createInitialListingForm(developerDefaults));
     setSelectedListingFiles([]);
     setSelectedListingFilePreviews([]);
+    setSelectedListingVideoFiles([]);
+    setSelectedListingVideoPreviews([]);
+    setMediaUploadStatus("");
     setListingMessage("");
     setShowCreateListingModal(true);
   };
@@ -2311,6 +2382,9 @@ export default function RealEstateApp() {
     setListingForm(mapListingToForm(listing));
     setSelectedListingFiles([]);
     setSelectedListingFilePreviews([]);
+    setSelectedListingVideoFiles([]);
+    setSelectedListingVideoPreviews([]);
+    setMediaUploadStatus("");
     setListingMessage("");
     setShowCreateListingModal(true);
   };
@@ -2338,20 +2412,43 @@ export default function RealEstateApp() {
     }));
   };
 
-  const handleListingFileSelection = (event) => {
-    const files = Array.from(event.target.files || []).filter((file) => {
+  const handleListingFileSelection = (event, mediaType = "image") => {
+    const maxFiles = mediaType === "video" ? 2 : 8;
+    const maxBytes = mediaType === "video" ? 100 * 1024 * 1024 : 10 * 1024 * 1024;
+    const selectedFiles = Array.from(event.target.files || []);
+    const acceptedFiles = selectedFiles.filter((file) => {
       const contentType = getFileContentType(file);
-      return contentType.startsWith("image/");
+      return contentType.startsWith(`${mediaType}/`) && file.size <= maxBytes;
     });
+    const rejectedCount = selectedFiles.length - acceptedFiles.length;
     setSellerCabinetTab("photos");
     setSellerCabinetTabReady(false);
-    setSelectedListingFiles((prev) => [...prev, ...files]);
-    // Reset input so selecting the same file again still triggers onChange
+    if (mediaType === "video") {
+      setSelectedListingVideoFiles((previous) => [...previous, ...acceptedFiles].slice(0, maxFiles));
+    } else {
+      setSelectedListingFiles((previous) => [...previous, ...acceptedFiles].slice(0, maxFiles));
+    }
+    setListingMessage(
+      rejectedCount
+        ? `Пропущено ${rejectedCount} файл(и): перевірте формат і розмір.`
+        : ""
+    );
     event.target.value = "";
   };
 
   const removeSelectedListingFile = (index) => {
     setSelectedListingFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const removeSelectedListingVideo = (index) => {
+    setSelectedListingVideoFiles((previous) => previous.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  const removeExistingListingVideo = (index) => {
+    setListingForm((current) => ({
+      ...current,
+      videos: current.videos.filter((_, itemIndex) => itemIndex !== index),
+    }));
   };
 
   useEffect(() => {
@@ -2373,37 +2470,42 @@ export default function RealEstateApp() {
     };
   }, [selectedListingFiles]);
 
-  const readListingFileAsDataUrl = (file) => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error(`Не вдалося прочитати файл ${file.name}`));
-      reader.readAsDataURL(file);
-    });
-  };
+  useEffect(() => {
+    if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
+      setSelectedListingVideoPreviews([]);
+      return undefined;
+    }
 
-  const uploadListingFilesToStorage = async (files) => {
+    const previews = selectedListingVideoFiles.map((file) => ({
+      id: `${file.name}-${file.size}-${file.lastModified}`,
+      name: file.name,
+      src: URL.createObjectURL(file),
+    }));
+    setSelectedListingVideoPreviews(previews);
+    return () => previews.forEach((preview) => URL.revokeObjectURL(preview.src));
+  }, [selectedListingVideoFiles]);
+
+  const uploadListingFilesToStorage = async (files, mediaType) => {
     if (!files.length) return [];
 
-    const uploadedImageUrls = [];
-    for (const file of files) {
-      try {
+    const uploadedUrls = [];
+    for (const [index, file] of files.entries()) {
+        setMediaUploadStatus(
+          `Завантаження ${mediaType === "video" ? "відео" : "фото"} ${index + 1} з ${files.length}…`
+        );
         const contentType = getFileContentType(file);
-        const presignResponse = await fetch(getApiUrl("/images/presigned-url"), {
+        const presignResponse = await fetch(getApiUrl("/media/presigned-url"), {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${authToken}`,
           },
-          body: JSON.stringify({ filename: file.name, contentType }),
+          body: JSON.stringify({ filename: file.name, contentType, size: file.size }),
         });
 
         if (!presignResponse.ok) {
           const presignPayload = await presignResponse.json().catch(() => ({}));
-          if (presignResponse.status === 503) {
-            throw new Error(presignPayload.error || "Сховище для фото не налаштоване");
-          }
-          throw new Error(presignPayload.error || "Не вдалося підготувати фото для завантаження");
+          throw new Error(presignPayload.error || "Не вдалося підготувати медіафайл для завантаження");
         }
 
         const presigned = await presignResponse.json();
@@ -2422,16 +2524,16 @@ export default function RealEstateApp() {
           const uploadResponse = await fetch(presigned.uploadUrl, { method: "POST", body: formData });
           if (!uploadResponse.ok) {
             const uploadText = await uploadResponse.text();
-            throw new Error(uploadText || "Не вдалося відправити фото в хмарне сховище");
+            throw new Error(uploadText || "Не вдалося відправити медіафайл у хмарне сховище");
           }
 
           const uploadResult = await uploadResponse.json().catch(() => ({}));
           finalUrl = uploadResult.secure_url || uploadResult.url || "";
           if (!finalUrl) {
-            throw new Error("Сховище не повернуло URL для фото");
+            throw new Error("Сховище не повернуло URL медіафайла");
           }
 
-          const confirmResponse = await fetch(getApiUrl("/images/confirm-upload"), {
+          const confirmResponse = await fetch(getApiUrl("/media/confirm-upload"), {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -2440,12 +2542,13 @@ export default function RealEstateApp() {
             body: JSON.stringify({
               url: finalUrl,
               publicId: uploadResult.public_id || presigned.publicId,
+              resourceType: presigned.resourceType || mediaType,
             }),
           });
 
           if (!confirmResponse.ok) {
             const confirmPayload = await confirmResponse.json().catch(() => ({}));
-            throw new Error(confirmPayload.error || "Не вдалося підтвердити фото");
+            throw new Error(confirmPayload.error || "Не вдалося підтвердити медіафайл");
           }
 
           const confirmPayload = await confirmResponse.json().catch(() => ({}));
@@ -2453,43 +2556,44 @@ export default function RealEstateApp() {
         } else if (presigned?.method === "PUT") {
           const uploadResponse = await fetch(presigned.uploadUrl, {
             method: "PUT",
-            headers: { "Content-Type": contentType },
+            headers: presigned.headers || { "Content-Type": contentType },
             body: file,
           });
 
           if (!uploadResponse.ok) {
             const uploadText = await uploadResponse.text();
-            throw new Error(uploadText || "Не вдалося відправити фото в сховище");
+            throw new Error(uploadText || "Не вдалося відправити медіафайл у сховище");
           }
 
-          const confirmResponse = await fetch(getApiUrl("/images/confirm-upload"), {
+          const confirmResponse = await fetch(getApiUrl("/media/confirm-upload"), {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
               Authorization: `Bearer ${authToken}`,
             },
-            body: JSON.stringify({ key: presigned.key, etag: uploadResponse.headers.get("etag") || "" }),
+            body: JSON.stringify({
+              key: presigned.key,
+              etag: uploadResponse.headers.get("etag") || "",
+              resourceType: mediaType,
+            }),
           });
 
           if (!confirmResponse.ok) {
             const confirmPayload = await confirmResponse.json().catch(() => ({}));
-            throw new Error(confirmPayload.error || "Не вдалося підтвердити фото");
+            throw new Error(confirmPayload.error || "Не вдалося підтвердити медіафайл");
           }
 
           const confirmPayload = await confirmResponse.json().catch(() => ({}));
           finalUrl = confirmPayload.url || "";
         } else {
-          throw new Error("Сховище не підтримує пряме завантаження фото");
+          throw new Error("Сховище не підтримує пряме завантаження медіафайлів");
         }
 
-        uploadedImageUrls.push(finalUrl || (await readListingFileAsDataUrl(file)));
-      } catch (error) {
-        console.error("Listing image upload failed", error);
-        uploadedImageUrls.push(await readListingFileAsDataUrl(file));
-      }
+        if (!finalUrl) throw new Error("Сховище не повернуло URL медіафайла");
+        uploadedUrls.push(finalUrl);
     }
 
-    return uploadedImageUrls;
+    return uploadedUrls;
   };
 
   const handleCreateListing = async (event) => {
@@ -2503,7 +2607,11 @@ export default function RealEstateApp() {
     try {
       const imageUrls = listingForm.images.filter(Boolean).slice(0, 8);
       const uploadedStorageUrls = selectedListingFiles.length
-        ? await uploadListingFilesToStorage(selectedListingFiles)
+        ? await uploadListingFilesToStorage(selectedListingFiles, "image")
+        : [];
+      const videoUrls = listingForm.videos.filter(Boolean).slice(0, 2);
+      const uploadedVideoUrls = selectedListingVideoFiles.length
+        ? await uploadListingFilesToStorage(selectedListingVideoFiles, "video")
         : [];
       const payload = {
         title: listingForm.title.trim(),
@@ -2524,6 +2632,7 @@ export default function RealEstateApp() {
         source: isDeveloperCabinet ? "developer" : isRealtorCabinet ? "agent" : "owner",
         publishNow: true,
         images: [...uploadedStorageUrls, ...imageUrls].slice(0, 8),
+        videos: [...uploadedVideoUrls, ...videoUrls].slice(0, 2),
       };
 
       const isEditing = Boolean(editingListingId);
@@ -2552,41 +2661,51 @@ export default function RealEstateApp() {
         throw new Error(result.error || "Не вдалося створити оголошення");
       }
       mergeListingIntoCatalog(result.listing);
+      setPublishSuccess({
+        id: result.listing?.id,
+        title: result.listing?.title || payload.title,
+        isEditing,
+      });
       setListingMessage(
-        isEditing
-          ? "Оголошення оновлено та залишено опублікованим."
-          : `Оголошення створено${result.listing?.status === "published" ? " і вже опубліковане" : " і надіслане на модерацію"}.`
+        `${
+          isEditing
+            ? "Оголошення оновлено та залишено опублікованим."
+            : `Оголошення створено${result.listing?.status === "published" ? " і вже опубліковане" : " і надіслане на модерацію"}.`
+        }${result.media_cleanup_pending ? " Частину видалених медіафайлів не вдалося очистити зі сховища." : ""}`
       );
       setEditingListingId(null);
       setListingForm(createInitialListingForm());
       setSelectedListingFiles([]);
       setSelectedListingFilePreviews([]);
+      setSelectedListingVideoFiles([]);
+      setSelectedListingVideoPreviews([]);
+      setMediaUploadStatus("");
       setShowCreateListingModal(false);
-      if (!isEditing && result.listing?.id && result.listing?.status === "published") {
-        window.location.assign(`/listing/${result.listing.id}`);
-        return;
-      }
-      await Promise.all([loadMyListings(), loadCatalogListings()]);
+      await Promise.all([loadMyListings(), loadCatalogListings(true)]);
     } catch (error) {
       setListingMessage(error.message || "Не вдалося зберегти оголошення");
     } finally {
+      setMediaUploadStatus("");
       setListingSubmitting(false);
     }
   };
 
+  const requestDeleteListing = (listing) => {
+    if (!listing?.id) return;
+    if (showCreateListingModal) closeListingModal();
+    setDeleteCandidate(listing);
+  };
+
   const handleDeleteListing = async () => {
-    if (!authToken || !editingListingId) {
-      return;
-    }
-    const confirmed = window.confirm("Видалити це оголошення? Дію не можна скасувати.");
-    if (!confirmed) {
+    if (!authToken || !deleteCandidate?.id) {
       return;
     }
 
     setListingSubmitting(true);
     setListingMessage("");
     try {
-      const response = await fetch(getApiUrl(`/listings/${editingListingId}`), {
+      const listingId = deleteCandidate.id;
+      const response = await fetch(getApiUrl(`/listings/${listingId}`), {
         method: "DELETE",
         headers: {
           Authorization: `Bearer ${authToken}`,
@@ -2597,9 +2716,16 @@ export default function RealEstateApp() {
         throw new Error(result.error || "Не вдалося видалити оголошення");
       }
 
-      closeListingModal();
-      setListingMessage("Оголошення видалено.");
-      await Promise.all([loadMyListings(), loadCatalogListings()]);
+      setDeleteCandidate(null);
+      setMyListings((current) => current.filter((listing) => listing.id !== listingId));
+      setLiveCatalogListings((current) => current.filter((listing) => listing.id !== listingId));
+      setPublishSuccess((current) => (current?.id === listingId ? null : current));
+      setListingMessage(
+        `Оголошення видалено.${
+          result.media_cleanup_pending ? " Частину медіафайлів не вдалося очистити зі сховища." : ""
+        }`
+      );
+      await Promise.all([loadMyListings(), loadCatalogListings(true)]);
     } catch (error) {
       setListingMessage(error.message || "Не вдалося видалити оголошення");
     } finally {
@@ -2615,6 +2741,7 @@ export default function RealEstateApp() {
   );
   useAccessibleDialog(planLimitPrompt !== null, () => setPlanLimitPrompt(null), planDialogRef, planCloseRef);
   useAccessibleDialog(showCreateListingModal, closeListingModal, listingDialogRef, listingCloseRef);
+  useAccessibleDialog(deleteCandidate !== null, () => setDeleteCandidate(null), deleteDialogRef, deleteCancelRef);
 
   useEffect(() => {
     if (smartSearchMode) return undefined;
@@ -2825,7 +2952,7 @@ export default function RealEstateApp() {
        </div>
 
        <div className="grid gap-6 lg:grid-cols-12">
-          <aside id="add" className="space-y-6 lg:col-span-4 lg:sticky lg:top-24 self-start">
+          <aside id="add" className="min-w-0 space-y-6 lg:col-span-4 lg:sticky lg:top-24 self-start">
             <div id="publish" className="scroll-mt-28 rounded-[28px] border border-amber-200 bg-gradient-to-br from-amber-50 via-white to-orange-50 p-5 shadow-sm">
               <div className="mb-4 h-1.5 rounded-full bg-gradient-to-r from-amber-500 to-orange-500" />
               <div className="flex items-center gap-3">
@@ -2837,7 +2964,7 @@ export default function RealEstateApp() {
                   <h2 className="text-lg font-black text-slate-900">Створіть оголошення за 2 хвилини</h2>
                 </div>
               </div>
-              <p className="mt-3 text-sm text-slate-600">Публікуйте новий об'єкт, додавайте фото і одразу розміщуйте його в каталозі.</p>
+              <p className="mt-3 text-sm text-slate-600">Публікуйте новий об'єкт, додавайте фото й відео та одразу розміщуйте його в каталозі.</p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -2888,13 +3015,13 @@ export default function RealEstateApp() {
                     },
                     {
                       step: "2",
-                      title: "Додайте фото",
-                      text: "З телефону або за прямим URL.",
+                      title: "Додайте медіа",
+                      text: "Фото й відео з телефону або комп'ютера.",
                     },
                     {
                       step: "3",
                       title: "Публікуйте",
-                      text: "Фото й оголошення одразу підуть на сайт.",
+                      text: "Медіа й оголошення одразу підуть на сайт.",
                     },
                   ].map((item) => (
                     <div key={item.step} className="rounded-2xl border border-slate-200 bg-white p-3">
@@ -3040,7 +3167,7 @@ export default function RealEstateApp() {
                       <div>
                         <p className="text-xs font-black uppercase tracking-wide text-slate-500">Кабінет продавця</p>
                         <p className="mt-1 text-sm font-semibold text-slate-700">
-                          Окремі вкладки для фото, даних і статусу публікації.
+                          Медіа, дані та статус публікації в одному сучасному кабінеті.
                         </p>
                       </div>
                       <button
@@ -3245,7 +3372,38 @@ export default function RealEstateApp() {
                       🚪 Вийти
                     </button>
                   </div>
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  {publishSuccess ? (
+                    <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-4" role="status">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="font-black text-emerald-900">
+                            {publishSuccess.isEditing ? "Зміни вже на сайті" : "Оголошення опубліковано"}
+                          </p>
+                          <p className="mt-1 text-sm text-emerald-800">{publishSuccess.title}</p>
+                        </div>
+                        <div className="flex gap-2">
+                          {publishSuccess.id ? (
+                            <a
+                              href={`/listing/${publishSuccess.id}`}
+                              className="inline-flex min-h-11 items-center rounded-xl bg-emerald-700 px-4 text-sm font-bold text-white"
+                            >
+                              Переглянути
+                            </a>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => setPublishSuccess(null)}
+                            className="min-h-11 rounded-xl border border-emerald-300 px-3 text-sm font-bold text-emerald-900"
+                            aria-label="Закрити повідомлення про публікацію"
+                          >
+                            Закрити
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="rounded-3xl border border-slate-200 bg-slate-50 p-3 sm:p-4">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-xs font-black uppercase tracking-wide text-slate-500">Мої оголошення</p>
                       {myListingsLoading ? (
@@ -3256,36 +3414,109 @@ export default function RealEstateApp() {
                         </span>
                       )}
                     </div>
-                    {myListings.length ? (
-                      <ul className="mt-3 space-y-2">
-                        {myListings.map((item) => (
-                          <li key={item.id} className="rounded-xl border border-slate-200 bg-white p-3">
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <p className="text-sm font-semibold text-slate-900">{item.title}</p>
-                                <p className="mt-1 text-xs text-slate-500">{item.city}, {item.district}</p>
-                                <p className="mt-2 text-xs font-semibold text-slate-500">
-                                  ${Number(item.price || 0).toLocaleString("uk-UA")} • {item.rooms} кімн. • {item.area} м²
-                                </p>
+                    <div className="mt-3 flex max-w-full gap-2 overflow-x-auto pb-1" aria-label="Фільтр моїх оголошень">
+                      {[
+                        ["all", "Усі"],
+                        ["active", "Активні"],
+                        ["review", "Модерація"],
+                        ["draft", "Чернетки"],
+                        ["archived", "Архів"],
+                      ].map(([id, label]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => setMyListingsFilter(id)}
+                          aria-pressed={myListingsFilter === id}
+                          className={`min-h-11 shrink-0 rounded-xl px-3 text-xs font-bold ${
+                            myListingsFilter === id
+                              ? "bg-slate-900 text-white"
+                              : "border border-slate-200 bg-white text-slate-700"
+                          }`}
+                        >
+                          {label} · {myListingCounts[id]}
+                        </button>
+                      ))}
+                    </div>
+                    {visibleMyListings.length ? (
+                      <ul className="mt-3 grid gap-3 xl:grid-cols-2">
+                        {visibleMyListings.map((item) => {
+                          const image = Array.isArray(item.images) ? item.images.find(Boolean) : "";
+                          const photoCount = Number(item.image_count ?? (Array.isArray(item.images) ? item.images.filter(Boolean).length : 0));
+                          const videoCount = Number(item.video_count ?? (Array.isArray(item.videos) ? item.videos.filter(Boolean).length : 0));
+                          const completeness = getListingCompleteness(item).score;
+                          return (
+                          <li key={item.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                            <div className="grid sm:grid-cols-[150px_1fr]">
+                              <div className="aspect-[16/9] bg-slate-200 sm:aspect-auto sm:min-h-[160px]">
+                                {image ? (
+                                  <img
+                                    src={image}
+                                    alt=""
+                                    width="300"
+                                    height="200"
+                                    loading="lazy"
+                                    className="h-full w-full object-cover"
+                                  />
+                                ) : (
+                                  <div className="flex h-full min-h-32 items-center justify-center text-4xl" aria-label="Фото відсутнє">🏠</div>
+                                )}
                               </div>
-                              <span className="rounded-full bg-blue-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-blue-700">
-                                {getListingStatusLabel(item)}
-                              </span>
-                            </div>
-                            <div className="mt-3 flex flex-wrap gap-2">
+                              <div className="min-w-0 p-4">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="truncate text-base font-black text-slate-900">{item.title}</p>
+                                    <p className="mt-1 text-sm text-slate-600">{item.city}, {item.district}</p>
+                                  </div>
+                                  <span className="shrink-0 rounded-full bg-blue-50 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-blue-700">
+                                    {getListingStatusLabel(item)}
+                                  </span>
+                                </div>
+                                <p className="mt-3 text-base font-black text-slate-900">
+                                  ${Number(item.price || 0).toLocaleString("uk-UA")}
+                                  <span className="ml-2 text-xs font-semibold text-slate-500">
+                                    {item.rooms} кімн. · {item.area} м²
+                                  </span>
+                                </p>
+                                <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-slate-600">
+                                  <span>{photoCount} фото</span>
+                                  <span>{videoCount} відео</span>
+                                  <span>Заповнено {completeness}%</span>
+                                </div>
+                                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100" aria-hidden="true">
+                                  <span className="block h-full rounded-full bg-emerald-500" style={{ width: `${completeness}%` }} />
+                                </div>
+                                <div className="mt-4 flex flex-wrap gap-2">
+                                  <a
+                                    href={`/listing/${item.id}`}
+                                    className="inline-flex min-h-11 items-center rounded-xl border border-slate-200 px-3 text-xs font-bold text-slate-700"
+                                  >
+                                    На сайті
+                                  </a>
                               <button
                                 type="button"
                                 onClick={() => openEditListingModal(item)}
-                                className="rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 transition hover:bg-blue-100"
+                                className="min-h-11 rounded-xl border border-blue-200 bg-blue-50 px-3 text-xs font-bold text-blue-700 transition hover:bg-blue-100"
                               >
                                 Редагувати
                               </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => requestDeleteListing(item)}
+                                    className="min-h-11 rounded-xl border border-red-200 bg-red-50 px-3 text-xs font-bold text-red-700 transition hover:bg-red-100"
+                                  >
+                                    Видалити
+                                  </button>
+                                </div>
+                              </div>
                             </div>
                           </li>
-                        ))}
+                          );
+                        })}
                       </ul>
                     ) : (
-                      <p className="mt-3 text-sm text-slate-500">Ще немає створених оголошень.</p>
+                      <p className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-600">
+                        {myListings.length ? "У цій категорії оголошень немає." : "Ще немає створених оголошень."}
+                      </p>
                     )}
                   </div>
                 </div>
@@ -4286,19 +4517,34 @@ export default function RealEstateApp() {
                   </button>
                 </div>
                 <div className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4">
-                  <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-6 text-center text-sm font-semibold text-slate-700 transition hover:border-blue-300 hover:bg-blue-50">
-                    <span className="text-lg font-black text-blue-600">⬆</span>
-                    <span>Виберіть фото з комп'ютера</span>
-                    <span className="text-xs font-medium text-slate-500">PNG, JPG, WEBP, AVIF, HEIC/HEIF. Підтримка камери/галереї на телефоні й кілька файлів за раз.</span>
-                    <input
-                      type="file"
-                      multiple
-                      accept="image/*,.heic,.heif,.avif,.webp,.jpeg,.jpg,.png,.gif,.bmp,.tiff"
-                      capture={isMobileDevice ? "environment" : undefined}
-                      onChange={handleListingFileSelection}
-                      className="hidden"
-                    />
-                  </label>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="flex min-h-32 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-5 text-center text-sm font-semibold text-slate-700 transition hover:border-blue-300 hover:bg-blue-50">
+                      <span className="text-lg font-black text-blue-600">⬆</span>
+                      <span>Файли або галерея</span>
+                      <span className="text-xs font-medium text-slate-500">До 8 фото, 10 МБ кожне. JPG, PNG, WEBP, AVIF, HEIC/HEIF.</span>
+                      <input
+                        type="file"
+                        multiple
+                        accept="image/*,.heic,.heif,.avif,.webp,.jpeg,.jpg,.png,.gif,.bmp,.tiff"
+                        onChange={(event) => handleListingFileSelection(event, "image")}
+                        className="sr-only"
+                      />
+                    </label>
+                    {isMobileDevice ? (
+                      <label className="flex min-h-32 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-5 text-center text-sm font-semibold text-slate-700 transition hover:border-blue-300 hover:bg-blue-50">
+                        <span className="text-lg" aria-hidden="true">📷</span>
+                        <span>Зробити фото</span>
+                        <span className="text-xs font-medium text-slate-500">Відкрити основну камеру пристрою.</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          onChange={(event) => handleListingFileSelection(event, "image")}
+                          className="sr-only"
+                        />
+                      </label>
+                    ) : null}
+                  </div>
                   {selectedListingFiles.length ? (
                     <div className="mt-3 space-y-3">
                       <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3">
@@ -4361,6 +4607,7 @@ export default function RealEstateApp() {
                       )}
                     </div>
                   ) : null}
+
                 </div>
                 <div className="mt-3 space-y-2">
                   {listingForm.images.map((image, index) => (
@@ -4390,6 +4637,59 @@ export default function RealEstateApp() {
                   ))}
                 </div>
               </div>
+              <div className="md:col-span-2">
+                <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Відео</p>
+                <div className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4">
+                  <label className="flex min-h-32 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-5 text-center text-sm font-semibold text-slate-700 transition hover:border-blue-300 hover:bg-blue-50">
+                    <span className="text-xl" aria-hidden="true">🎥</span>
+                    <span>Додати відео</span>
+                    <span className="text-xs font-medium text-slate-500">До 2 відео, 100 МБ кожне. MP4, MOV з iPhone, WEBM або M4V.</span>
+                    <input
+                      type="file"
+                      multiple
+                      accept="video/mp4,video/quicktime,video/webm,video/x-m4v,.mp4,.mov,.webm,.m4v"
+                      onChange={(event) => handleListingFileSelection(event, "video")}
+                      className="sr-only"
+                    />
+                  </label>
+                  {listingForm.videos.length || selectedListingVideoPreviews.length ? (
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      {listingForm.videos.map((videoUrl, index) => (
+                        <div key={videoUrl} className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                          <video controls playsInline preload="metadata" src={videoUrl} className="aspect-video w-full bg-slate-900 object-contain" />
+                          <button
+                            type="button"
+                            onClick={() => removeExistingListingVideo(index)}
+                            className="absolute right-2 top-2 flex h-11 w-11 items-center justify-center rounded-full bg-black/75 font-bold text-white"
+                            aria-label={`Видалити збережене відео ${index + 1}`}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                      {selectedListingVideoPreviews.map((preview, index) => (
+                        <div key={preview.id} className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                          <video controls playsInline preload="metadata" src={preview.src} className="aspect-video w-full bg-slate-900 object-contain" />
+                          <p className="truncate px-3 py-2 text-xs font-semibold text-slate-600">{preview.name}</p>
+                          <button
+                            type="button"
+                            onClick={() => removeSelectedListingVideo(index)}
+                            className="absolute right-2 top-2 flex h-11 w-11 items-center justify-center rounded-full bg-black/75 font-bold text-white"
+                            aria-label={`Видалити відео ${preview.name}`}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+              {mediaUploadStatus ? (
+                <p className="rounded-xl bg-blue-50 p-3 text-sm font-bold text-blue-800 md:col-span-2" role="status" aria-live="polite">
+                  {mediaUploadStatus}
+                </p>
+              ) : null}
               <div className="flex flex-wrap gap-3 md:col-span-2">
                 <button
                   type="submit"
@@ -4401,7 +4701,14 @@ export default function RealEstateApp() {
                 {editingListingId ? (
                   <button
                     type="button"
-                    onClick={handleDeleteListing}
+                    onClick={() =>
+                      requestDeleteListing(
+                        myListings.find((listing) => listing.id === editingListingId) || {
+                          id: editingListingId,
+                          title: listingForm.title,
+                        }
+                      )
+                    }
                     disabled={listingSubmitting}
                     className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-bold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-70"
                   >
@@ -4420,6 +4727,53 @@ export default function RealEstateApp() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      ) : null}
+
+      {deleteCandidate ? (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/70 px-4 py-8"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setDeleteCandidate(null);
+          }}
+        >
+          <div
+            ref={deleteDialogRef}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-listing-title"
+            aria-describedby="delete-listing-description"
+            className="w-full max-w-md rounded-[28px] border border-red-200 bg-white p-6 shadow-2xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <p className="text-xs font-black uppercase tracking-wide text-red-700">Незворотна дія</p>
+            <h2 id="delete-listing-title" className="mt-2 text-xl font-black text-slate-900">
+              Видалити оголошення?
+            </h2>
+            <p id="delete-listing-description" className="mt-3 text-sm leading-relaxed text-slate-700">
+              «{deleteCandidate.title || "Оголошення"}» одразу зникне з кабінету, каталогу та публічної сторінки.
+              Відновити його після видалення неможливо.
+            </p>
+            <div className="mt-6 flex flex-wrap justify-end gap-2">
+              <button
+                ref={deleteCancelRef}
+                type="button"
+                onClick={() => setDeleteCandidate(null)}
+                disabled={listingSubmitting}
+                className="min-h-11 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800 disabled:opacity-60"
+              >
+                Скасувати
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteListing}
+                disabled={listingSubmitting}
+                className="min-h-11 rounded-xl bg-red-700 px-4 text-sm font-bold text-white transition hover:bg-red-800 disabled:opacity-60"
+              >
+                {listingSubmitting ? "Видаляємо…" : "Так, видалити"}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

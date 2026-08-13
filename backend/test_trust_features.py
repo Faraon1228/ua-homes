@@ -4,6 +4,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -71,6 +72,7 @@ class TrustFeatureTests(unittest.TestCase):
             db.commit()
 
         self.owner_token = app_module.make_token(self.owner_id, "owner@example.test")
+        self.realtor_token = app_module.make_token(self.realtor_id, "realtor@example.test")
         self.admin_token = app_module.make_token(self.admin_id, "admin@example.test")
 
     @staticmethod
@@ -134,6 +136,7 @@ class TrustFeatureTests(unittest.TestCase):
             report_columns = {row[1] for row in db.execute("PRAGMA table_info(listing_reports)")}
             history_columns = {row[1] for row in db.execute("PRAGMA table_info(listing_change_history)")}
         self.assertIn("listing_verification_status", listing_columns)
+        self.assertIn("videos", listing_columns)
         self.assertIn("reporter_fingerprint", report_columns)
         self.assertIn("actor_type", history_columns)
 
@@ -147,6 +150,113 @@ class TrustFeatureTests(unittest.TestCase):
 
         realtor = self.client.get(f"/api/listings/{self.realtor_listing_id}").get_json()["listing"]
         self.assertEqual(realtor["seller_type"], "intermediary")
+
+    def test_seller_create_publishes_media_and_delete_removes_listing(self):
+        with sqlite3.connect(TEST_DB) as db:
+            publisher_id = self._insert_user(db, "Publisher", "publisher@example.test", "owner")
+            db.commit()
+        publisher_token = app_module.make_token(publisher_id, "publisher@example.test")
+        payload = {
+            "title": "Media listing",
+            "city": "Львів",
+            "district": "Галицький",
+            "propertyType": "квартира",
+            "conditionType": "вторинка",
+            "listingType": "sale",
+            "price": 95_000,
+            "rooms": 2,
+            "area": 48,
+            "floor": 3,
+            "totalFloors": 7,
+            "publishNow": True,
+            "images": ["https://res.cloudinary.com/demo/image/upload/example.jpg"],
+            "videos": [
+                "https://res.cloudinary.com/demo/video/upload/example.mp4",
+                "https://res.cloudinary.com/demo/video/upload/tour.mov",
+            ],
+        }
+        created = self.client.post("/api/listings", json=payload, headers=self._auth(publisher_token))
+        self.assertEqual(created.status_code, 201, created.get_json())
+        listing = created.get_json()["listing"]
+        self.assertEqual(listing["status"], "published")
+        self.assertEqual(listing["videos"], payload["videos"])
+        self.assertEqual(listing["image_count"], 1)
+        self.assertEqual(listing["video_count"], 2)
+        self.assertTrue(listing["has_video_tour"])
+
+        catalog = self.client.get("/api/listings?status=published&limit=100").get_json()["listings"]
+        self.assertIn(listing["id"], [item["id"] for item in catalog])
+        detail_page = self.client.get(f"/listing/{listing['id']}")
+        self.assertEqual(detail_page.status_code, 200)
+        self.assertIn(b"<video controls playsinline", detail_page.data)
+        self.assertIn(b"/video/upload/example.mp4", detail_page.data)
+
+        forbidden = self.client.delete(
+            f"/api/listings/{listing['id']}",
+            headers=self._auth(self.realtor_token),
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        deleted = self.client.delete(
+            f"/api/listings/{listing['id']}",
+            headers=self._auth(publisher_token),
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(self.client.get(f"/api/listings/{listing['id']}").status_code, 404)
+        catalog_after_delete = self.client.get("/api/listings?status=published&limit=100").get_json()["listings"]
+        self.assertNotIn(listing["id"], [item["id"] for item in catalog_after_delete])
+
+    def test_media_upload_validation_rejects_unsafe_or_oversized_files(self):
+        svg = self.client.post(
+            "/api/media/presigned-url",
+            json={"filename": "unsafe.svg", "contentType": "image/svg+xml", "size": 1024},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(svg.status_code, 400)
+
+        oversized_video = self.client.post(
+            "/api/media/presigned-url",
+            json={
+                "filename": "tour.mov",
+                "contentType": "video/quicktime",
+                "size": app_module.MAX_VIDEO_UPLOAD_SIZE + 1,
+            },
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(oversized_video.status_code, 413)
+
+        arbitrary_url = self.client.post(
+            "/api/media/confirm-upload",
+            json={"url": "https://example.test/unsafe.mp4", "resourceType": "video"},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(arbitrary_url.status_code, 400)
+
+    def test_upload_signing_uses_epoch_time_and_private_s3_requires_delivery_url(self):
+        with app_module.app.test_request_context():
+            app_module.g.user_id = self.owner_id
+            with mock.patch.multiple(
+                app_module,
+                S3_ENABLED=True,
+                S3_BUCKET=None,
+                CLOUDINARY_URL="cloudinary://api-key:api-secret@test-cloud",
+            ), mock.patch.object(app_module.time, "time", return_value=1_786_608_050):
+                signed = app_module.generate_presigned_upload_url("photo.jpg", "image/jpeg")
+            self.assertEqual(signed["timestamp"], 1_786_608_050)
+            self.assertEqual(signed["authType"], "signed")
+
+            with mock.patch.multiple(
+                app_module,
+                S3_ENABLED=True,
+                S3_BUCKET="private-bucket",
+                S3_ACCESS_KEY="access-key",
+                S3_SECRET_KEY="secret-key",
+                S3_PUBLIC_BASE_URL=None,
+                CLOUDINARY_URL=None,
+            ):
+                self.assertIsNone(
+                    app_module.generate_presigned_upload_url("photo.jpg", "image/jpeg")
+                )
 
         with sqlite3.connect(TEST_DB) as db:
             db.execute(
@@ -176,6 +286,46 @@ class TrustFeatureTests(unittest.TestCase):
                 (developer_id,),
             ).fetchone()
         self.assertEqual(developer, ("developer", "developer_free"))
+
+    def test_s3_upload_confirmation_handles_client_and_missing_key_errors(self):
+        owned_key = f"listings/{self.owner_id}/asset/photo.jpg"
+        boto3_module = mock.Mock()
+        boto3_module.client.side_effect = ValueError("invalid endpoint")
+        with mock.patch.multiple(
+            app_module,
+            S3_BUCKET="private-bucket",
+            S3_ACCESS_KEY="access-key",
+            S3_SECRET_KEY="secret-key",
+            S3_PUBLIC_BASE_URL="https://media.example.test",
+        ), mock.patch.dict(sys.modules, {"boto3": boto3_module}):
+            unavailable = self.client.post(
+                "/api/media/confirm-upload",
+                json={"key": owned_key},
+                headers=self._auth(self.owner_token),
+            )
+        self.assertEqual(unavailable.status_code, 500)
+        self.assertEqual(unavailable.get_json()["error"], "Failed to verify upload")
+
+        missing_key_error = RuntimeError("missing")
+        missing_key_error.response = {"Error": {"Code": "NoSuchKey"}}
+        s3_client = mock.Mock()
+        s3_client.head_object.side_effect = missing_key_error
+        boto3_module = mock.Mock()
+        boto3_module.client.return_value = s3_client
+        with mock.patch.multiple(
+            app_module,
+            S3_BUCKET="private-bucket",
+            S3_ACCESS_KEY="access-key",
+            S3_SECRET_KEY="secret-key",
+            S3_PUBLIC_BASE_URL="https://media.example.test",
+        ), mock.patch.dict(sys.modules, {"boto3": boto3_module}):
+            missing = self.client.post(
+                "/api/media/confirm-upload",
+                json={"key": owned_key},
+                headers=self._auth(self.owner_token),
+            )
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.get_json()["error"], "File not found in S3")
 
     def test_distinct_listing_verification_permissions_and_history(self):
         owner_pending = self.client.patch(

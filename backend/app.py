@@ -28,7 +28,7 @@ import time
 import sys
 from html import escape
 from functools import wraps
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import bcrypt
 import jwt
@@ -109,6 +109,7 @@ S3_REGION = os.environ.get("S3_REGION", "us-east-1").strip()
 S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "").strip() or None
 S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "").strip() or None
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "").strip() or None  # For MinIO or custom S3
+S3_PUBLIC_BASE_URL = os.environ.get("S3_PUBLIC_BASE_URL", "").strip().rstrip("/") or None
 CLOUDINARY_URL: str | None = os.environ.get("CLOUDINARY_URL", "").strip() or None
 
 
@@ -121,9 +122,11 @@ def _cloudinary_upload_preset() -> str | None:
     print("[Cloudinary] Ignoring invalid CLOUDINARY_UPLOAD_PRESET value")
     return None
 
-# Image upload limits
+# Listing media upload limits
 MAX_UPLOAD_SIZE = 10_485_760  # 10 MB per image
+MAX_VIDEO_UPLOAD_SIZE = 104_857_600  # 100 MB per video
 MAX_IMAGES_PER_LISTING = 8
+MAX_VIDEOS_PER_LISTING = 2
 ALLOWED_IMAGE_TYPES = {
     "image/jpeg",
     "image/jpg",
@@ -135,7 +138,12 @@ ALLOWED_IMAGE_TYPES = {
     "image/gif",
     "image/bmp",
     "image/tiff",
-    "image/svg+xml",
+}
+ALLOWED_VIDEO_TYPES = {
+    "video/mp4",
+    "video/quicktime",
+    "video/webm",
+    "video/x-m4v",
 }
 
 
@@ -167,9 +175,36 @@ def normalize_image_content_type(filename: str, content_type: str | None) -> str
         ".bmp": "image/bmp",
         ".tif": "image/tiff",
         ".tiff": "image/tiff",
-        ".svg": "image/svg+xml",
     }
-    return extension_map.get(extension, "image/jpeg")
+    return extension_map.get(extension, "")
+
+
+def normalize_video_content_type(filename: str, content_type: str | None) -> str:
+    normalized = (content_type or "").strip().lower()
+    if normalized in ALLOWED_VIDEO_TYPES:
+        return normalized
+
+    guessed = (mimetypes.guess_type(filename or "")[0] or "").strip().lower()
+    if guessed in ALLOWED_VIDEO_TYPES:
+        return guessed
+
+    extension = (os.path.splitext(filename or "")[1] or "").lower()
+    return {
+        ".mp4": "video/mp4",
+        ".mov": "video/quicktime",
+        ".webm": "video/webm",
+        ".m4v": "video/x-m4v",
+    }.get(extension, "")
+
+
+def normalize_media_content_type(filename: str, content_type: str | None) -> tuple[str, str]:
+    image_type = normalize_image_content_type(filename, content_type)
+    if image_type in ALLOWED_IMAGE_TYPES:
+        return image_type, "image"
+    video_type = normalize_video_content_type(filename, content_type)
+    if video_type in ALLOWED_VIDEO_TYPES:
+        return video_type, "video"
+    return "", ""
 
 
 _DEFAULT_CORS_ORIGINS: list[str | re.Pattern[str]] = [
@@ -205,7 +240,13 @@ SECURITY_HEADERS = {
 }
 
 def _build_html_csp() -> str:
-    connect_sources = ["'self'", "https://api.cloudinary.com", "https://res.cloudinary.com"]
+    connect_sources = [
+        "'self'",
+        "https://api.cloudinary.com",
+        "https://res.cloudinary.com",
+        "https://*.amazonaws.com",
+        "https://*.cloudfront.net",
+    ]
     if PUBLIC_SITE_URL:
         parsed_public_url = urlsplit(PUBLIC_SITE_URL)
         if parsed_public_url.scheme and parsed_public_url.netloc:
@@ -219,7 +260,8 @@ def _build_html_csp() -> str:
         "object-src 'none'; "
         "frame-ancestors 'none'; "
         "form-action 'self'; "
-        "img-src 'self' data: blob: https://res.cloudinary.com https://images.unsplash.com https://picsum.photos https://fastly.picsum.photos https://*.tile.openstreetmap.org; "
+        "img-src 'self' data: blob: https://res.cloudinary.com https://*.amazonaws.com https://*.cloudfront.net https://images.unsplash.com https://picsum.photos https://fastly.picsum.photos https://*.tile.openstreetmap.org; "
+        "media-src 'self' blob: https://res.cloudinary.com https://*.amazonaws.com https://*.cloudfront.net; "
         "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.tailwindcss.com; "
         "style-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; "
         f"connect-src {' '.join(connect_sources)}; "
@@ -717,6 +759,7 @@ def _init_postgres_db():
                 e_oselya       INTEGER NOT NULL DEFAULT 0,
                 views          INTEGER NOT NULL DEFAULT 0,
                 images         TEXT    NOT NULL DEFAULT '[]',
+                videos         TEXT    NOT NULL DEFAULT '[]',
                 status         TEXT    NOT NULL DEFAULT 'draft',
                 listing_type   TEXT    NOT NULL DEFAULT 'sale',
                 source         TEXT    NOT NULL DEFAULT 'owner',
@@ -996,6 +1039,7 @@ def _init_postgres_db():
             ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_expires_at TEXT;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS agency_slug     TEXT;
             ALTER TABLE listings ADD COLUMN IF NOT EXISTS listing_verification_status TEXT NOT NULL DEFAULT 'unverified';
+            ALTER TABLE listings ADD COLUMN IF NOT EXISTS videos TEXT NOT NULL DEFAULT '[]';
         """)
         cur.execute(
             "UPDATE users SET account_type = 'owner'"
@@ -1357,6 +1401,21 @@ def normalize_listing_images(raw_images) -> list[str]:
     return normalized or [fallback]
 
 
+def normalize_listing_videos(raw_videos) -> list[str]:
+    normalized: list[str] = []
+    for video in (raw_videos if isinstance(raw_videos, list) else []):
+        url = strip(str(video), 2048)
+        if not url:
+            continue
+        try:
+            parsed = urlsplit(url)
+            if parsed.scheme in ("http", "https") and parsed.hostname:
+                normalized.append(url)
+        except ValueError:
+            continue
+    return list(dict.fromkeys(normalized))[:MAX_VIDEOS_PER_LISTING]
+
+
 def parse_listing_request_payload() -> tuple[dict, list[str]]:
     """
     Parse listing data from multipart form or JSON.
@@ -1447,13 +1506,15 @@ def validate_listing_payload(data: dict, carried_images: list[str] | None = None
     phone_verification_requested = bool(data.get("verifiedPhone") or data.get("verified_phone") or data.get("requestPhoneVerification") or False)
     verified_docs = bool(data.get("verifiedDocs") or data.get("verified_docs") or False)
     images_raw = data.get("images", [])
+    videos_raw = data.get("videos", [])
 
     image_values: list[str] = []
     if carried_images:
         image_values.extend(str(image).strip() for image in carried_images if str(image).strip())
     if isinstance(images_raw, list):
         image_values.extend(str(image).strip() for image in images_raw if str(image).strip())
-    image_values = list(dict.fromkeys(image_values))[:10]
+    image_values = list(dict.fromkeys(image_values))[:MAX_IMAGES_PER_LISTING]
+    video_values = normalize_listing_videos(videos_raw)
 
     lat = data.get("latitude")
     lng = data.get("longitude")
@@ -1495,6 +1556,10 @@ def validate_listing_payload(data: dict, carried_images: list[str] | None = None
         errors["rooms"] = "Кімнати >= 0"
     if area is None:
         errors["area"] = "Площа > 0"
+    if isinstance(videos_raw, list) and len([item for item in videos_raw if str(item).strip()]) != len(video_values):
+        errors["videos"] = "Відео повинні мати коректні http(s) URL"
+    if isinstance(videos_raw, list) and len(videos_raw) > MAX_VIDEOS_PER_LISTING:
+        errors["videos"] = f"Дозволено не більше {MAX_VIDEOS_PER_LISTING} відео"
 
     payload = {
         "title": title,
@@ -1515,11 +1580,12 @@ def validate_listing_payload(data: dict, carried_images: list[str] | None = None
         "source": source,
         "agency_slug": agency_slug,
         "has_photo_tour": has_photo_tour,
-        "has_video_tour": has_video_tour,
+        "has_video_tour": bool(video_values) or has_video_tour,
         "owner_verification_requested": owner_verification_requested,
         "phone_verification_requested": phone_verification_requested,
         "verified_docs": verified_docs,
         "images_json": json.dumps(image_values),
+        "videos_json": json.dumps(video_values),
         "lat": lat,
         "lng": lng,
     }
@@ -2120,6 +2186,7 @@ def init_db():
             e_oselya       INTEGER NOT NULL DEFAULT 0,
             views          INTEGER NOT NULL DEFAULT 0,
             images         TEXT    NOT NULL DEFAULT '[]',
+            videos         TEXT    NOT NULL DEFAULT '[]',
             status         TEXT    NOT NULL DEFAULT 'draft',
             listing_type   TEXT    NOT NULL DEFAULT 'sale',
             source         TEXT    NOT NULL DEFAULT 'owner',
@@ -2426,6 +2493,8 @@ def init_db():
         db.execute("ALTER TABLE listings ADD COLUMN moderation_updated_at TEXT")
     if "listing_verification_status" not in listing_columns:
         db.execute("ALTER TABLE listings ADD COLUMN listing_verification_status TEXT NOT NULL DEFAULT 'unverified'")
+    if "videos" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN videos TEXT NOT NULL DEFAULT '[]'")
     if "published_at" not in listing_columns:
         db.execute("ALTER TABLE listings ADD COLUMN published_at TEXT")
     if "listing_type" not in listing_columns:
@@ -3197,7 +3266,12 @@ def _days_since(value: str | None) -> int | None:
 
 def _row_to_listing(r, include_private: bool = False) -> dict:
     d = dict(r)
-    d["images"] = normalize_listing_images(json.loads(d.get("images") or "[]"))
+    stored_images = json.loads(d.get("images") or "[]")
+    stored_videos = json.loads(d.get("videos") or "[]")
+    d["image_count"] = len([value for value in stored_images if isinstance(value, str) and value.strip()])
+    d["video_count"] = len([value for value in stored_videos if isinstance(value, str) and value.strip()])
+    d["images"] = normalize_listing_images(stored_images)
+    d["videos"] = normalize_listing_videos(stored_videos)
     d["listing_status"] = d.get("listing_status") or "active"
     d["owner_verification_status"] = d.get("owner_verification_status") or verification_state_from_bool(d.get("verified_owner"))
     d["phone_verification_status"] = d.get("phone_verification_status") or verification_state_from_bool(d.get("verified_phone"))
@@ -3340,7 +3414,12 @@ def public_app_url() -> str:
 
 # ─── S3 / Direct Upload Support ──────────────────────────────────────────────
 
-def generate_presigned_upload_url(filename: str, content_type: str, expires_in: int = 3600) -> dict | None:
+def generate_presigned_upload_url(
+    filename: str,
+    content_type: str,
+    resource_type: str = "image",
+    expires_in: int = 3600,
+) -> dict | None:
     """
     Generate Presigned URL for direct browser → S3 upload.
     
@@ -3361,10 +3440,13 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
     # Generate unique key per listing (namespace by user + timestamp)
     import uuid
     unique_id = uuid.uuid4().hex[:12]
-    s3_key = f"listings/{g.user_id}/{unique_id}/{filename}"
+    safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.basename(filename or ""))[:180] or "media"
+    s3_key = f"listings/{g.user_id}/{unique_id}/{safe_filename}"
     
     # AWS S3 Presigned URL
     if S3_BUCKET and S3_ACCESS_KEY and S3_SECRET_KEY:
+        if not S3_PUBLIC_BASE_URL:
+            return None
         import boto3
         from botocore.config import Config
         
@@ -3378,6 +3460,7 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
         )
         
         try:
+            uploaded_at = datetime.datetime.utcnow().isoformat()
             url = s3_client.generate_presigned_url(
                 'put_object',
                 Params={
@@ -3386,7 +3469,7 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
                     'ContentType': content_type,
                     'Metadata': {
                         'user-id': str(g.user_id),
-                        'uploaded-at': datetime.datetime.utcnow().isoformat()
+                        'uploaded-at': uploaded_at
                     }
                 },
                 ExpiresIn=expires_in
@@ -3400,7 +3483,12 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
                 'region': S3_REGION,
                 'method': 'PUT',
                 'storage': 'aws_s3',
-                'expiresIn': expires_in
+                'expiresIn': expires_in,
+                'headers': {
+                    'Content-Type': content_type,
+                    'x-amz-meta-user-id': str(g.user_id),
+                    'x-amz-meta-uploaded-at': uploaded_at,
+                },
             }
         except Exception as e:
             print(f"Error generating S3 presigned URL: {e}")
@@ -3426,8 +3514,9 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
             if not cloud_name:
                 return None
 
-            public_id = f"listings/{g.user_id}/{unique_id}/{os.path.splitext(filename)[0]}"
-            upload_url = f"https://api.cloudinary.com/v1_1/{cloud_name}/image/upload"
+            safe_stem = os.path.splitext(safe_filename)[0] or "media"
+            public_id = f"listings/{g.user_id}/{unique_id}/{safe_stem}"
+            upload_url = f"https://api.cloudinary.com/v1_1/{cloud_name}/{resource_type}/upload"
 
             # Prefer unsigned uploads with preset (no signature validation issues)
             if upload_preset:
@@ -3441,13 +3530,13 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
                     "authType": "unsigned",
                     "uploadPreset": upload_preset,
                     "publicId": public_id,
-                    "resourceType": "image",
+                    "resourceType": resource_type,
                 }
 
             # Fallback to signed uploads if credentials available
             if api_key and api_secret:
                 print(f"[Cloudinary] Preset NOT available, using SIGNED uploads with credentials")
-                timestamp = int(datetime.datetime.utcnow().timestamp())
+                timestamp = int(time.time())
                 
                 # Let cloudinary SDK handle signature generation - it knows the correct format
                 sig_params = {
@@ -3467,7 +3556,7 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
                     "timestamp": timestamp,
                     "signature": signature,
                     "publicId": public_id,
-                    "resourceType": "image",
+                    "resourceType": resource_type,
                 }
 
             return None
@@ -3479,7 +3568,9 @@ def generate_presigned_upload_url(filename: str, content_type: str, expires_in: 
 
 
 @app.route("/api/images/presigned-url", methods=["POST"])
+@app.route("/api/media/presigned-url", methods=["POST"])
 @require_auth
+@limiter.limit("60 per hour")
 def get_presigned_upload_url():
     """
     Generate Presigned URL for browser → S3 direct upload.
@@ -3502,25 +3593,34 @@ def get_presigned_upload_url():
     
     data = request.get_json(silent=True) or {}
     filename = str(data.get("filename", "")).strip()
-    content_type = str(data.get("contentType", "image/jpeg")).strip()
+    content_type = str(data.get("contentType", "")).strip()
+    file_size = nonneg_int(data.get("size"))
     
     if not filename:
         return jsonify(error="Missing filename"), 400
 
-    normalized_content_type = normalize_image_content_type(filename, content_type)
-    if normalized_content_type not in ALLOWED_IMAGE_TYPES:
-        return jsonify(error=f"Unsupported image type. Allowed: {', '.join(ALLOWED_IMAGE_TYPES)}"), 400
+    normalized_content_type, resource_type = normalize_media_content_type(filename, content_type)
+    if not normalized_content_type:
+        return jsonify(error="Непідтримуваний формат. Дозволено фото JPG/PNG/WEBP/AVIF/HEIC та відео MP4/MOV/WEBM."), 400
+    max_size = MAX_VIDEO_UPLOAD_SIZE if resource_type == "video" else MAX_UPLOAD_SIZE
+    if file_size is not None and file_size > max_size:
+        return jsonify(error=f"Файл завеликий. Максимум {max_size // 1_048_576} МБ."), 413
     
-    presigned = generate_presigned_upload_url(filename, normalized_content_type)
+    presigned = generate_presigned_upload_url(filename, normalized_content_type, resource_type)
     if not presigned:
-        return jsonify(error="S3 not configured. Upload backend not available.", fallback="base64"), 503
+        return jsonify(error="Сховище медіа не налаштоване."), 503
     
+    presigned["contentType"] = normalized_content_type
+    presigned["resourceType"] = resource_type
+    presigned["maxSize"] = max_size
     return jsonify(presigned)
 
 
 @app.route("/api/images/confirm-upload", methods=["POST"])
+@app.route("/api/media/confirm-upload", methods=["POST"])
 @require_auth
-def confirm_uploaded_image():
+@limiter.limit("60 per hour")
+def confirm_uploaded_media():
     """
     Confirm S3 upload and get final image URL.
     
@@ -3542,6 +3642,7 @@ def confirm_uploaded_image():
     etag = str(data.get("etag", "")).strip()  # For verification
     cloudinary_url = str(data.get("url", "")).strip()
     public_id = str(data.get("publicId", "")).strip()
+    resource_type = "video" if str(data.get("resourceType", "")).strip().lower() == "video" else "image"
     
     if not s3_key and not public_id and not cloudinary_url:
         return jsonify(error="Missing upload reference"), 400
@@ -3566,14 +3667,28 @@ def confirm_uploaded_image():
                 
                 if etag and response.get('ETag', '').strip('"') != etag:
                     return jsonify(error="ETag mismatch - file may be corrupted"), 400
-            except s3.exceptions.NoSuchKey:
-                return jsonify(error="File not found in S3"), 404
+                stored_type, stored_resource_type = normalize_media_content_type(
+                    s3_key,
+                    response.get("ContentType", ""),
+                )
+                if not stored_type:
+                    return jsonify(error="Непідтримуваний формат завантаженого файла"), 400
+                max_size = MAX_VIDEO_UPLOAD_SIZE if stored_resource_type == "video" else MAX_UPLOAD_SIZE
+                if int(response.get("ContentLength") or 0) > max_size:
+                    return jsonify(error="Завантажений файл перевищує дозволений розмір"), 413
             except Exception as e:
+                error_code = str(
+                    getattr(e, "response", {}).get("Error", {}).get("Code", "")
+                )
+                if error_code in {"NoSuchKey", "NotFound", "404"}:
+                    return jsonify(error="File not found in S3"), 404
                 print(f"Error verifying S3 upload: {e}")
                 return jsonify(error="Failed to verify upload"), 500
 
         # Generate CDN URL (can be CloudFront, direct S3, or custom CDN)
-        cdn_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}" if S3_BUCKET else f"https://cdn.ua-dim.com/{s3_key}"
+        if not S3_PUBLIC_BASE_URL:
+            return jsonify(error="S3 delivery URL is not configured"), 503
+        cdn_url = f"{S3_PUBLIC_BASE_URL}/{s3_key}"
         return jsonify({"url": cdn_url})
 
     # Cloudinary confirmation path
@@ -3584,23 +3699,110 @@ def confirm_uploaded_image():
         cloud_name = ""
         if CLOUDINARY_URL:
             import cloudinary
+            import cloudinary.api
             cloudinary.config(secure=True)
             cloud_name = getattr(cloudinary.config(), "cloud_name", None) or ""
+            try:
+                asset = cloudinary.api.resource(public_id, resource_type=resource_type)
+            except Exception:
+                return jsonify(error="Не вдалося перевірити завантажений Cloudinary-файл"), 400
+            max_size = MAX_VIDEO_UPLOAD_SIZE if resource_type == "video" else MAX_UPLOAD_SIZE
+            if int(asset.get("bytes") or 0) > max_size:
+                return jsonify(error="Завантажений файл перевищує дозволений розмір"), 413
+            actual_resource_type = str(asset.get("resource_type") or "").lower()
+            if actual_resource_type and actual_resource_type != resource_type:
+                return jsonify(error="Тип Cloudinary-файла не відповідає запиту"), 400
+            cloudinary_url = str(asset.get("secure_url") or cloudinary_url).strip()
 
         if cloudinary_url:
             if cloud_name and f"/{cloud_name}/" not in cloudinary_url:
                 return jsonify(error="Cloudinary URL does not match configured cloud"), 400
+            expected_path = f"/{resource_type}/upload/"
+            if expected_path not in cloudinary_url:
+                return jsonify(error="Cloudinary media type does not match upload"), 400
             return jsonify({"url": cloudinary_url})
 
         if cloud_name:
-            return jsonify({"url": f"https://res.cloudinary.com/{cloud_name}/image/upload/{public_id}"})
+            return jsonify({"url": f"https://res.cloudinary.com/{cloud_name}/{resource_type}/upload/{public_id}"})
 
         return jsonify(error="Cloudinary not configured"), 503
 
-    if cloudinary_url:
-        return jsonify({"url": cloudinary_url})
-
     return jsonify(error="Missing upload reference"), 400
+
+
+def cleanup_listing_media(media_urls: list[str], user_id: int) -> list[str]:
+    """Delete only storage objects that are namespaced to the listing owner."""
+    owned_prefix = f"listings/{user_id}/"
+    s3_keys: list[str] = []
+    cloudinary_assets: list[tuple[str, str]] = []
+
+    for media_url in media_urls:
+        url = str(media_url or "").strip()
+        if not url:
+            continue
+        if S3_PUBLIC_BASE_URL and url.startswith(f"{S3_PUBLIC_BASE_URL}/"):
+            key = unquote(url[len(S3_PUBLIC_BASE_URL) + 1 :])
+            if key.startswith(owned_prefix):
+                s3_keys.append(key)
+            continue
+
+        try:
+            parsed = urlsplit(url)
+        except ValueError:
+            continue
+        if parsed.hostname != "res.cloudinary.com":
+            continue
+        for resource_type in ("image", "video"):
+            marker = f"/{resource_type}/upload/"
+            if marker not in parsed.path:
+                continue
+            public_id = parsed.path.split(marker, 1)[1]
+            public_id = re.sub(r"^v\d+/", "", public_id)
+            public_id = os.path.splitext(public_id)[0]
+            if public_id.startswith(owned_prefix):
+                cloudinary_assets.append((public_id, resource_type))
+            break
+
+    failures: list[str] = []
+    if s3_keys:
+        try:
+            import boto3
+            from botocore.config import Config
+
+            s3 = boto3.client(
+                "s3",
+                region_name=S3_REGION,
+                aws_access_key_id=S3_ACCESS_KEY,
+                aws_secret_access_key=S3_SECRET_KEY,
+                endpoint_url=S3_ENDPOINT,
+                config=Config(signature_version="s3v4"),
+            )
+            result = s3.delete_objects(
+                Bucket=S3_BUCKET,
+                Delete={"Objects": [{"Key": key} for key in sorted(set(s3_keys))], "Quiet": True},
+            )
+            failures.extend(str(item.get("Key") or "s3") for item in result.get("Errors", []))
+        except Exception:
+            failures.extend(s3_keys)
+
+    if cloudinary_assets and CLOUDINARY_URL:
+        try:
+            import cloudinary
+            import cloudinary.uploader
+
+            cloudinary.config(secure=True)
+            for public_id, resource_type in sorted(set(cloudinary_assets)):
+                result = cloudinary.uploader.destroy(
+                    public_id,
+                    resource_type=resource_type,
+                    invalidate=True,
+                )
+                if result.get("result") not in {"ok", "not found"}:
+                    failures.append(public_id)
+        except Exception:
+            failures.extend(public_id for public_id, _ in cloudinary_assets)
+
+    return list(dict.fromkeys(failures))
 
 
 @app.route("/api/images/abort-upload", methods=["POST"])
@@ -4287,7 +4489,7 @@ CURSOR_FIELD: dict[str, tuple[str, str]] = {
 LISTING_SELECT = """
     SELECT l.id, l.user_id, l.title, l.city, l.district, l.property_type, l.condition_type,
            l.price, l.rooms, l.area, l.floor, l.total_floors, l.year_built,
-           l.e_oselya, l.views, l.images, l.latitude, l.longitude, l.description,
+           l.e_oselya, l.views, l.images, l.videos, l.latitude, l.longitude, l.description,
            l.status, l.listing_type, l.source, l.agency_slug, l.listing_status, l.has_photo_tour, l.has_video_tour,
            l.verified_owner, l.verified_phone, l.verified_docs,
            l.owner_verification_status, l.phone_verification_status,
@@ -5218,14 +5420,14 @@ def create_listing():
     cur = db.execute(
         """INSERT INTO listings
             (user_id,title,city,district,property_type,condition_type,price,rooms,area,
-            floor,total_floors,year_built,e_oselya,images,latitude,longitude,description,
+            floor,total_floors,year_built,e_oselya,images,videos,latitude,longitude,description,
             status,published_at,listing_type,source,agency_slug,listing_status,has_photo_tour,has_video_tour,
             verified_owner,verified_phone,verified_docs,
             owner_verification_status,phone_verification_status,
             moderation_status,moderation_reason,moderation_updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (g.user_id, listing_payload["title"], listing_payload["city"], listing_payload["district"], listing_payload["property_type"], listing_payload["condition_type"], listing_payload["price"], listing_payload["rooms"], listing_payload["area"],
-         listing_payload["floor"], listing_payload["total_floors"], listing_payload["year_built"], int(listing_payload["e_oselya"]), listing_payload["images_json"], listing_payload["lat"], listing_payload["lng"], listing_payload["description"], status,
+         listing_payload["floor"], listing_payload["total_floors"], listing_payload["year_built"], int(listing_payload["e_oselya"]), listing_payload["images_json"], listing_payload["videos_json"], listing_payload["lat"], listing_payload["lng"], listing_payload["description"], status,
          published_at_value, listing_payload["listing_type"], listing_payload["source"], listing_payload["agency_slug"], listing_payload["listing_status"], int(listing_payload["has_photo_tour"]), int(listing_payload["has_video_tour"]),
          int(verified_owner), int(verified_phone), int(listing_payload["verified_docs"]),
          owner_verification_status, phone_verification_status, moderation_status, moderation_reason, moderation_updated_at),
@@ -5270,7 +5472,7 @@ def update_listing(listing_id: int):
                owner_verification_status, phone_verification_status,
                listing_verification_status,
                title, city, district, property_type, condition_type, price, rooms, area,
-               floor, total_floors, year_built, e_oselya, images, latitude, longitude,
+               floor, total_floors, year_built, e_oselya, images, videos, latitude, longitude,
                description, listing_type, listing_status, has_photo_tour, has_video_tour
         FROM listings
         WHERE id = ?
@@ -5329,6 +5531,7 @@ def update_listing(listing_id: int):
         "year_built": listing_payload["year_built"],
         "e_oselya": int(listing_payload["e_oselya"]),
         "images": listing_payload["images_json"],
+        "videos": listing_payload["videos_json"],
         "latitude": listing_payload["lat"],
         "longitude": listing_payload["lng"],
         "description": listing_payload["description"],
@@ -5361,6 +5564,7 @@ def update_listing(listing_id: int):
             year_built = ?,
             e_oselya = ?,
             images = ?,
+            videos = ?,
             latitude = ?,
             longitude = ?,
             description = ?,
@@ -5397,6 +5601,7 @@ def update_listing(listing_id: int):
             listing_payload["year_built"],
             int(listing_payload["e_oselya"]),
             listing_payload["images_json"],
+            listing_payload["videos_json"],
             listing_payload["lat"],
             listing_payload["lng"],
             listing_payload["description"],
@@ -5435,6 +5640,12 @@ def update_listing(listing_id: int):
         history_actor,
     )
     db.commit()
+    previous_media = set(json.loads(listing["images"] or "[]") + json.loads(listing["videos"] or "[]"))
+    current_media = set(json.loads(listing_payload["images_json"]) + json.loads(listing_payload["videos_json"]))
+    media_cleanup_failures = cleanup_listing_media(
+        sorted(previous_media - current_media),
+        int(listing["user_id"]),
+    )
 
     if listing["status"] != "published":
         run_dispatch_with_logging(
@@ -5450,27 +5661,34 @@ def update_listing(listing_id: int):
     cache_delete_prefix("admin:reports:listings-by-city:")
     cache_delete_prefix("public:listings:")
     row = db.execute(LISTING_SELECT + " WHERE l.id = ?", (listing_id,)).fetchone()
-    return jsonify(listing=_row_to_listing(row, include_private=True))
+    return jsonify(
+        listing=_row_to_listing(row, include_private=True),
+        media_cleanup_pending=len(media_cleanup_failures),
+    )
 
 
 @app.route("/api/listings/<int:listing_id>", methods=["DELETE"])
 @require_auth
+@limiter.limit("20 per hour")
 def delete_listing(listing_id: int):
     from app import _refresh_listing_city_summary, cache_delete_prefix
     db  = get_db()
-    row = db.execute("SELECT user_id FROM listings WHERE id = ?", (listing_id,)).fetchone()
+    row = db.execute("SELECT user_id, images, videos FROM listings WHERE id = ?", (listing_id,)).fetchone()
     if not row:
         return jsonify(error="Оголошення не знайдено"), 404
     if row["user_id"] != g.user_id:
         return jsonify(error="Недостатньо прав"), 403
 
+    db.execute("DELETE FROM listing_images WHERE listing_id = ?", (listing_id,))
     db.execute("DELETE FROM listings WHERE id = ?", (listing_id,))
     db.commit()
+    media_urls = json.loads(row["images"] or "[]") + json.loads(row["videos"] or "[]")
+    media_cleanup_failures = cleanup_listing_media(media_urls, int(row["user_id"]))
     _refresh_listing_city_summary(db)
     db.commit()
     cache_delete_prefix("admin:reports:listings-by-city:")
     cache_delete_prefix("public:listings:")
-    return jsonify(ok=True)
+    return jsonify(ok=True, media_cleanup_pending=len(media_cleanup_failures))
 
 
 @app.route("/api/listings/<int:listing_id>/verification", methods=["PATCH"])
@@ -7124,6 +7342,21 @@ def listing_page(lid: int):
             photos_html += f'<p style="font-size:13px;color:#94a3b8;margin-top:6px">{len(listing["images"])} фото · прокрутіть</p>'
     else:
         photos_html = '<div style="width:100%;aspect-ratio:16/9;background:#e2e8f0;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:48px">🏠</div>'
+    videos = normalize_listing_videos(listing.get("videos") or [])
+    videos_html = ""
+    if videos:
+        video_items = "".join(
+            f'<video controls playsinline preload="metadata" aria-label="Відео оголошення {index + 1}" '
+            f'style="display:block;width:100%;max-height:520px;background:#0f172a;border-radius:16px">'
+            f'<source src="{escape(video_url, quote=True)}"></video>'
+            for index, video_url in enumerate(videos)
+        )
+        videos_html = (
+            '<section aria-labelledby="listing-videos-heading" style="margin:18px 0">'
+            '<h2 id="listing-videos-heading">Відео оголошення</h2>'
+            '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:12px">'
+            f'{video_items}</div></section>'
+        )
 
     # Map embed (Leaflet inline for standalone page)
     map_html = ""
@@ -7382,6 +7615,7 @@ def listing_page(lid: int):
   </section>
 
   {photos_html}
+  {videos_html}
 
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
     <span style="background:#f1f5f9;padding:3px 10px;border-radius:20px;font-size:13px;font-weight:600">{escape(listing.get('property_type',''))}</span>

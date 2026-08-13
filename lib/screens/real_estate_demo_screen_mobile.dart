@@ -9,36 +9,109 @@ class RealEstateDemoScreen extends StatefulWidget {
 }
 
 class _RealEstateDemoScreenState extends State<RealEstateDemoScreen> {
+  static final Uri _siteUri = Uri.parse(
+    'https://ua-dim.com/real-estate-demo.html?source=mobile-app',
+  );
+
   late final WebViewController _controller;
   bool _isLoading = true;
+  String? _loadError;
 
   @override
   void initState() {
     super.initState();
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(const Color(0xFFF1F5F9))
       ..setNavigationDelegate(
         NavigationDelegate(
-          onPageStarted: (_) => setState(() => _isLoading = true),
-          onPageFinished: (_) => setState(() => _isLoading = false),
+          onPageStarted: (_) {
+            if (!mounted) return;
+            setState(() {
+              _isLoading = true;
+              _loadError = null;
+            });
+          },
+          onPageFinished: (_) {
+            if (!mounted) return;
+            setState(() => _isLoading = false);
+          },
+          onWebResourceError: (error) {
+            if (error.isForMainFrame == false || !mounted) return;
+            setState(() {
+              _isLoading = false;
+              _loadError = error.description;
+            });
+          },
         ),
       )
-      ..loadFlutterAsset('web/real-estate-demo.html');
+      ..loadRequest(_siteUri);
+  }
+
+  void _retry() {
+    setState(() {
+      _isLoading = true;
+      _loadError = null;
+    });
+    _controller.loadRequest(_siteUri);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Real Estate Demo'),
-        backgroundColor: const Color(0xFF0F172A),
-      ),
+      backgroundColor: const Color(0xFFF1F5F9),
       body: Stack(
         children: [
           WebViewWidget(controller: _controller),
+          if (_loadError != null)
+            ColoredBox(
+              color: const Color(0xFFF1F5F9),
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.cloud_off_outlined,
+                        size: 48,
+                        color: Color(0xFF334155),
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'Не вдалося відкрити UA-Dim',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Color(0xFF0F172A),
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _loadError!,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Color(0xFF475569)),
+                      ),
+                      const SizedBox(height: 20),
+                      FilledButton.icon(
+                        onPressed: _retry,
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Спробувати ще раз'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           if (_isLoading)
-            const Center(
-              child: CircularProgressIndicator(color: Colors.blueAccent),
+            const ColoredBox(
+              color: Color(0xFFF1F5F9),
+              child: Center(
+                child: CircularProgressIndicator(color: Color(0xFF2563EB)),
+              ),
             ),
         ],
       ),

@@ -92,7 +92,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home_outlined), label: 'Головна'),
           BottomNavigationBarItem(icon: Icon(Icons.chat_bubble_outline), label: 'Чати'),
-          BottomNavigationBarItem(icon: Icon(Icons.home_work_outlined), label: 'Демо'),
+          BottomNavigationBarItem(icon: Icon(Icons.home_work_outlined), label: 'Житло'),
           BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: 'Профіль'),
         ],
       ),

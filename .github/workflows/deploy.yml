@@ -18,15 +18,11 @@ jobs:
       - name: Build static site
         env:
           UA_HOMES_API: ${{ secrets.UA_HOMES_API }}
+          UA_HOMES_PUBLIC_URL: https://ua-dim.com
         run: python3 scripts/build-real-estate-demo.py
-      - name: Upload to Netlify (manual)
-        run: |
-          echo "✅ Frontend built successfully"
-          echo "📦 Frontend files: web/"
-          echo ""
-          echo "🚀 To deploy to Netlify:"
-          echo "1. Go to https://app.netlify.com"
-          echo "2. Connect this GitHub repo or upload web/ folder"
-          echo "3. Set build command: python3 scripts/build-real-estate-demo.py"
-          echo "4. Set publish directory: web/"
-          ls -la web/ | head -10
+      - name: Deploy production frontend to Netlify
+        if: github.ref == 'refs/heads/main'
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: npx --yes netlify-cli@17.38.1 deploy --prod --dir web

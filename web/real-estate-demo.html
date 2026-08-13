@@ -54,11 +54,11 @@
       } catch (_err) {}
     })();
   </script>
-  <link rel="preload" as="style" href="ua-homes.css?v=ua36-20260813"/>
-  <link rel="preload" as="script" href="real-estate-app.js?v=ua36-20260813"/>
+  <link rel="preload" as="style" href="ua-homes.css?v=seller-20260813-r2"/>
+  <link rel="preload" as="script" href="real-estate-app.js?v=seller-20260813-r2"/>
   <link rel="preload" as="script" href="vendor/react.production.min.js?v=e7ca5f4"/>
   <link rel="preload" as="script" href="vendor/react-dom.production.min.js?v=e7ca5f4"/>
-  <link rel="stylesheet" href="ua-homes.css?v=ua36-20260813"/>
+  <link rel="stylesheet" href="ua-homes.css?v=seller-20260813-r2"/>
   <script defer src="vendor/react.production.min.js?v=e7ca5f4"></script>
   <script defer src="vendor/react-dom.production.min.js?v=e7ca5f4"></script>
   <style>
@@ -110,14 +110,26 @@
 <!-- Google Tag Manager (noscript) -->
 <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-KVWMVQGM" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <header class="sticky top-0 z-50 border-b border-slate-200 bg-white">
-  <div class="mx-auto flex max-w-7xl items-center px-4 py-3">
-    <div class="flex items-center gap-3">
-      <div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-blue-700 text-sm font-black text-white shadow-lg shadow-slate-900/20">UA</div>
-      <div>
+  <div class="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3">
+    <div class="flex min-w-0 items-center gap-3">
+      <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-blue-700 text-sm font-black text-white shadow-lg shadow-slate-900/20">UA</div>
+      <div class="min-w-0">
         <div class="bg-gradient-to-r from-slate-950 via-blue-700 to-cyan-500 bg-clip-text text-lg font-black tracking-tight text-transparent">UA-Dim</div>
         <div class="text-xs font-semibold text-blue-700">Пошук нерухомості</div>
       </div>
     </div>
+    <a
+      id="header-auth-cta"
+      href="#auth"
+      aria-label="Увійти або зареєструватися"
+      class="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-2xl bg-blue-600 px-3 text-sm font-black text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 sm:px-4"
+    >
+      <svg aria-hidden="true" viewBox="0 0 24 24" class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.5 20.12a7.5 7.5 0 0 1 15 0A17.93 17.93 0 0 1 12 21.75a17.93 17.93 0 0 1-7.5-1.63Z"/>
+      </svg>
+      <span data-header-auth-mobile class="sm:hidden">Увійти</span>
+      <span data-header-auth-desktop class="hidden sm:inline">Увійти / Зареєструватися</span>
+    </a>
   </div>
 </header>
 <main id="main-content" tabindex="-1">
@@ -330,7 +342,7 @@
     window.addEventListener("beforeunload", flushFinalVitals);
   })();
 </script>
-<script defer src="real-estate-app.js?v=ua36-20260813"></script>
+<script defer src="real-estate-app.js?v=seller-20260813-r2"></script>
 <script>
   (function () {
     window.dataLayer = window.dataLayer || [];
