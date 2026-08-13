@@ -57,6 +57,18 @@ python3 app.py
 - Офлайн-режим
 - Кеширование статичних ресурсів
 
+## 📱 Окремі мобільні застосунки
+
+- Кореневий Flutter-проєкт — `DriveCommunity`, окремий застосунок лише для
+  мотоспільноти: стрічка, історії, чати й профіль. Android application ID та
+  iOS bundle ID: `com.drivecommunity.app`.
+- `apps/ua_dim/` — окремий застосунок `UA-Dim` для пошуку житла та кабінету
+  продавця. Він відкриває canonical production UI `ua-dim.com` і не містить
+  навігації DriveCommunity.
+
+Обидва застосунки мають окремі Android/iOS збірки та можуть бути встановлені
+одночасно.
+
 ## 🛠️ Архітектура
 
 ### Стек технологій
@@ -96,6 +108,9 @@ ua-homes/
 │   └── railway.toml              # Railway settings
 ├── scripts/
 │   └── build-real-estate-demo.py # Build-time API URL injection
+├── lib/                           # DriveCommunity Flutter app
+├── android/ і ios/                # DriveCommunity native shells
+├── apps/ua_dim/                   # Standalone UA-Dim Flutter app
 ├── .github/
 │   └── workflows/deploy.yml      # GitHub Actions workflow
 └── DEPLOYMENT_STEPS.md           # Посібник розгортання

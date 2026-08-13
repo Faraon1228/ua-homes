@@ -22,7 +22,9 @@ void main() {
     await Hive.close();
   });
 
-  testWidgets('App loads home screen and profile tab works', (WidgetTester tester) async {
+  testWidgets('App loads home screen and profile tab works', (
+    WidgetTester tester,
+  ) async {
     await tester.pumpWidget(const DriveCommunityApp());
     await tester.pump();
 
@@ -35,6 +37,7 @@ void main() {
 
     expect(find.text('DriveCommunity'), findsOneWidget);
     expect(find.text('Головна'), findsOneWidget);
+    expect(find.text('Житло'), findsNothing);
 
     await tester.tap(find.text('Профіль'));
     await tester.pump();

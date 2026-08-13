@@ -7,7 +7,6 @@ import 'repositories/data_repository.dart';
 import 'screens/chat_screen.dart';
 import 'screens/feed_screen.dart';
 import 'screens/profile_screen.dart';
-import 'screens/real_estate_demo_screen.dart';
 import 'services/hive_storage_service.dart';
 import 'services/remote_sync_service.dart';
 import 'state/app_state.dart';
@@ -70,7 +69,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   static const List<Widget> _screens = [
     FeedScreen(),
     ChatScreen(),
-    RealEstateDemoScreen(),
     ProfileScreen(),
   ];
 
@@ -90,10 +88,18 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
           });
         },
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home_outlined), label: 'Головна'),
-          BottomNavigationBarItem(icon: Icon(Icons.chat_bubble_outline), label: 'Чати'),
-          BottomNavigationBarItem(icon: Icon(Icons.home_work_outlined), label: 'Житло'),
-          BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: 'Профіль'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.home_outlined),
+            label: 'Головна',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.chat_bubble_outline),
+            label: 'Чати',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person_outline),
+            label: 'Профіль',
+          ),
         ],
       ),
     );
