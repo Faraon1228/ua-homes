@@ -373,7 +373,7 @@
       if (loadPromise) return loadPromise;
       loadPromise = new Promise((resolve, reject) => {
         const script = document.createElement('script');
-        script.src = 'premium.js?v=ua-premium-07-20260813';
+        script.src = 'premium.js?v=ua-premium-08-payment-hardening-20260813';
         script.async = true;
         script.onload = resolve;
         script.onerror = () => {
@@ -383,6 +383,11 @@
         document.body.appendChild(script);
       });
       return loadPromise;
+    }
+
+    const paymentParams = new URLSearchParams(window.location.search);
+    if (paymentParams.get('payment') === 'return' && paymentParams.get('order_id')) {
+      loadPremium().catch(() => {});
     }
 
     window.addEventListener('uah:meaningful-interaction', (event) => {

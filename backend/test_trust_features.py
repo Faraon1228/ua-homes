@@ -1,4 +1,6 @@
+import base64
 import importlib
+import json
 import os
 import sqlite3
 import sys
@@ -33,6 +35,7 @@ class TrustFeatureTests(unittest.TestCase):
         with sqlite3.connect(TEST_DB) as db:
             db.execute("PRAGMA foreign_keys=ON")
             for table in (
+                "premium_orders",
                 "listing_reports",
                 "listing_change_history",
                 "moderation_log",
@@ -872,6 +875,449 @@ class TrustFeatureTests(unittest.TestCase):
                 "SELECT phone_verify_code FROM users WHERE id=?", (self.owner_id,)
             ).fetchone()
         self.assertIsNone(row[0], "no code must be stored when Twilio send fails")
+
+    def test_payment_checkout_requires_auth_and_explicit_mode(self):
+        unauthenticated = self.client.post(
+            "/api/payment/liqpay/create",
+            json={"plan_id": "standard"},
+        )
+        self.assertEqual(unauthenticated.status_code, 401)
+
+        with mock.patch.dict(os.environ, {"LIQPAY_MODE": "disabled"}):
+            disabled = self.client.post(
+                "/api/payment/liqpay/create",
+                json={"plan_id": "standard"},
+                headers=self._auth(self.owner_token),
+            )
+        self.assertEqual(disabled.status_code, 503)
+        self.assertEqual(disabled.get_json()["code"], "payments_disabled")
+
+    def test_payment_checkout_uses_server_values_and_persists_owner(self):
+        env = {
+            "LIQPAY_MODE": "sandbox",
+            "LIQPAY_PUBLIC_KEY": "sandbox_public_test",
+            "LIQPAY_PRIVATE_KEY": "sandbox_private_test",
+            "UA_HOMES_PUBLIC_URL": "https://ua-dim.example",
+            "UA_HOMES_API": "https://api.ua-dim.example",
+        }
+        with mock.patch.dict(os.environ, env):
+            response = self.client.post(
+                "/api/payment/liqpay/create",
+                json={
+                    "plan_id": "standard",
+                    "amount": 1,
+                    "result_url": "https://attacker.example/result",
+                    "server_url": "https://attacker.example/callback",
+                },
+                headers=self._auth(self.owner_token),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        result = response.get_json()
+        payload = json.loads(base64.b64decode(result["data"]).decode("utf-8"))
+        self.assertEqual(payload["amount"], app_module.SUBSCRIPTION_PLANS["standard"]["price"])
+        self.assertEqual(payload["currency"], "UAH")
+        self.assertEqual(payload["sandbox"], 1)
+        self.assertEqual(
+            payload["result_url"],
+            f"https://ua-dim.example/real-estate-demo.html?payment=return&order_id={result['order_id']}",
+        )
+        self.assertEqual(
+            payload["server_url"],
+            "https://api.ua-dim.example/api/payment/liqpay/callback",
+        )
+        self.assertNotIn("attacker.example", payload["result_url"])
+        self.assertNotIn("attacker.example", payload["server_url"])
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.row_factory = sqlite3.Row
+            order = db.execute(
+                "SELECT user_id, plan_id, amount, currency, status, environment"
+                " FROM premium_orders WHERE order_id = ?",
+                (result["order_id"],),
+            ).fetchone()
+        self.assertEqual(order["user_id"], self.owner_id)
+        self.assertEqual(order["plan_id"], "standard")
+        self.assertEqual(order["status"], "pending")
+        self.assertEqual(order["environment"], "sandbox")
+
+    def test_payment_live_mode_rejects_sandbox_keys(self):
+        with mock.patch.dict(os.environ, {
+            "LIQPAY_MODE": "live",
+            "LIQPAY_PUBLIC_KEY": "sandbox_public_test",
+            "LIQPAY_PRIVATE_KEY": "sandbox_private_test",
+        }):
+            response = self.client.post(
+                "/api/payment/liqpay/create",
+                json={"plan_id": "standard"},
+                headers=self._auth(self.owner_token),
+            )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["code"], "payments_misconfigured")
+
+    def test_payment_live_mode_requires_external_https_urls(self):
+        for public_url in (
+            "http://localhost:5050",
+            "https://10.0.0.1",
+            "https://127.0.0.2",
+            "https://[::1]",
+        ):
+            with self.subTest(public_url=public_url), mock.patch.dict(os.environ, {
+                "LIQPAY_MODE": "live",
+                "LIQPAY_PUBLIC_KEY": "live_public_test",
+                "LIQPAY_PRIVATE_KEY": "live_private_test",
+                "UA_HOMES_PUBLIC_URL": public_url,
+                "UA_HOMES_API": "",
+            }):
+                response = self.client.post(
+                    "/api/payment/liqpay/create",
+                    json={"plan_id": "standard"},
+                    headers=self._auth(self.owner_token),
+                )
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.get_json()["code"], "payments_misconfigured")
+
+    def test_payment_migration_preserves_legacy_sandbox_environment(self):
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "INSERT INTO premium_orders"
+                " (order_id, plan_id, amount, currency, status, user_id, environment)"
+                " VALUES (?, 'standard', 299, 'UAH', 'pending', ?, 'disabled')",
+                ("uadim-standard-1700000000-a1b2c3d4", self.owner_id),
+            )
+            db.execute(
+                "INSERT INTO premium_orders"
+                " (order_id, plan_id, amount, currency, status, user_id, environment)"
+                " VALUES (?, 'standard', 299, 'UAH', 'sandbox', ?, 'disabled')",
+                ("uadim-standard-1700000001-b1c2d3e4", self.owner_id),
+            )
+            db.commit()
+        with mock.patch.dict(os.environ, {
+            "LIQPAY_PUBLIC_KEY": "sandbox_public_test",
+            "LIQPAY_PRIVATE_KEY": "sandbox_private_test",
+        }):
+            app_module.init_db()
+        with sqlite3.connect(TEST_DB) as db:
+            pending_environment = db.execute(
+                "SELECT environment FROM premium_orders WHERE order_id = ?",
+                ("uadim-standard-1700000000-a1b2c3d4",),
+            ).fetchone()[0]
+            legacy_paid = db.execute(
+                "SELECT environment, status, provider_status, previous_plan_id"
+                " FROM premium_orders WHERE order_id = ?",
+                ("uadim-standard-1700000001-b1c2d3e4",),
+            ).fetchone()
+        self.assertEqual(pending_environment, "sandbox")
+        self.assertEqual(legacy_paid, ("sandbox", "paid", "sandbox", "free"))
+
+    def test_payment_callback_validates_amount_and_environment(self):
+        sandbox_env = {
+            "LIQPAY_MODE": "sandbox",
+            "LIQPAY_PUBLIC_KEY": "sandbox_public_test",
+            "LIQPAY_PRIVATE_KEY": "sandbox_private_test",
+        }
+        with mock.patch.dict(os.environ, sandbox_env):
+            created = self.client.post(
+                "/api/payment/liqpay/create",
+                json={"plan_id": "standard"},
+                headers=self._auth(self.owner_token),
+            ).get_json()
+            callback = {
+                "public_key": sandbox_env["LIQPAY_PUBLIC_KEY"],
+                "version": "3",
+                "action": "pay",
+                "amount": 1,
+                "currency": "UAH",
+                "order_id": created["order_id"],
+                "status": "sandbox",
+                "payment_id": "sandbox-payment-1",
+            }
+            data, signature = app_module._liqpay_encode(
+                callback,
+                sandbox_env["LIQPAY_PRIVATE_KEY"],
+            )
+            invalid_signature = self.client.post(
+                "/api/payment/liqpay/callback",
+                data={"data": data, "signature": "invalid"},
+            )
+            response = self.client.post(
+                "/api/payment/liqpay/callback",
+                data={"data": data, "signature": signature},
+            )
+        self.assertEqual(invalid_signature.status_code, 400)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_data(as_text=True), "amount_mismatch")
+
+        with sqlite3.connect(TEST_DB) as db:
+            row = db.execute(
+                "SELECT status FROM premium_orders WHERE order_id = ?",
+                (created["order_id"],),
+            ).fetchone()
+            user = db.execute(
+                "SELECT plan_id FROM users WHERE id = ?",
+                (self.owner_id,),
+            ).fetchone()
+        self.assertEqual(row[0], "pending")
+        self.assertEqual(user[0], "free")
+
+    def test_payment_callback_is_idempotent_and_status_is_owner_only(self):
+        env = {
+            "LIQPAY_MODE": "sandbox",
+            "LIQPAY_PUBLIC_KEY": "sandbox_public_test",
+            "LIQPAY_PRIVATE_KEY": "sandbox_private_test",
+        }
+        with mock.patch.dict(os.environ, env):
+            created_response = self.client.post(
+                "/api/payment/liqpay/create",
+                json={"plan_id": "standard"},
+                headers=self._auth(self.owner_token),
+            )
+            created = created_response.get_json()
+            checkout = json.loads(base64.b64decode(created["data"]).decode("utf-8"))
+            callback = {
+                "public_key": env["LIQPAY_PUBLIC_KEY"],
+                "version": "3",
+                "action": "pay",
+                "amount": checkout["amount"],
+                "currency": checkout["currency"],
+                "order_id": created["order_id"],
+                "status": "sandbox",
+                "payment_id": "sandbox-payment-2",
+            }
+            data, signature = app_module._liqpay_encode(
+                callback,
+                env["LIQPAY_PRIVATE_KEY"],
+            )
+            first = self.client.post(
+                "/api/payment/liqpay/callback",
+                data={"data": data, "signature": signature},
+            )
+            with sqlite3.connect(TEST_DB) as db:
+                first_expiry = db.execute(
+                    "SELECT plan_expires_at FROM users WHERE id = ?",
+                    (self.owner_id,),
+                ).fetchone()[0]
+            second = self.client.post(
+                "/api/payment/liqpay/callback",
+                data={"data": data, "signature": signature},
+            )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        with sqlite3.connect(TEST_DB) as db:
+            order = db.execute(
+                "SELECT status, provider_status, provider_payment_id"
+                " FROM premium_orders WHERE order_id = ?",
+                (created["order_id"],),
+            ).fetchone()
+            user = db.execute(
+                "SELECT plan_id, plan_expires_at FROM users WHERE id = ?",
+                (self.owner_id,),
+            ).fetchone()
+        self.assertEqual(order, ("paid", "sandbox", "sandbox-payment-2"))
+        self.assertEqual(user[0], "standard")
+        self.assertEqual(user[1], first_expiry)
+
+        owner_status = self.client.get(
+            f"/api/payment/orders/{created['order_id']}",
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(owner_status.status_code, 200)
+        self.assertTrue(owner_status.get_json()["paid"])
+        realtor_status = self.client.get(
+            f"/api/payment/orders/{created['order_id']}",
+            headers=self._auth(self.realtor_token),
+        )
+        self.assertEqual(realtor_status.status_code, 404)
+
+        failed_callback = dict(callback, status="failure")
+        failed_data, failed_signature = app_module._liqpay_encode(
+            failed_callback,
+            env["LIQPAY_PRIVATE_KEY"],
+        )
+        with mock.patch.dict(os.environ, env):
+            failed = self.client.post(
+                "/api/payment/liqpay/callback",
+                data={"data": failed_data, "signature": failed_signature},
+            )
+        self.assertEqual(failed.status_code, 200)
+        with sqlite3.connect(TEST_DB) as db:
+            still_paid = db.execute(
+                "SELECT status FROM premium_orders WHERE order_id = ?",
+                (created["order_id"],),
+            ).fetchone()[0]
+        self.assertEqual(still_paid, "paid")
+
+        reversed_callback = dict(callback, status="reversed")
+        reversed_data, reversed_signature = app_module._liqpay_encode(
+            reversed_callback,
+            env["LIQPAY_PRIVATE_KEY"],
+        )
+        with mock.patch.dict(os.environ, env):
+            reversed_response = self.client.post(
+                "/api/payment/liqpay/callback",
+                data={"data": reversed_data, "signature": reversed_signature},
+            )
+        self.assertEqual(reversed_response.status_code, 200)
+        with sqlite3.connect(TEST_DB) as db:
+            reversed_order = db.execute(
+                "SELECT status FROM premium_orders WHERE order_id = ?",
+                (created["order_id"],),
+            ).fetchone()[0]
+            restored_user = db.execute(
+                "SELECT plan_id, plan_expires_at FROM users WHERE id = ?",
+                (self.owner_id,),
+            ).fetchone()
+        self.assertEqual(reversed_order, "reversed")
+        self.assertEqual(restored_user, ("free", None))
+
+    def test_payment_live_callback_never_accepts_sandbox_status(self):
+        live_env = {
+            "LIQPAY_MODE": "live",
+            "LIQPAY_PUBLIC_KEY": "live_public_test",
+            "LIQPAY_PRIVATE_KEY": "live_private_test",
+            "UA_HOMES_PUBLIC_URL": "https://ua-dim.com",
+            "UA_HOMES_API": "https://backend-production-51964.up.railway.app",
+        }
+        with mock.patch.dict(os.environ, live_env):
+            created = self.client.post(
+                "/api/payment/liqpay/create",
+                json={"plan_id": "standard"},
+                headers=self._auth(self.owner_token),
+            ).get_json()
+            checkout = json.loads(base64.b64decode(created["data"]).decode("utf-8"))
+            callback = {
+                "public_key": live_env["LIQPAY_PUBLIC_KEY"],
+                "version": "3",
+                "action": "pay",
+                "amount": checkout["amount"],
+                "currency": checkout["currency"],
+                "order_id": created["order_id"],
+                "status": "sandbox",
+                "payment_id": "unexpected-sandbox-payment",
+            }
+            data, signature = app_module._liqpay_encode(
+                callback,
+                live_env["LIQPAY_PRIVATE_KEY"],
+            )
+            response = self.client.post(
+                "/api/payment/liqpay/callback",
+                data={"data": data, "signature": signature},
+            )
+        self.assertEqual(response.status_code, 200)
+        with sqlite3.connect(TEST_DB) as db:
+            order_status = db.execute(
+                "SELECT status FROM premium_orders WHERE order_id = ?",
+                (created["order_id"],),
+            ).fetchone()[0]
+            user_plan = db.execute(
+                "SELECT plan_id FROM users WHERE id = ?",
+                (self.owner_id,),
+            ).fetchone()[0]
+        self.assertEqual(order_status, "rejected")
+        self.assertEqual(user_plan, "free")
+
+    def test_payment_reversals_do_not_restore_already_refunded_plan(self):
+        env = {
+            "LIQPAY_MODE": "sandbox",
+            "LIQPAY_PUBLIC_KEY": "sandbox_public_test",
+            "LIQPAY_PRIVATE_KEY": "sandbox_private_test",
+        }
+
+        def create_and_pay(plan_id, payment_id):
+            created = self.client.post(
+                "/api/payment/liqpay/create",
+                json={"plan_id": plan_id},
+                headers=self._auth(self.owner_token),
+            ).get_json()
+            checkout = json.loads(base64.b64decode(created["data"]).decode("utf-8"))
+            callback = {
+                "public_key": env["LIQPAY_PUBLIC_KEY"],
+                "version": "3",
+                "action": "pay",
+                "amount": checkout["amount"],
+                "currency": checkout["currency"],
+                "order_id": created["order_id"],
+                "status": "sandbox",
+                "payment_id": payment_id,
+            }
+            data, signature = app_module._liqpay_encode(callback, env["LIQPAY_PRIVATE_KEY"])
+            response = self.client.post(
+                "/api/payment/liqpay/callback",
+                data={"data": data, "signature": signature},
+            )
+            self.assertEqual(response.status_code, 200)
+            return created["order_id"], callback
+
+        def reverse(callback):
+            reversed_callback = dict(callback, status="reversed")
+            data, signature = app_module._liqpay_encode(
+                reversed_callback,
+                env["LIQPAY_PRIVATE_KEY"],
+            )
+            response = self.client.post(
+                "/api/payment/liqpay/callback",
+                data={"data": data, "signature": signature},
+            )
+            self.assertEqual(response.status_code, 200)
+
+        with mock.patch.dict(os.environ, env):
+            standard_order, standard_callback = create_and_pay("standard", "payment-standard")
+            premium_order, premium_callback = create_and_pay("premium", "payment-premium")
+            reverse(standard_callback)
+            reverse(premium_callback)
+
+        with sqlite3.connect(TEST_DB) as db:
+            statuses = dict(db.execute(
+                "SELECT order_id, status FROM premium_orders"
+                " WHERE order_id IN (?, ?)",
+                (standard_order, premium_order),
+            ).fetchall())
+            user = db.execute(
+                "SELECT plan_id, plan_expires_at FROM users WHERE id = ?",
+                (self.owner_id,),
+            ).fetchone()
+        self.assertEqual(statuses[standard_order], "reversed")
+        self.assertEqual(statuses[premium_order], "reversed")
+        self.assertEqual(user, ("free", None))
+
+        with mock.patch.dict(os.environ, env):
+            old_standard_order, old_standard_callback = create_and_pay(
+                "standard",
+                "payment-old-standard",
+            )
+            create_and_pay("premium", "payment-middle-premium")
+            create_and_pay("standard", "payment-new-standard")
+            with sqlite3.connect(TEST_DB) as db:
+                new_standard_expiry = db.execute(
+                    "SELECT plan_expires_at FROM users WHERE id = ?",
+                    (self.owner_id,),
+                ).fetchone()[0]
+            reverse(old_standard_callback)
+
+        with sqlite3.connect(TEST_DB) as db:
+            old_standard_status = db.execute(
+                "SELECT status FROM premium_orders WHERE order_id = ?",
+                (old_standard_order,),
+            ).fetchone()[0]
+            current_user = db.execute(
+                "SELECT plan_id, plan_expires_at FROM users WHERE id = ?",
+                (self.owner_id,),
+            ).fetchone()
+        self.assertEqual(old_standard_status, "reversed")
+        self.assertEqual(current_user, ("standard", new_standard_expiry))
+
+    def test_premium_frontend_requires_server_confirmed_status(self):
+        web_dir = os.path.join(os.path.dirname(BACKEND_DIR), "web")
+        with open(os.path.join(web_dir, "premium.js"), encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("/payment/orders/", source)
+        self.assertIn("uaDim.authToken", source)
+        self.assertNotIn("payment=success", source)
+        self.assertNotIn("resp.demo", source)
+        with open(os.path.join(web_dir, "real-estate-demo.html"), encoding="utf-8") as handle:
+            shell = handle.read()
+        self.assertIn("paymentParams.get('payment') === 'return'", shell)
 
     def test_sitemap_includes_legal_pages(self):
         response = self.client.get("/sitemap.xml")

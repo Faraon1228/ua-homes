@@ -420,6 +420,16 @@
   }
 
   // ── Payment flow ───────────────────────────────────────────────────────────
+  function getAuthToken() {
+    return (window.localStorage.getItem('uaDim.authToken') || '').trim();
+  }
+
+  function escapeHtml(value) {
+    var node = document.createElement('div');
+    node.textContent = String(value == null ? '' : value);
+    return node.innerHTML;
+  }
+
   function startPayment(planId) {
     var plan = findPlan(planId);
     if (!plan || plan.disabled) return;
@@ -427,28 +437,33 @@
     var grid = document.getElementById('ua-pm-grid');
     var errBanner = document.getElementById('ua-pm-error');
     errBanner.style.display = 'none';
+    var token = getAuthToken();
+    if (!token) {
+      errBanner.textContent = '⚠️ Увійдіть в обліковий запис перед оплатою тарифу.';
+      errBanner.style.display = 'block';
+      return;
+    }
 
     grid.innerHTML = '<div class="ua-pm-loading" role="status" aria-live="polite">⏳ Підготовка оплати через LiqPay…</div>';
 
     var payload = {
       plan_id: plan.id,
-      plan_name: plan.name,
-      amount: plan.price,
-      currency: 'UAH',
-      description: 'UA-Dim ' + plan.name + ' — ' + plan.price + ' UAH/міс',
-      result_url: window.location.origin + '/real-estate-demo.html?payment=success&plan=' + plan.id,
-      server_url: buildApiUrl('/payment/liqpay/callback'),
     };
 
     fetch(buildApiUrl('/payment/liqpay/create'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': ['Bearer', token].join(' '),
+      },
       credentials: 'include',
       body: JSON.stringify(payload),
     })
       .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
+        return r.json().catch(function () { return {}; }).then(function (resp) {
+          if (!r.ok) throw new Error(resp.error || 'HTTP ' + r.status);
+          return resp;
+        });
       })
       .then(function (resp) {
         if (resp.data && resp.signature) {
@@ -473,9 +488,6 @@
             window.dataLayer.push({ event: 'premium_checkout_start', plan_id: plan.id, value: plan.price });
           }
           form.submit();
-        } else if (resp.demo) {
-          // Demo/sandbox mode — show success
-          showSuccess(plan, true);
         } else {
           throw new Error(resp.error || 'Невідома помилка');
         }
@@ -487,24 +499,81 @@
         errBanner.textContent = '⚠️ ' + (err.message || 'Помилка підключення до сервера оплати. Спробуйте пізніше.');
         errBanner.style.display = 'block';
         console.error('[UA Premium] Payment error:', err);
-      });
+        });
   }
 
-  function showSuccess(plan, isDemo) {
+  function showSuccess(plan, isSandbox) {
     var modal = document.getElementById('ua-premium-modal');
     if (!modal) return;
     modal.innerHTML = (
-      '<div class="ua-pm-success" role="status" aria-live="polite">' +
-      '<div style="font-size:56px;margin-bottom:16px">🎉</div>' +
-      '<h2>' + (isDemo ? '⚙️ Тест-режим активовано' : '✅ Оплата успішна!') + '</h2>' +
-      '<p>' + (isDemo ? 'LiqPay ключі не налаштовані — демо-режим' : 'Тариф «' + plan.name + '» підключено.') + '</p>' +
-      '<p style="margin-top:8px">Деталі надіслані на вашу пошту</p>' +
-      '<button id="ua-pm-success-close" ' +
+        '<div class="ua-pm-success" role="status" aria-live="polite">' +
+        '<div style="font-size:56px;margin-bottom:16px">🎉</div>' +
+        '<h2>' + (isSandbox ? '⚙️ Тестову оплату підтверджено' : '✅ Оплата успішна!') + '</h2>' +
+        '<p>Тариф «' + escapeHtml(plan.name) + '» підключено.</p>' +
+        '<button id="ua-pm-success-close" ' +
         'style="margin-top:24px;background:#15803d;color:#fff;border:none;padding:12px 32px;border-radius:12px;font-weight:700;cursor:pointer;font-size:15px;min-height:44px">Добре</button>' +
+        '</div>'
+    );
+    document.getElementById('ua-pm-success-close').addEventListener('click', closeModal);
+    document.getElementById('ua-pm-success-close').focus();
+  }
+
+  function showPaymentState(title, message, isError) {
+    var modal = document.getElementById('ua-premium-modal');
+    if (!modal) return;
+    modal.innerHTML = (
+      '<div class="ua-pm-success" role="' + (isError ? 'alert' : 'status') + '" aria-live="polite">' +
+      '<div style="font-size:48px;margin-bottom:16px">' + (isError ? '⚠️' : '⏳') + '</div>' +
+      '<h2 style="color:' + (isError ? '#fca5a5' : '#f1f5f9') + '">' + escapeHtml(title) + '</h2>' +
+      '<p>' + escapeHtml(message) + '</p>' +
+      '<button id="ua-pm-success-close" ' +
+      'style="margin-top:24px;background:#2563eb;color:#fff;border:none;padding:12px 32px;border-radius:12px;font-weight:700;cursor:pointer;font-size:15px;min-height:44px">Закрити</button>' +
       '</div>'
     );
     document.getElementById('ua-pm-success-close').addEventListener('click', closeModal);
     document.getElementById('ua-pm-success-close').focus();
+  }
+
+  function pollPaymentStatus(orderId, token, attemptsLeft) {
+    fetch(buildApiUrl('/payment/orders/' + encodeURIComponent(orderId)), {
+      headers: { 'Authorization': ['Bearer', token].join(' ') },
+      credentials: 'include',
+    })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (resp) {
+          if (!r.ok) throw new Error(resp.error || 'Не вдалося перевірити оплату');
+          return resp;
+        });
+      })
+      .then(function (resp) {
+        var plan = findPlan(resp.plan_id) || { name: 'Преміум', price: 0 };
+        if (resp.paid) {
+          showSuccess(plan, resp.environment === 'sandbox');
+          if (resp.environment === 'live' && window.dataLayer) {
+            window.dataLayer.push({
+              event: 'premium_purchase',
+              plan_id: resp.plan_id,
+              value: resp.amount,
+              currency: resp.currency,
+            });
+          }
+          return;
+        }
+        if (resp.status === 'failed' || resp.status === 'rejected') {
+          showPaymentState('Оплату не підтверджено', 'Тариф не активовано. Кошти не повинні бути зараховані як успішна оплата.', true);
+          return;
+        }
+        if (attemptsLeft > 0) {
+          window.setTimeout(function () {
+            pollPaymentStatus(orderId, token, attemptsLeft - 1);
+          }, 1500);
+          return;
+        }
+        showPaymentState('Оплата обробляється', 'Підтвердження від LiqPay ще не отримано. Перевірте статус тарифу пізніше.', false);
+      })
+      .catch(function (error) {
+        showPaymentState('Не вдалося перевірити оплату', error.message || 'Спробуйте пізніше.', true);
+      });
   }
 
   function bindCardButtons() {
@@ -647,23 +716,27 @@
   // ── Check payment result from URL ──────────────────────────────────────────
   function checkPaymentResult() {
     var params = new URLSearchParams(window.location.search);
-    if (params.get('payment') === 'success') {
-      var planId = params.get('plan') || '';
-      var plan = findPlan(planId) || { name: 'Преміум', price: 0 };
-      setTimeout(function () {
-        openModal(plan.audience);
-        showSuccess(plan, false);
-      }, 800);
-      // Track conversion
-      if (window.dataLayer) {
-        window.dataLayer.push({ event: 'premium_purchase', plan_id: planId, value: plan.price, currency: 'UAH' });
+    var paymentResult = params.get('payment');
+    if (!paymentResult) return;
+    var orderId = params.get('order_id') || '';
+    var token = getAuthToken();
+
+    var url = new URL(window.location.href);
+    url.searchParams.delete('payment');
+    url.searchParams.delete('plan');
+    url.searchParams.delete('order_id');
+    history.replaceState({}, '', url.toString());
+
+    if (paymentResult !== 'return' || !orderId) return;
+    setTimeout(function () {
+      openModal();
+      if (!token) {
+        showPaymentState('Потрібна авторизація', 'Увійдіть, щоб перевірити статус оплати.', true);
+        return;
       }
-      // Clean URL
-      var url = new URL(window.location.href);
-      url.searchParams.delete('payment');
-      url.searchParams.delete('plan');
-      history.replaceState({}, '', url.toString());
-    }
+      showPaymentState('Перевіряємо оплату', 'Очікуємо підтвердження від LiqPay…', false);
+      pollPaymentStatus(orderId, token, 6);
+    }, 400);
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
