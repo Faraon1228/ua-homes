@@ -7,10 +7,10 @@ on:
       - main
       - agents/real-estate-filtering-feature
 
-# The backend is deployed by Railway's own GitHub integration: the "backend"
-# service watches Faraon1228/ua-homes@main with Root Directory "backend".
+# Netlify and Railway deploy through their GitHub integrations. This workflow
+# validates the generated frontend without duplicating either production deploy.
 jobs:
-  deploy-frontend:
+  validate-frontend:
     name: Build frontend
     runs-on: ubuntu-latest
     steps:
@@ -20,9 +20,3 @@ jobs:
           UA_HOMES_API: ${{ secrets.UA_HOMES_API }}
           UA_HOMES_PUBLIC_URL: https://ua-dim.com
         run: python3 scripts/build-real-estate-demo.py
-      - name: Deploy production frontend to Netlify
-        if: github.ref == 'refs/heads/main'
-        env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-        run: npx --yes netlify-cli@17.38.1 deploy --prod --dir web
