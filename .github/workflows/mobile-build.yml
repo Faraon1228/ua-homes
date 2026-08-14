@@ -92,7 +92,7 @@ jobs:
           printf '%s\n' "$CERT_OUTPUT"
           ACTUAL_FINGERPRINT="$(
             printf '%s\n' "$CERT_OUTPUT" |
-              sed -n 's/^Signer #1 certificate SHA-256 digest: //p' |
+              sed -n 's/^.*certificate SHA-256 digest: //p' |
               head -1 |
               tr '[:upper:]' '[:lower:]' |
               tr -d ':[:space:]'
