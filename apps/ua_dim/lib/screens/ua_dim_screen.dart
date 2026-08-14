@@ -1,14 +1,29 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 const String uaDimProductionUrl =
     'https://ua-dim.com/real-estate-demo.html'
-    '?source=ua-dim-app&release=20260813-seller-detail';
+    '?source=ua-dim-app&release=20260814-native-links';
+const MethodChannel _nativeChannel = MethodChannel('com.uadim.app/native');
 
 bool isUaDimInternalUri(Uri uri) {
   if (uri.scheme != 'http' && uri.scheme != 'https') return false;
   return uri.host == 'ua-dim.com' || uri.host.endsWith('.ua-dim.com');
+}
+
+bool isUaDimListingUri(Uri uri) {
+  if (!isUaDimInternalUri(uri) || uri.pathSegments.length != 2) return false;
+  return uri.pathSegments.first == 'listing' &&
+      int.tryParse(uri.pathSegments.last) != null;
+}
+
+Uri? parseUaDimNativeUri(Object? value) {
+  if (value is! String || value.trim().isEmpty) return null;
+  final uri = Uri.tryParse(value.trim());
+  return uri != null && isUaDimListingUri(uri) ? uri : null;
 }
 
 class UaDimScreen extends StatefulWidget {
@@ -23,6 +38,14 @@ class _UaDimScreenState extends State<UaDimScreen> {
   bool _isLoading = true;
   bool _canGoBack = false;
   String? _loadError;
+  Uri _currentUri = Uri.parse(uaDimProductionUrl);
+  String _pageTitle = 'UA-Dim';
+
+  bool get _supportsAndroidNativeIntegration =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  bool get _canShareCurrentPage =>
+      _supportsAndroidNativeIntegration && isUaDimListingUri(_currentUri);
 
   @override
   void initState() {
@@ -39,13 +62,18 @@ class _UaDimScreenState extends State<UaDimScreen> {
               _loadError = null;
             });
           },
-          onPageFinished: (_) async {
+          onPageFinished: (url) async {
             if (!mounted) return;
             final canGoBack = await _controller.canGoBack();
+            final title = await _controller.getTitle();
             if (!mounted) return;
             setState(() {
               _isLoading = false;
               _canGoBack = canGoBack;
+              _currentUri = Uri.tryParse(url) ?? _currentUri;
+              _pageTitle = title?.trim().isNotEmpty == true
+                  ? title!.trim()
+                  : 'UA-Dim';
             });
           },
           onWebResourceError: (error) {
@@ -59,6 +87,56 @@ class _UaDimScreenState extends State<UaDimScreen> {
         ),
       )
       ..loadRequest(Uri.parse(uaDimProductionUrl));
+    _configureNativeIntegration();
+  }
+
+  Future<void> _configureNativeIntegration() async {
+    if (!_supportsAndroidNativeIntegration) return;
+    _nativeChannel.setMethodCallHandler((call) async {
+      if (call.method != 'openUrl') return;
+      final uri = parseUaDimNativeUri(call.arguments);
+      if (uri != null) await _openInternalUri(uri);
+    });
+
+    try {
+      final initialUrl = await _nativeChannel.invokeMethod<String>(
+        'getInitialUrl',
+      );
+      final uri = parseUaDimNativeUri(initialUrl);
+      if (uri != null) await _openInternalUri(uri);
+    } on PlatformException catch (error) {
+      debugPrint('UA-Dim native launch URL unavailable: ${error.message}');
+    }
+  }
+
+  Future<void> _openInternalUri(Uri uri) async {
+    if (!isUaDimInternalUri(uri)) return;
+    if (mounted) {
+      setState(() {
+        _isLoading = true;
+        _loadError = null;
+      });
+    }
+    await _controller.loadRequest(uri);
+  }
+
+  Future<void> _shareCurrentPage() async {
+    if (!_canShareCurrentPage) return;
+    try {
+      await _nativeChannel.invokeMethod<void>('share', {
+        'subject': _pageTitle,
+        'text': '$_pageTitle\n$_currentUri',
+      });
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            error.message ?? 'Не вдалося поділитися оголошенням',
+          ),
+        ),
+      );
+    }
   }
 
   Future<NavigationDecision> _handleNavigationRequest(
@@ -94,6 +172,14 @@ class _UaDimScreenState extends State<UaDimScreen> {
       _loadError = null;
     });
     _controller.loadRequest(Uri.parse(uaDimProductionUrl));
+  }
+
+  @override
+  void dispose() {
+    if (_supportsAndroidNativeIntegration) {
+      _nativeChannel.setMethodCallHandler(null);
+    }
+    super.dispose();
   }
 
   @override
@@ -162,6 +248,17 @@ class _UaDimScreenState extends State<UaDimScreen> {
                         color: Color(0xFF2563EB),
                       ),
                     ),
+                  ),
+                ),
+              if (_canShareCurrentPage && !_isLoading && _loadError == null)
+                Positioned(
+                  right: 16,
+                  bottom: 16,
+                  child: FloatingActionButton.small(
+                    heroTag: 'share-listing',
+                    onPressed: _shareCurrentPage,
+                    tooltip: 'Поділитися оголошенням',
+                    child: const Icon(Icons.share_outlined),
                   ),
                 ),
             ],

@@ -14,7 +14,7 @@ void main() {
     expect(find.text('UA-Dim mobile shell'), findsOneWidget);
     expect(uaDimProductionUrl, contains('ua-dim.com'));
     expect(uaDimProductionUrl, contains('source=ua-dim-app'));
-    expect(uaDimProductionUrl, contains('release=20260813-seller-detail'));
+    expect(uaDimProductionUrl, contains('release=20260814-native-links'));
     expect(isUaDimInternalUri(Uri.parse(uaDimProductionUrl)), isTrue);
     expect(
       isUaDimInternalUri(Uri.parse('https://feedback.ua-dim.com/contact')),
@@ -24,5 +24,24 @@ void main() {
       isUaDimInternalUri(Uri.parse('mailto:feedback@ua-dim.com')),
       isFalse,
     );
+  });
+
+  test('UA-Dim validates native listing links', () {
+    expect(
+      isUaDimListingUri(Uri.parse('https://ua-dim.com/listing/42')),
+      isTrue,
+    );
+    expect(
+      isUaDimListingUri(Uri.parse('https://ua-dim.com/agencies/example')),
+      isFalse,
+    );
+    expect(
+      parseUaDimNativeUri('https://ua-dim.com/listing/42')?.path,
+      '/listing/42',
+    );
+    expect(parseUaDimNativeUri('https://ua-dim.com/listing/not-a-number'), isNull);
+    expect(parseUaDimNativeUri('https://ua-dim.com/listing/42/edit'), isNull);
+    expect(parseUaDimNativeUri('https://example.com/listing/42'), isNull);
+    expect(parseUaDimNativeUri('mailto:feedback@ua-dim.com'), isNull);
   });
 }

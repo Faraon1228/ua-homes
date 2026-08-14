@@ -1,0 +1,14 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.uadim.app",
+      "sha256_cert_fingerprints": [
+        "2B:A6:42:87:54:EA:BA:71:FB:0E:A2:1F:72:17:73:BE:52:88:C9:86:63:F3:0E:18:E1:12:12:27:2E:B2:2C:DE"
+      ]
+    }
+  }
+]
