@@ -61,6 +61,20 @@ def log_moderation_action(db, listing_id, action, reason=None):
     )
 
 
+def apply_public_listing_side_effects(db, published_listing_ids=()):
+    from app import cache_delete_prefix, run_dispatch_with_logging
+
+    cache_delete_prefix("public:listings:")
+    for listing_id in dict.fromkeys(int(value) for value in published_listing_ids):
+        run_dispatch_with_logging(
+            db,
+            trigger_type="listing_update_published",
+            listing_id=listing_id,
+            dry_run=False,
+            raise_errors=False,
+        )
+
+
 def parse_csv_bool(value):
     return str(value).strip().lower() in {"1", "true", "yes", "y", "так", "дa", "да"}
 
@@ -402,7 +416,7 @@ def admin_create_listing():
         listing_status = 'active'
     now = datetime.datetime.utcnow().isoformat(timespec='seconds')
 
-    db.execute("""
+    cur = db.execute("""
         INSERT INTO listings 
         (title, city, district, property_type, condition_type, price, rooms, area,
         floor, total_floors, year_built, e_oselya, description, status, listing_status, moderation_status, moderation_updated_at, published_at, user_id,
@@ -440,9 +454,9 @@ def admin_create_listing():
     _refresh_listing_city_summary(db)
     cache_delete_prefix("admin:reports:listings-by-city:")
     
-    listing_id = db.execute(
-        "SELECT id FROM listings ORDER BY id DESC LIMIT 1"
-    ).fetchone()[0]
+    listing_id = cur.lastrowid
+    if status == "published":
+        apply_public_listing_side_effects(db, (listing_id,))
     
     return jsonify(id=listing_id, ok=True), 201
 
@@ -489,8 +503,8 @@ def admin_update_listing(listing_id):
     data = request.get_json() or {}
     now = datetime.datetime.utcnow().isoformat(timespec='seconds')
     
-    # Check listing exists
-    if not db.execute("SELECT id FROM listings WHERE id = ?", (listing_id,)).fetchone():
+    existing = db.execute("SELECT id, status FROM listings WHERE id = ?", (listing_id,)).fetchone()
+    if not existing:
         return jsonify(error="Listing not found"), 404
     
     # Build update query
@@ -537,6 +551,14 @@ def admin_update_listing(listing_id):
     db.commit()
     _refresh_listing_city_summary(db)
     cache_delete_prefix("admin:reports:listings-by-city:")
+    resulting_status = str(data.get("status") or existing["status"]).strip().lower()
+    if existing["status"] == "published" or resulting_status == "published":
+        newly_published = (
+            (listing_id,)
+            if existing["status"] != "published" and resulting_status == "published"
+            else ()
+        )
+        apply_public_listing_side_effects(db, newly_published)
     
     return jsonify(ok=True, id=listing_id)
 
@@ -549,7 +571,8 @@ def admin_delete_listing(listing_id):
     
     db = get_db()
     
-    if not db.execute("SELECT id FROM listings WHERE id = ?", (listing_id,)).fetchone():
+    existing = db.execute("SELECT id, status FROM listings WHERE id = ?", (listing_id,)).fetchone()
+    if not existing:
         return jsonify(error="Listing not found"), 404
     
     # Delete images first
@@ -560,6 +583,8 @@ def admin_delete_listing(listing_id):
     db.commit()
     _refresh_listing_city_summary(db)
     cache_delete_prefix("admin:reports:listings-by-city:")
+    if existing["status"] == "published":
+        apply_public_listing_side_effects(db)
     
     return jsonify(ok=True)
 
@@ -662,6 +687,9 @@ def admin_publish_listing(listing_id):
     db = get_db()
     data = request.get_json() or {}
     published = data.get('published', True)
+    existing = db.execute("SELECT status FROM listings WHERE id = ?", (listing_id,)).fetchone()
+    if not existing:
+        return jsonify(error="Listing not found"), 404
     
     status = 'published' if published else 'draft'
     
@@ -680,6 +708,13 @@ def admin_publish_listing(listing_id):
     db.commit()
     _refresh_listing_city_summary(db)
     cache_delete_prefix("admin:reports:listings-by-city:")
+    if existing["status"] == "published" or status == "published":
+        newly_published = (
+            (listing_id,)
+            if existing["status"] != "published" and status == "published"
+            else ()
+        )
+        apply_public_listing_side_effects(db, newly_published)
     
     return jsonify(ok=True, status=status)
 
@@ -700,6 +735,7 @@ def admin_import_csv():
         return jsonify(error="CSV header is required"), 400
 
     imported = []
+    published_imports = []
     errors = []
     admin_id = g.user_id
 
@@ -742,6 +778,8 @@ def admin_import_csv():
             ),
         )
         imported.append(cur.lastrowid)
+        if listing["status"] == "published":
+            published_imports.append(cur.lastrowid)
 
     if errors:
         db.rollback()
@@ -750,6 +788,8 @@ def admin_import_csv():
     db.commit()
     _refresh_listing_city_summary(db)
     cache_delete_prefix("admin:reports:listings-by-city:")
+    if published_imports:
+        apply_public_listing_side_effects(db, published_imports)
     return jsonify(ok=True, imported=len(imported), listing_ids=imported), 201
 
 
@@ -807,7 +847,12 @@ def admin_moderation_logs():
 @admin_bp.route("/listings/<int:listing_id>/moderate", methods=["POST"])
 @require_auth_admin
 def admin_moderate_listing(listing_id):
-    from app import _refresh_listing_city_summary, cache_delete_prefix, db_now_expr, get_db
+    from app import (
+        _refresh_listing_city_summary,
+        cache_delete_prefix,
+        db_now_expr,
+        get_db,
+    )
 
     db = get_db()
     data = request.get_json() or {}
@@ -870,6 +915,13 @@ def admin_moderate_listing(listing_id):
     db.commit()
     _refresh_listing_city_summary(db)
     cache_delete_prefix("admin:reports:listings-by-city:")
+    if listing["status"] == "published" or new_status == "published":
+        newly_published = (
+            (listing_id,)
+            if listing["status"] != "published" and new_status == "published"
+            else ()
+        )
+        apply_public_listing_side_effects(db, newly_published)
 
     return jsonify(
         ok=True,
@@ -883,7 +935,12 @@ def admin_moderate_listing(listing_id):
 @admin_bp.route("/listings/bulk-moderate", methods=["POST"])
 @require_auth_admin
 def admin_bulk_moderate():
-    from app import _refresh_listing_city_summary, cache_delete_prefix, db_now_expr, get_db
+    from app import (
+        _refresh_listing_city_summary,
+        cache_delete_prefix,
+        db_now_expr,
+        get_db,
+    )
 
     db = get_db()
     data = request.get_json() or {}
@@ -905,10 +962,13 @@ def admin_bulk_moderate():
     new_status = listing_status_for_moderation(moderation_status)
 
     existing = db.execute(
-        f"SELECT id FROM listings WHERE id IN ({','.join('?' for _ in ids)})",
+        f"SELECT id, status FROM listings WHERE id IN ({','.join('?' for _ in ids)})",
         ids
     ).fetchall()
     existing_ids = {row["id"] for row in existing}
+    previously_unpublished_ids = {
+        row["id"] for row in existing if row["status"] != "published"
+    }
     missing = [listing_id for listing_id in ids if listing_id not in existing_ids]
     if missing:
         return jsonify(error="Some listings were not found", missing_ids=missing), 404
@@ -927,10 +987,12 @@ def admin_bulk_moderate():
             (new_status, moderation_status, reason, new_status, listing_id)
         )
         log_moderation_action(db, listing_id, action, reason)
-
     db.commit()
     _refresh_listing_city_summary(db)
     cache_delete_prefix("admin:reports:listings-by-city:")
+    if new_status == "published" or any(row["status"] == "published" for row in existing):
+        published_listing_ids = previously_unpublished_ids if new_status == "published" else ()
+        apply_public_listing_side_effects(db, published_listing_ids)
     return jsonify(ok=True, status=new_status, moderation_status=moderation_status, updated=len(ids))
 
 
@@ -952,7 +1014,7 @@ def admin_bulk_delete():
         return jsonify(error="listing_ids must contain integers"), 400
 
     existing = db.execute(
-        f"SELECT id FROM listings WHERE id IN ({','.join('?' for _ in ids)})",
+        f"SELECT id, status FROM listings WHERE id IN ({','.join('?' for _ in ids)})",
         ids
     ).fetchall()
     existing_ids = {row["id"] for row in existing}
@@ -967,6 +1029,8 @@ def admin_bulk_delete():
     db.commit()
     _refresh_listing_city_summary(db)
     cache_delete_prefix("admin:reports:listings-by-city:")
+    if any(row["status"] == "published" for row in existing):
+        apply_public_listing_side_effects(db)
     return jsonify(ok=True, deleted=len(ids))
 
 

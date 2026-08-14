@@ -4786,13 +4786,13 @@ def verify_phone():
 # ─── Routes: Listings ─────────────────────────────────────────────────────────
 
 ALLOWED_SORT = {
-    "price-asc":  "l.price ASC",
-    "price-desc": "l.price DESC",
-    "area-desc":  "l.area DESC",
-    "area-asc":   "l.area ASC",
-    "newest":     "l.created_at DESC",
-    "views-desc": "l.views DESC",
-    "relevance":  "l.created_at DESC",
+    "price-asc":  "l.price ASC, l.id ASC",
+    "price-desc": "l.price DESC, l.id DESC",
+    "area-desc":  "l.area DESC, l.id DESC",
+    "area-asc":   "l.area ASC, l.id ASC",
+    "newest":     "l.created_at DESC, l.id DESC",
+    "views-desc": "l.views DESC, l.id DESC",
+    "relevance":  "l.created_at DESC, l.id DESC",
 }
 
 # Maps sort key → (listing column name, direction) for cursor WHERE clauses.
@@ -5440,7 +5440,7 @@ def get_listings():
     listings = [_row_to_listing(r, include_private=mine_only) for r in rows]
 
     if force_offset_pagination:
-        has_more = False
+        has_more = (offset + len(listings)) < total
     elif cursor_active:
         has_more = len(listings) == limit
     else:
@@ -5470,6 +5470,16 @@ def get_listings():
         has_more=has_more,
         next_cursor=next_cursor,
     )
+    if truthy_flag(args.get("includeFacets")):
+        city_rows = db.execute(
+            """
+            SELECT DISTINCT city
+            FROM listings
+            WHERE status = 'published' AND TRIM(COALESCE(city, '')) <> ''
+            ORDER BY city
+            """
+        ).fetchall()
+        response_payload["facets"] = {"cities": [row[0] for row in city_rows]}
     if cache_key and cacheable_public_query:
         cached_json_set(cache_key, response_payload, ttl_seconds=20)
     return jsonify(**response_payload)
@@ -5688,6 +5698,32 @@ def report_listing(lid: int):
     return jsonify(duplicate=False, report=_sanitized(row)), 201
 
 
+def seller_can_fast_publish(db, user_id: int) -> bool:
+    trusted_seller = db.execute(
+        """
+        SELECT 1
+        FROM users u
+        LEFT JOIN agency_profiles ap ON ap.slug = u.agency_slug
+        WHERE u.id = ?
+          AND (
+              COALESCE(ap.is_verified, 0) = 1
+              OR EXISTS (
+                  SELECT 1
+                  FROM listings trusted_listing
+                  WHERE trusted_listing.user_id = u.id
+                    AND trusted_listing.status = 'published'
+                    AND trusted_listing.moderation_status = 'approved'
+                    AND trusted_listing.verified_owner = 1
+                    AND trusted_listing.verified_phone = 1
+              )
+          )
+        LIMIT 1
+        """,
+        (user_id,),
+    ).fetchone()
+    return bool(trusted_seller)
+
+
 @app.route("/api/listings", methods=["POST"])
 @require_auth
 @limiter.limit("30 per hour")
@@ -5701,10 +5737,17 @@ def create_listing():
 
     db = get_db()
     actor = db.execute(
-        "SELECT role, account_type, plan_id, plan_expires_at FROM users WHERE id = ?",
+        "SELECT role, account_type, plan_id, plan_expires_at, agency_slug FROM users WHERE id = ?",
         (g.user_id,),
     ).fetchone()
     is_admin = bool(actor and actor["role"] == "admin")
+    if actor and not is_admin:
+        account_type = normalize_account_type(actor["account_type"])
+        listing_payload["source"] = {
+            "realtor": "agent",
+            "developer": "developer",
+        }.get(account_type, "owner")
+        listing_payload["agency_slug"] = actor["agency_slug"] or None
 
     if actor and not is_admin:
         plan_id, plan = resolve_user_plan(actor)
@@ -5727,10 +5770,11 @@ def create_listing():
     else:
         publish_now = bool(publish_now)
 
-    status = "published" if (is_admin or publish_now) else "pending"
-    published_at_value = datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ") if (is_admin or publish_now) else None
-    moderation_status = "approved" if (is_admin or publish_now) else "pending_review"
-    moderation_reason = None if (is_admin or publish_now) else "Нове оголошення очікує модерації перед публікацією."
+    can_fast_publish = is_admin or (publish_now and seller_can_fast_publish(db, g.user_id))
+    status = "published" if can_fast_publish else "pending"
+    published_at_value = datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ") if can_fast_publish else None
+    moderation_status = "approved" if can_fast_publish else "pending_review"
+    moderation_reason = None if can_fast_publish else "Нове оголошення очікує модерації перед публікацією."
     moderation_updated_at = datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ")
     owner_verification_status = "verified" if is_admin and listing_payload["owner_verification_requested"] else ("pending" if listing_payload["owner_verification_requested"] else "unverified")
     phone_verification_status = "verified" if is_admin and listing_payload["phone_verification_requested"] else ("pending" if listing_payload["phone_verification_requested"] else "unverified")
@@ -5755,7 +5799,7 @@ def create_listing():
         log_listing_event(db, cur.lastrowid, "request_owner_verification", "Автоматично створено під час подачі оголошення.")
     if listing_payload["phone_verification_requested"]:
         log_listing_event(db, cur.lastrowid, "request_phone_verification", "Автоматично створено під час подачі оголошення.")
-    if not is_admin:
+    if status == "pending":
         log_listing_event(db, cur.lastrowid, "submit_for_moderation", moderation_reason)
     db.commit()
     if status == "published":
@@ -5786,13 +5830,14 @@ def update_listing(listing_id: int):
     now_expr = db_now_expr()
     listing = db.execute(
         """
-        SELECT id, user_id, status, published_at,
+        SELECT id, user_id, status, published_at, moderation_status, moderation_reason,
                verified_owner, verified_phone, verified_docs,
                owner_verification_status, phone_verification_status,
                listing_verification_status,
                title, city, district, property_type, condition_type, price, rooms, area,
                floor, total_floors, year_built, e_oselya, images, videos, latitude, longitude,
-               description, listing_type, listing_status, has_photo_tour, has_video_tour
+               description, listing_type, listing_status, source, agency_slug,
+               has_photo_tour, has_video_tour
         FROM listings
         WHERE id = ?
         """,
@@ -5801,7 +5846,10 @@ def update_listing(listing_id: int):
     if not listing:
         return jsonify(error="Оголошення не знайдено"), 404
 
-    actor = db.execute("SELECT role FROM users WHERE id = ?", (g.user_id,)).fetchone()
+    actor = db.execute(
+        "SELECT role, account_type, agency_slug FROM users WHERE id = ?",
+        (g.user_id,),
+    ).fetchone()
     is_admin = bool(actor and actor["role"] == "admin")
     if listing["user_id"] != g.user_id and not is_admin:
         return jsonify(error="Недостатньо прав"), 403
@@ -5817,10 +5865,14 @@ def update_listing(listing_id: int):
     listing_payload, errors = validate_listing_payload(data, carried_images)
     if errors:
         return jsonify(error="Невалідні дані", fields=errors), 422
+    if actor and not is_admin:
+        account_type = normalize_account_type(actor["account_type"])
+        listing_payload["source"] = {
+            "realtor": "agent",
+            "developer": "developer",
+        }.get(account_type, "owner")
+        listing_payload["agency_slug"] = actor["agency_slug"] or None
 
-    next_status = "published"
-    moderation_status = "approved"
-    moderation_reason = None
     owner_verification_status = listing["owner_verification_status"] or verification_state_from_bool(listing["verified_owner"])
     phone_verification_status = listing["phone_verification_status"] or verification_state_from_bool(listing["verified_phone"])
     verified_owner = bool(listing["verified_owner"])
@@ -5863,13 +5915,43 @@ def update_listing(listing_id: int):
         "description": listing_payload["description"],
         "listing_type": listing_payload["listing_type"],
         "listing_status": listing_payload["listing_status"],
+        "source": listing_payload["source"],
+        "agency_slug": listing_payload["agency_slug"],
         "has_photo_tour": int(listing_payload["has_photo_tour"]),
         "has_video_tour": int(listing_payload["has_video_tour"]),
     }
+    substantive_changed = any(listing[field] != value for field, value in substantive_fields.items())
+    publish_now = data.get("publishNow", True)
+    if isinstance(publish_now, str):
+        publish_now = truthy_flag(publish_now)
+    else:
+        publish_now = bool(publish_now)
+    moderation_requires_resubmission = listing["moderation_status"] in {"rejected", "changes_requested"}
+    can_fast_publish = (
+        is_admin
+        or (
+            publish_now
+            and seller_can_fast_publish(db, g.user_id)
+            and not moderation_requires_resubmission
+        )
+    )
+    if is_admin or (substantive_changed and can_fast_publish):
+        next_status = "published"
+        moderation_status = "approved"
+        moderation_reason = None
+    elif substantive_changed:
+        next_status = "pending"
+        moderation_status = "pending_review"
+        moderation_reason = "Зміни оголошення очікують модерації перед повторною публікацією."
+    else:
+        next_status = listing["status"]
+        moderation_status = listing["moderation_status"]
+        moderation_reason = listing["moderation_reason"]
+
     owner_changed_verified_listing = (
         not is_admin
         and listing_verification_status == "verified"
-        and any(listing[field] != value for field, value in substantive_fields.items())
+        and substantive_changed
     )
     if owner_changed_verified_listing:
         listing_verification_status = "pending"
@@ -5895,7 +5977,7 @@ def update_listing(listing_id: int):
             longitude = ?,
             description = ?,
             status = ?,
-            published_at = COALESCE(published_at, {now_expr}),
+            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, {now_expr}) ELSE published_at END,
             listing_type = ?,
             source = ?,
             agency_slug = ?,
@@ -5932,6 +6014,7 @@ def update_listing(listing_id: int):
             listing_payload["lng"],
             listing_payload["description"],
             next_status,
+            next_status,
             listing_payload["listing_type"],
             listing_payload["source"],
             listing_payload["agency_slug"],
@@ -5950,6 +6033,8 @@ def update_listing(listing_id: int):
         ),
     )
     log_listing_event(db, listing_id, "listing_updated", "Оголошення відредаговано власником." if not is_admin else "Оголошення відредаговано адміністратором.", admin_id=g.user_id if is_admin else None)
+    if next_status == "pending" and (listing["status"] != "pending" or substantive_changed):
+        log_listing_event(db, listing_id, "submit_for_moderation", moderation_reason)
     history_actor = "admin" if is_admin else "owner"
     log_field_change(db, listing_id, "price", listing["price"], listing_payload["price"], history_actor)
     log_field_change(db, listing_id, "status", listing["status"], next_status, history_actor)
@@ -5973,7 +6058,7 @@ def update_listing(listing_id: int):
         int(listing["user_id"]),
     )
 
-    if listing["status"] != "published":
+    if listing["status"] != "published" and next_status == "published":
         run_dispatch_with_logging(
             db,
             trigger_type="listing_update_published",

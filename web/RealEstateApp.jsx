@@ -62,6 +62,7 @@ const KEYWORD_SEARCH_KEY = "re.keywordSearch";
 const SAVED_SEARCHES_KEY = "re.savedSearches";
 const MAX_SAVED_SEARCHES = 10;
 const RESULTS_VIEW_MODE_KEY = "ua_homes_view_mode_v1";
+const CATALOG_PAGE_SIZE = 24;
 const PWA_DISMISS_KEY = "uaDim.pwaDismissedUntil";
 const PWA_INSTALLED_KEY = "uaDim.pwaInstalled";
 const PWA_SESSION_HIDDEN_KEY = "uaDim.pwaHiddenForSession";
@@ -965,6 +966,8 @@ function getListingStatusLabel(listing) {
   if (listing?.status === "published" && listing?.listing_status === "active") return "Активне";
   if (listing?.status === "published") return "Опубліковано";
   if (listing?.moderation_status === "approved") return "Підтверджено";
+  if (listing?.moderation_status === "changes_requested") return "Потрібні правки";
+  if (listing?.moderation_status === "rejected" || listing?.status === "rejected") return "Відхилено";
   return "На модерації";
 }
 
@@ -1105,6 +1108,7 @@ function SmartSearchPage({
   clearActiveFilter,
   visibleProperties,
   filteredProperties,
+  totalProperties,
   favoriteIds,
   toggleFavorite,
   showFavoritesOnly,
@@ -1235,7 +1239,7 @@ function SmartSearchPage({
                 <p className="mt-1 text-2xl font-black text-slate-900">Пошук</p>
               </div>
               <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700">
-                {filteredProperties.length} знайдено
+                {totalProperties} знайдено
               </span>
             </div>
 
@@ -1272,7 +1276,7 @@ function SmartSearchPage({
           <div>
             <p className="text-xs font-black uppercase tracking-wide text-slate-500">Релевантні результати</p>
             <h2 className="mt-1 text-2xl font-black text-slate-900">
-              {visibleProperties.length ? `Показано ${previewProperties.length} з ${visibleProperties.length}` : "Нічого не знайдено"}
+              {visibleProperties.length ? `Показано ${previewProperties.length} з ${totalProperties}` : "Нічого не знайдено"}
             </h2>
           </div>
           <a
@@ -1622,8 +1626,14 @@ export default function RealEstateApp() {
   const [deleteCandidate, setDeleteCandidate] = useState(null);
   const [publishSuccess, setPublishSuccess] = useState(null);
   const [liveCatalogListings, setLiveCatalogListings] = useState([]);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogLoadingMore, setCatalogLoadingMore] = useState(false);
   const [catalogError, setCatalogError] = useState("");
+  const [catalogTotal, setCatalogTotal] = useState(0);
+  const [catalogHasMore, setCatalogHasMore] = useState(false);
+  const [catalogCities, setCatalogCities] = useState([]);
+  const catalogRequestRef = useRef(0);
   const [trustListing, setTrustListing] = useState(null);
   const [pwaInstallPrompt, setPwaInstallPrompt] = useState(null);
   const [pwaInstallDismissed, setPwaInstallDismissed] = useState(() => hasActivePwaDismissal());
@@ -1720,14 +1730,19 @@ export default function RealEstateApp() {
   }, [showMobileFilters]);
 
   const catalogProperties = useMemo(() => {
-    if (liveCatalogListings.length) return liveCatalogListings;
+    if (catalogLoaded) return liveCatalogListings;
     if (allowMockCatalogFallback() && !catalogError) return MOCK_PROPERTIES;
     return [];
-  }, [catalogError, liveCatalogListings]);
+  }, [catalogError, catalogLoaded, liveCatalogListings]);
 
   const cities = useMemo(
-    () => ["Всі", ...Array.from(new Set(catalogProperties.map((p) => p.city).filter(Boolean)))],
-    [catalogProperties]
+    () => [
+      "Всі",
+      ...Array.from(
+        new Set([...catalogCities, ...catalogProperties.map((property) => property.city)].filter(Boolean))
+      ).sort((left, right) => left.localeCompare(right, "uk")),
+    ],
+    [catalogCities, catalogProperties]
   );
   const activeMyListingsCount = useMemo(
     () => myListings.filter((item) => item.status === "published" && item.listing_status === "active").length,
@@ -1744,7 +1759,9 @@ export default function RealEstateApp() {
     () => ({
       all: myListings.length,
       active: activeMyListingsCount,
-      review: myListings.filter((item) => item.moderation_status === "pending_review").length,
+      review: myListings.filter((item) =>
+        ["pending_review", "in_review", "changes_requested", "rejected"].includes(item.moderation_status)
+      ).length,
       draft: myListings.filter((item) => item.status === "draft").length,
       archived: myListings.filter(
         (item) => item.status === "archived" || ["sold", "removed"].includes(item.listing_status)
@@ -1757,7 +1774,9 @@ export default function RealEstateApp() {
       return myListings.filter((item) => item.status === "published" && item.listing_status === "active");
     }
     if (myListingsFilter === "review") {
-      return myListings.filter((item) => item.moderation_status === "pending_review");
+      return myListings.filter((item) =>
+        ["pending_review", "in_review", "changes_requested", "rejected"].includes(item.moderation_status)
+      );
     }
     if (myListingsFilter === "draft") {
       return myListings.filter((item) => item.status === "draft");
@@ -1832,25 +1851,93 @@ export default function RealEstateApp() {
     window.localStorage.setItem(KEYWORD_SEARCH_KEY, keywordSearch);
   }, [keywordSearch]);
 
-  const loadCatalogListings = async (fresh = false) => {
-    setCatalogLoading(true);
+  const searchFilters = useMemo(
+    () => ({
+      cityFilter,
+      propertyType: propertyTypeFilter,
+      onlyEOselya,
+      minPrice,
+      maxPrice,
+      minRooms,
+      maxRooms,
+      minArea,
+      maxArea,
+      sortBy,
+      keywordSearch,
+    }),
+    [cityFilter, propertyTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, sortBy, keywordSearch]
+  );
+
+  const loadCatalogListings = async (fresh = false, append = false) => {
+    const requestId = ++catalogRequestRef.current;
+    if (append) {
+      setCatalogLoadingMore(true);
+    } else {
+      setCatalogLoading(true);
+    }
     setCatalogError("");
     try {
-      const response = await fetch(
-        getApiUrl("/listings?status=published&limit=60&sort=newest"),
-        fresh ? { cache: "no-store" } : undefined
-      );
+      const params = new URLSearchParams({
+        status: "published",
+        limit: String(CATALOG_PAGE_SIZE),
+        offset: String(append ? liveCatalogListings.length : 0),
+        sort: sortBy || DEFAULT_SORT,
+      });
+      if (!append) params.set("includeFacets", "1");
+      if (cityFilter !== "Всі") params.set("city", cityFilter);
+      if (propertyTypeFilter !== "Всі") params.set("type", propertyTypeFilter);
+      if (onlyEOselya) params.set("eOselya", "1");
+      if (minPrice !== "") params.set("minPrice", minPrice);
+      if (maxPrice !== "") params.set("maxPrice", maxPrice);
+      if (minRooms !== "") params.set("minRooms", minRooms);
+      if (maxRooms !== "") params.set("maxRooms", maxRooms);
+      if (minArea !== "") params.set("minArea", minArea);
+      if (maxArea !== "") params.set("maxArea", maxArea);
+      if (keywordSearch.trim()) params.set("search", keywordSearch.trim());
+      if (showFavoritesOnly) {
+        if (!favoriteIds.length) {
+          if (requestId !== catalogRequestRef.current) return;
+          setLiveCatalogListings([]);
+          setCatalogLoaded(true);
+          setCatalogTotal(0);
+          setCatalogHasMore(false);
+          return;
+        }
+        params.set("ids", favoriteIds.join(","));
+      }
+
+      const response = await fetch(getApiUrl(`/listings?${params.toString()}`), {
+        cache: fresh ? "no-store" : "default",
+      });
       if (!response.ok) throw new Error("Не вдалося завантажити оголошення");
       const data = await response.json();
+      if (requestId !== catalogRequestRef.current) return;
       const rows = Array.isArray(data.listings) ? data.listings : [];
       const mapped = rows.map(mapListingToProperty);
-      setLiveCatalogListings(mapped);
+      setLiveCatalogListings((current) => {
+        if (!append) return mapped;
+        const knownIds = new Set(current.map((property) => property.id));
+        return [...current, ...mapped.filter((property) => !knownIds.has(property.id))];
+      });
+      setCatalogLoaded(true);
+      setCatalogTotal(Number(data.total) || 0);
+      setCatalogHasMore(Boolean(data.has_more));
+      if (Array.isArray(data.facets?.cities)) setCatalogCities(data.facets.cities);
     } catch (error) {
+      if (requestId !== catalogRequestRef.current) return;
       setCatalogError(error.message || "Не вдалося завантажити оголошення");
-      setLiveCatalogListings([]);
+      if (!append) {
+        setLiveCatalogListings([]);
+        setCatalogLoaded(false);
+        setCatalogTotal(0);
+        setCatalogHasMore(false);
+      }
     } finally {
-      setCatalogLoading(false);
-      window.dispatchEvent(new Event("uah:catalog-settled"));
+      if (requestId === catalogRequestRef.current) {
+        setCatalogLoading(false);
+        setCatalogLoadingMore(false);
+        window.dispatchEvent(new Event("uah:catalog-settled"));
+      }
     }
   };
 
@@ -1868,8 +1955,24 @@ export default function RealEstateApp() {
       setCatalogLoading(false);
       return;
     }
-    loadCatalogListings();
-  }, [sellerCabinetMode]);
+    const timeout = window.setTimeout(() => loadCatalogListings(), 250);
+    return () => window.clearTimeout(timeout);
+  }, [
+    sellerCabinetMode,
+    cityFilter,
+    propertyTypeFilter,
+    onlyEOselya,
+    minPrice,
+    maxPrice,
+    minRooms,
+    maxRooms,
+    minArea,
+    maxArea,
+    sortBy,
+    keywordSearch,
+    showFavoritesOnly,
+    showFavoritesOnly ? favoriteIds.join(",") : "",
+  ]);
 
   useEffect(() => {
     const handleInstallPrompt = (e) => {
@@ -2058,26 +2161,12 @@ export default function RealEstateApp() {
     refreshProfile();
   }, [authToken, currentUser?.id]);
 
-  const searchFilters = useMemo(
-    () => ({
-      cityFilter,
-      propertyType: propertyTypeFilter,
-      onlyEOselya,
-      minPrice,
-      maxPrice,
-      minRooms,
-      maxRooms,
-      minArea,
-      maxArea,
-      sortBy,
-      keywordSearch,
-    }),
-    [cityFilter, propertyTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, sortBy, keywordSearch]
-  );
-
   const filteredProperties = useMemo(
-    () => filterAndSortProperties(catalogProperties, searchFilters),
-    [catalogProperties, searchFilters]
+    () =>
+      catalogLoaded
+        ? catalogProperties
+        : filterAndSortProperties(catalogProperties, searchFilters),
+    [catalogLoaded, catalogProperties, searchFilters]
   );
   const favoriteProperties = useMemo(
     () => catalogProperties.filter((property) => favoriteIds.includes(property.id)),
@@ -2101,8 +2190,11 @@ export default function RealEstateApp() {
     return `Порівнюємо ${compareProperties.length} обраних об'єктів. Кращий value позначено окремо.`;
   }, [compareProperties]);
   const visibleProperties = useMemo(
-    () => (showFavoritesOnly ? filteredProperties.filter((p) => favoriteIds.includes(p.id)) : filteredProperties),
-    [filteredProperties, favoriteIds, showFavoritesOnly]
+    () =>
+      catalogLoaded || !showFavoritesOnly
+        ? filteredProperties
+        : filteredProperties.filter((property) => favoriteIds.includes(property.id)),
+    [catalogLoaded, filteredProperties, favoriteIds, showFavoritesOnly]
   );
   const favoriteStats = useMemo(() => {
     if (!favoriteProperties.length) return { count: 0, avgPrice: 0, verifiedCount: 0 };
@@ -2733,7 +2825,7 @@ export default function RealEstateApp() {
         videos: [...uploadedVideoUrls, ...videoUrls].slice(0, 2),
       };
 
-      setMediaUploadStatus(isEditing ? "Оновлюємо оголошення…" : "Публікуємо оголошення…");
+      setMediaUploadStatus(isEditing ? "Оновлюємо оголошення…" : "Надсилаємо оголошення…");
       const response = await fetch(getApiUrl(isEditing ? `/listings/${editingListingId}` : "/listings"), {
         method: isEditing ? "PATCH" : "POST",
         headers: {
@@ -2758,17 +2850,22 @@ export default function RealEstateApp() {
       if (!response.ok) {
         throw new Error(result.error || "Не вдалося створити оголошення");
       }
-      mergeListingIntoCatalog(result.listing);
+      if (result.listing?.status === "published") {
+        mergeListingIntoCatalog(result.listing);
+      }
       setPublishSuccess({
         id: result.listing?.id,
         title: result.listing?.title || payload.title,
         isEditing,
+        isPublished: result.listing?.status === "published",
       });
       setMyListingsFilter("all");
       setListingMessage(
         `${
           isEditing
-            ? "Оголошення оновлено та залишено опублікованим."
+            ? result.listing?.status === "published"
+              ? "Оголошення оновлено та залишено опублікованим."
+              : "Зміни збережено й надіслано на модерацію."
             : `Оголошення створено${result.listing?.status === "published" ? " і вже опубліковане" : " і надіслане на модерацію"}.`
         }${result.media_cleanup_pending ? " Частину видалених медіафайлів не вдалося очистити зі сховища." : ""}`
       );
@@ -2886,6 +2983,7 @@ export default function RealEstateApp() {
       clearActiveFilter,
       visibleProperties,
       filteredProperties,
+      totalProperties: catalogLoaded ? catalogTotal : filteredProperties.length,
       favoriteIds,
       toggleFavorite,
       showFavoritesOnly,
@@ -3449,23 +3547,30 @@ export default function RealEstateApp() {
                   {publishSuccess ? (
                     <div
                       id="publish-success"
-                      className="rounded-2xl border border-emerald-300 bg-emerald-50 p-4"
+                      className={`rounded-2xl border p-4 ${
+                        publishSuccess.isPublished
+                          ? "border-emerald-300 bg-emerald-50"
+                          : "border-amber-300 bg-amber-50"
+                      }`}
                       role="status"
                       aria-live="polite"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
-                          <p className="font-black text-emerald-900">
+                          <p className={publishSuccess.isPublished ? "font-black text-emerald-900" : "font-black text-amber-900"}>
                             {publishSuccess.isEditing
                               ? "Зміни успішно завантажено"
-                              : "Оголошення успішно завантажено й опубліковано"}
+                              : publishSuccess.isPublished
+                                ? "Оголошення успішно завантажено й опубліковано"
+                                : "Оголошення успішно завантажено й надіслано на перевірку"}
                           </p>
-                          <p className="mt-1 text-sm text-emerald-800">
-                            {publishSuccess.title} уже доступне в розділі «Мої оголошення».
+                          <p className={`mt-1 text-sm ${publishSuccess.isPublished ? "text-emerald-800" : "text-amber-800"}`}>
+                            {publishSuccess.title} доступне в розділі «Мої оголошення»
+                            {publishSuccess.isPublished ? " і вже показується в каталозі." : "; після перевірки воно з’явиться в каталозі."}
                           </p>
                         </div>
                         <div className="flex gap-2">
-                          {publishSuccess.id ? (
+                          {publishSuccess.id && publishSuccess.isPublished ? (
                             <a
                               href={`/listing/${publishSuccess.id}`}
                               className="inline-flex min-h-11 items-center rounded-xl bg-emerald-700 px-4 text-sm font-bold text-white"
@@ -3476,7 +3581,11 @@ export default function RealEstateApp() {
                           <button
                             type="button"
                             onClick={() => setPublishSuccess(null)}
-                            className="min-h-11 rounded-xl border border-emerald-300 px-3 text-sm font-bold text-emerald-900"
+                            className={`min-h-11 rounded-xl border px-3 text-sm font-bold ${
+                              publishSuccess.isPublished
+                                ? "border-emerald-300 text-emerald-900"
+                                : "border-amber-300 text-amber-900"
+                            }`}
                             aria-label="Закрити повідомлення про публікацію"
                           >
                             Закрити
@@ -3574,12 +3683,14 @@ export default function RealEstateApp() {
                                   <span className="block h-full rounded-full bg-emerald-500" style={{ width: `${completeness}%` }} />
                                 </div>
                                 <div className="mt-4 flex flex-wrap gap-2">
-                                  <a
-                                    href={`/listing/${item.id}`}
-                                    className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-200 px-3 text-xs font-bold text-slate-700 transition hover:bg-slate-50"
-                                  >
-                                    Переглянути
-                                  </a>
+                                  {item.status === "published" ? (
+                                    <a
+                                      href={`/listing/${item.id}`}
+                                      className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-200 px-3 text-xs font-bold text-slate-700 transition hover:bg-slate-50"
+                                    >
+                                      Переглянути
+                                    </a>
+                                  ) : null}
                               <button
                                 type="button"
                                 onClick={() => openEditListingModal(item)}
@@ -4129,13 +4240,15 @@ export default function RealEstateApp() {
                     {catalogLoading && !catalogProperties.length
                       ? "Завантажуємо оголошення"
                       : visibleProperties.length
-                      ? `Показано ${visibleProperties.length} з ${filteredProperties.length}`
+                      ? `Показано ${visibleProperties.length} з ${catalogLoaded ? catalogTotal : filteredProperties.length}`
                       : "Нічого не знайдено"}
                   </h2>
                   <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
                     {catalogLoading
                       ? "Оголошення завантажуються."
-                      : `Показано ${visibleProperties.length} з ${filteredProperties.length} оголошень у режимі ${
+                      : `Показано ${visibleProperties.length} з ${
+                          catalogLoaded ? catalogTotal : filteredProperties.length
+                        } оголошень у режимі ${
                           resultsView === "map" ? "карти" : "списку"
                         }.`}
                   </p>
@@ -4255,6 +4368,24 @@ export default function RealEstateApp() {
                 />
               ))}
             </div>
+
+            {catalogLoaded && catalogHasMore ? (
+              <div className="mt-5 flex flex-col items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => loadCatalogListings(false, true)}
+                  disabled={catalogLoadingMore}
+                  aria-busy={catalogLoadingMore}
+                  className="inline-flex min-h-[44px] items-center justify-center rounded-2xl bg-slate-900 px-6 py-3 text-sm font-black text-white transition hover:bg-blue-700 disabled:cursor-wait disabled:opacity-60"
+                >
+                  {catalogLoadingMore ? "Завантажуємо…" : "Показати ще"}
+                </button>
+                <p className="text-xs text-slate-600">
+                  Завантажено {visibleProperties.length} з {catalogTotal} оголошень
+                  {resultsView === "map" ? " і точок карти" : ""}.
+                </p>
+              </div>
+            ) : null}
 
             {resultsView === "list" && visibleProperties.length === 0 && (
               <div className="rounded-[28px] border border-dashed border-slate-200 bg-white py-16 text-center px-6">
@@ -4660,7 +4791,7 @@ export default function RealEstateApp() {
                           </span>
                         </div>
                         <p className="mt-2 text-xs leading-relaxed text-slate-600">
-                          Після натискання <b>Публікувати оголошення</b> фото автоматично завантажаться в оголошення і стануть видимими в каталозі.
+                          Після надсилання фото автоматично завантажаться в оголошення. Воно з’явиться в каталозі одразу для підтверджених продавців або після перевірки.
                         </p>
                       </div>
                       {selectedListingFilePreviews.length ? (
@@ -4812,7 +4943,7 @@ export default function RealEstateApp() {
                       : "Оголошення завантажується…"
                     : editingListingId
                       ? "Зберегти зміни"
-                      : "Опублікувати оголошення"}
+                      : "Надіслати оголошення"}
                 </button>
                 {editingListingId ? (
                   <button

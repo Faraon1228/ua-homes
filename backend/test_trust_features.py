@@ -234,6 +234,64 @@ class TrustFeatureTests(unittest.TestCase):
         realtor = self.client.get(f"/api/listings/{self.realtor_listing_id}").get_json()["listing"]
         self.assertEqual(realtor["seller_type"], "intermediary")
 
+    def test_public_catalog_filters_and_paginates_all_matching_rows(self):
+        with sqlite3.connect(TEST_DB) as database:
+            for index in range(15):
+                self._insert_listing(
+                    database,
+                    self.owner_id,
+                    title=f"Pagination listing {index:02d}",
+                    price=80000 + index * 1000,
+                    area=50 + index,
+                    city="Львів" if index < 12 else "Одеса",
+                    rooms=2 if index % 2 == 0 else 3,
+                )
+            database.commit()
+
+        first_page = self.client.get(
+            "/api/listings?status=published&city=Львів&minPrice=80000&"
+            "maxPrice=91000&minRooms=2&maxRooms=3&sort=price-asc&"
+            "limit=5&offset=0&includeFacets=1"
+        )
+        self.assertEqual(first_page.status_code, 200)
+        first_payload = first_page.get_json()
+        self.assertEqual(first_payload["total"], 12)
+        self.assertEqual(len(first_payload["listings"]), 5)
+        self.assertTrue(first_payload["has_more"])
+        self.assertEqual(first_payload["listings"][0]["price"], 80000)
+        self.assertIn("Львів", first_payload["facets"]["cities"])
+        self.assertIn("Одеса", first_payload["facets"]["cities"])
+
+        second_payload = self.client.get(
+            "/api/listings?status=published&city=Львів&minPrice=80000&"
+            "maxPrice=91000&minRooms=2&maxRooms=3&sort=price-asc&limit=5&offset=5"
+        ).get_json()
+        self.assertEqual(second_payload["total"], 12)
+        self.assertEqual(len(second_payload["listings"]), 5)
+        self.assertTrue(second_payload["has_more"])
+        self.assertTrue(
+            {item["id"] for item in first_payload["listings"]}.isdisjoint(
+                {item["id"] for item in second_payload["listings"]}
+            )
+        )
+
+        relevance_first = self.client.get(
+            "/api/listings?status=published&search=Pagination&"
+            "sort=relevance&limit=5&offset=0"
+        ).get_json()
+        relevance_second = self.client.get(
+            "/api/listings?status=published&search=Pagination&"
+            "sort=relevance&limit=5&offset=5"
+        ).get_json()
+        self.assertEqual(relevance_first["total"], 15)
+        self.assertTrue(relevance_first["has_more"])
+        self.assertIsNone(relevance_first["next_cursor"])
+        self.assertTrue(
+            {item["id"] for item in relevance_first["listings"]}.isdisjoint(
+                {item["id"] for item in relevance_second["listings"]}
+            )
+        )
+
     def test_admin_bootstrap_hashes_password_and_login_page_has_no_credentials(self):
         email = "secure-admin@example.test"
         password = "temporary-admin-password"
@@ -267,9 +325,10 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertNotIn("handleRegister", login_html)
         self.assertNotIn("/auth/register", login_html)
 
-    def test_seller_create_publishes_media_and_delete_removes_listing(self):
+    def test_seller_moderation_then_verified_fast_publish_and_delete(self):
         with sqlite3.connect(TEST_DB) as db:
             publisher_id = self._insert_user(db, "Publisher", "publisher@example.test", "owner")
+            db.execute("UPDATE users SET plan_id = 'standard' WHERE id = ?", (publisher_id,))
             db.commit()
         publisher_token = app_module.make_token(publisher_id, "publisher@example.test")
         payload = {
@@ -294,11 +353,35 @@ class TrustFeatureTests(unittest.TestCase):
         created = self.client.post("/api/listings", json=payload, headers=self._auth(publisher_token))
         self.assertEqual(created.status_code, 201, created.get_json())
         listing = created.get_json()["listing"]
-        self.assertEqual(listing["status"], "published")
+        self.assertEqual(listing["status"], "pending")
+        self.assertEqual(listing["moderation_status"], "pending_review")
         self.assertEqual(listing["videos"], payload["videos"])
         self.assertEqual(listing["image_count"], 1)
         self.assertEqual(listing["video_count"], 2)
         self.assertTrue(listing["has_video_tour"])
+
+        catalog = self.client.get("/api/listings?status=published&limit=100").get_json()["listings"]
+        self.assertNotIn(listing["id"], [item["id"] for item in catalog])
+        self.assertEqual(self.client.get(f"/listing/{listing['id']}").status_code, 404)
+
+        queue = self.client.get(
+            "/api/admin/moderation/queue",
+            headers=self._auth(self.admin_token),
+        )
+        self.assertEqual(queue.status_code, 200)
+        self.assertIn(listing["id"], [item["id"] for item in queue.get_json()["queue"]])
+
+        approved = self.client.post(
+            f"/api/admin/listings/{listing['id']}/moderate",
+            headers=self._auth(self.admin_token),
+            json={
+                "action": "approve",
+                "owner_verification_status": "verified",
+                "phone_verification_status": "verified",
+            },
+        )
+        self.assertEqual(approved.status_code, 200, approved.get_json())
+        self.assertEqual(approved.get_json()["status"], "published")
 
         catalog = self.client.get("/api/listings?status=published&limit=100").get_json()["listings"]
         self.assertIn(listing["id"], [item["id"] for item in catalog])
@@ -308,6 +391,23 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertIn(b"/video/upload/example.mp4", detail_page.data)
         detail_html = detail_page.get_data(as_text=True)
         self.assertLess(detail_html.index('id="listing-price"'), detail_html.index('id="gallery"'))
+
+        fast_publish = self.client.post(
+            "/api/listings",
+            json={
+                **payload,
+                "title": "Trusted seller listing",
+                "price": 96_000,
+                "source": "agent",
+                "agencySlug": "unverified-agency",
+            },
+            headers=self._auth(publisher_token),
+        )
+        self.assertEqual(fast_publish.status_code, 201)
+        self.assertEqual(fast_publish.get_json()["listing"]["status"], "published")
+        self.assertEqual(fast_publish.get_json()["listing"]["moderation_status"], "approved")
+        self.assertEqual(fast_publish.get_json()["listing"]["source"], "owner")
+        self.assertIsNone(fast_publish.get_json()["listing"]["agency_slug"])
 
         forbidden = self.client.delete(
             f"/api/listings/{listing['id']}",
@@ -323,6 +423,77 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/listings/{listing['id']}").status_code, 404)
         catalog_after_delete = self.client.get("/api/listings?status=published&limit=100").get_json()["listings"]
         self.assertNotIn(listing["id"], [item["id"] for item in catalog_after_delete])
+
+    def test_seller_cannot_spoof_agency_attribution(self):
+        response = self.client.patch(
+            f"/api/listings/{self.target_id}",
+            headers=self._auth(self.owner_token),
+            json={
+                "title": "Target",
+                "city": "Київ",
+                "district": "Печерський",
+                "propertyType": "квартира",
+                "conditionType": "вторинка",
+                "price": 100_000,
+                "rooms": 2,
+                "area": 50,
+                "floor": 1,
+                "totalFloors": 9,
+                "listingType": "sale",
+                "listingStatus": "active",
+                "images": [],
+                "description": "",
+                "source": "agent",
+                "agencySlug": "unverified-agency",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        listing = response.get_json()["listing"]
+        self.assertEqual(listing["status"], "published")
+        self.assertEqual(listing["source"], "owner")
+        self.assertIsNone(listing["agency_slug"])
+
+    def test_legacy_admin_publish_routes_run_side_effects_once(self):
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE listings SET status = 'pending', moderation_status = 'pending_review' WHERE id = ?",
+                (self.target_id,),
+            )
+            db.commit()
+
+        with mock.patch.object(app_module, "run_dispatch_with_logging") as dispatch:
+            publish = self.client.post(
+                f"/api/admin/listings/{self.target_id}/publish",
+                headers=self._auth(self.admin_token),
+                json={"published": True},
+            )
+            self.assertEqual(publish.status_code, 200)
+            self.assertEqual(dispatch.call_count, 1)
+            self.assertEqual(dispatch.call_args.kwargs["listing_id"], self.target_id)
+
+            repeat = self.client.post(
+                f"/api/admin/listings/{self.target_id}/publish",
+                headers=self._auth(self.admin_token),
+                json={"published": True},
+            )
+            self.assertEqual(repeat.status_code, 200)
+            self.assertEqual(dispatch.call_count, 1)
+
+            with sqlite3.connect(TEST_DB) as db:
+                db.execute(
+                    "UPDATE listings SET status = 'pending', moderation_status = 'pending_review' WHERE id = ?",
+                    (self.target_id,),
+                )
+                db.commit()
+
+            update = self.client.put(
+                f"/api/admin/listings/{self.target_id}",
+                headers=self._auth(self.admin_token),
+                json={"status": "published"},
+            )
+            self.assertEqual(update.status_code, 200)
+            self.assertEqual(dispatch.call_count, 2)
+            self.assertEqual(dispatch.call_args.kwargs["listing_id"], self.target_id)
 
     def test_media_upload_validation_rejects_unsafe_or_oversized_files(self):
         svg = self.client.post(
@@ -607,7 +778,11 @@ class TrustFeatureTests(unittest.TestCase):
         edited = owner_edit.get_json()["listing"]
         self.assertEqual(edited["listing_verification_status"], "pending")
         self.assertFalse(edited["verified_listing"])
-        updated_trust = self.client.get(f"/api/listings/{self.target_id}/trust").get_json()
+        self.assertEqual(edited["status"], "pending")
+        updated_trust = self.client.get(
+            f"/api/listings/{self.target_id}/trust",
+            headers=self._auth(self.owner_token),
+        ).get_json()
         self.assertEqual(updated_trust["history"][0]["old_value"], "verified")
         self.assertEqual(updated_trust["history"][0]["new_value"], "pending")
 
@@ -772,7 +947,12 @@ class TrustFeatureTests(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 200)
-        trust = self.client.get(f"/api/listings/{self.target_id}/trust").get_json()
+        self.assertEqual(response.get_json()["listing"]["status"], "pending")
+        self.assertEqual(self.client.get(f"/api/listings/{self.target_id}").status_code, 404)
+        trust = self.client.get(
+            f"/api/listings/{self.target_id}/trust",
+            headers=self._auth(self.owner_token),
+        ).get_json()
         price_rows = [row for row in trust["history"] if row["field_name"] == "price"]
         self.assertEqual(len(price_rows), 1)
         self.assertEqual(price_rows[0]["old_value"], "100000")
