@@ -14,7 +14,7 @@ jobs:
     name: Build frontend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build static site
         env:
           UA_HOMES_API: ${{ secrets.UA_HOMES_API }}

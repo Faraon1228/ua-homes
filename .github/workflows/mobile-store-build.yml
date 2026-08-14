@@ -29,7 +29,7 @@ jobs:
             artifact: ua-dim-android-aab
             artifact_path: apps/ua_dim/build/app/outputs/bundle/release/app-release.aab
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.47.0"
@@ -85,7 +85,7 @@ jobs:
             bundle_id: com.uadim.app
             artifact: ua-dim-ios-ipa
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.47.0"

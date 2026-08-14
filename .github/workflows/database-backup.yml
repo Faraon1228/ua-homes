@@ -21,7 +21,7 @@ jobs:
       BACKUP_ENCRYPTION_KEY: ${{ secrets.UA_HOMES_BACKUP_ENCRYPTION_KEY }}
       BACKEND_URL: https://backend-production-51964.up.railway.app
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Validate backup secrets
         run: |
