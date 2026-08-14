@@ -110,6 +110,19 @@ const KEYWORD_SUGGESTIONS = [
 ];
 
 const SMART_SEARCH_PATH = "smart-search.html";
+const SELLER_CABINET_PATH = "/seller";
+
+function isLocalPreview() {
+  return typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname);
+}
+
+function getSellerCabinetHref() {
+  return isLocalPreview() ? "/real-estate-demo.html?seller=1" : SELLER_CABINET_PATH;
+}
+
+function getCatalogHref() {
+  return isLocalPreview() ? "/real-estate-demo.html" : "/";
+}
 
 const INITIAL_LISTING_IMAGE_FIELDS = ["", "", ""];
 
@@ -1527,6 +1540,10 @@ function ListingCard({ property, favorite, onToggleFavorite, onOpenTrust, priori
 }
 
 export default function RealEstateApp() {
+  const sellerCabinetMode =
+    typeof window !== "undefined" &&
+    (/^\/seller\/?$/.test(window.location.pathname) ||
+      new URLSearchParams(window.location.search).get("seller") === "1");
   const keywordInputRef = useRef(null);
   const mobileFiltersTriggerRef = useRef(null);
   const mobileFiltersDrawerRef = useRef(null);
@@ -1847,8 +1864,12 @@ export default function RealEstateApp() {
   };
 
   useEffect(() => {
+    if (sellerCabinetMode) {
+      setCatalogLoading(false);
+      return;
+    }
     loadCatalogListings();
-  }, []);
+  }, [sellerCabinetMode]);
 
   useEffect(() => {
     const handleInstallPrompt = (e) => {
@@ -1938,41 +1959,38 @@ export default function RealEstateApp() {
 
   useEffect(() => {
     const authCta = document.getElementById("header-auth-cta");
+    const brandLink = document.getElementById("header-brand-link");
+    if (brandLink) brandLink.setAttribute("href", getCatalogHref());
     if (!authCta) return undefined;
 
     const mobileLabel = authCta.querySelector("[data-header-auth-mobile]");
     const desktopLabel = authCta.querySelector("[data-header-auth-desktop]");
+    if (sellerCabinetMode) {
+      if (mobileLabel) mobileLabel.textContent = "Каталог";
+      if (desktopLabel) desktopLabel.textContent = "До каталогу";
+      authCta.setAttribute("href", getCatalogHref());
+      authCta.setAttribute("aria-label", "Повернутися до каталогу житла");
+      return undefined;
+    }
+
     const accessibleLabel = currentUser ? "Відкрити кабінет продавця" : "Увійти або зареєструватися";
 
     if (mobileLabel) mobileLabel.textContent = currentUser ? "Кабінет" : "Увійти";
     if (desktopLabel) desktopLabel.textContent = currentUser ? "Кабінет продавця" : "Увійти / Зареєструватися";
+    authCta.setAttribute("href", getSellerCabinetHref());
     authCta.setAttribute("aria-label", accessibleLabel);
-
-    const openAuthSection = (event) => {
-      event.preventDefault();
-      if (!currentUser) setAuthMode("login");
-      const authSection = document.getElementById("auth");
-      if (!authSection) return;
-      authSection.scrollIntoView({ behavior: getPreferredScrollBehavior(), block: "start" });
-      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#auth`);
-      window.requestAnimationFrame(() => {
-        if (currentUser) {
-          authSection.querySelector("button")?.focus({ preventScroll: true });
-        } else {
-          document.getElementById("auth-email")?.focus({ preventScroll: true });
-        }
-      });
-    };
-
-    authCta.addEventListener("click", openAuthSection);
-    return () => authCta.removeEventListener("click", openAuthSection);
-  }, [currentUser]);
+    return undefined;
+  }, [currentUser, sellerCabinetMode]);
 
   // URL fragments stay client-side, keeping reset tokens out of server and CDN logs.
   useEffect(() => {
     const params = new URLSearchParams(window.location.hash.slice(1));
     const token = params.get("reset_token");
     if (!token) return;
+    if (!sellerCabinetMode) {
+      window.location.replace(`${getSellerCabinetHref()}${window.location.hash}`);
+      return;
+    }
     resetTokenRef.current = token;
     window.history.replaceState(
       null,
@@ -1994,7 +2012,7 @@ export default function RealEstateApp() {
       });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [sellerCabinetMode]);
 
   const loadMyListings = async () => {
     if (!authToken) {
@@ -2117,6 +2135,23 @@ export default function RealEstateApp() {
     if (target) {
       target.scrollIntoView({ behavior: getPreferredScrollBehavior(), block: "start" });
     }
+  };
+  const openSellerCabinet = (focusPublishStatus = false) => {
+    if (typeof window === "undefined") return;
+    if (!sellerCabinetMode) {
+      window.location.assign(getSellerCabinetHref());
+      return;
+    }
+    const cabinet = document.getElementById("auth");
+    if (!cabinet) return;
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#auth`);
+    window.requestAnimationFrame(() => {
+      cabinet.scrollIntoView({ behavior: getPreferredScrollBehavior(), block: "start" });
+      window.requestAnimationFrame(() => {
+        const focusTarget = focusPublishStatus ? document.getElementById("publish-success") : cabinet;
+        focusTarget?.focus({ preventScroll: true });
+      });
+    });
   };
   const activeFilters = useMemo(() => {
     const items = [];
@@ -2738,6 +2773,7 @@ export default function RealEstateApp() {
       setMediaUploadStatus("");
       setShowCreateListingModal(false);
       await Promise.all([loadMyListings(), loadCatalogListings(true)]);
+      openSellerCabinet(true);
     } catch (error) {
       setListingMessage(error.message || "Не вдалося зберегти оголошення");
     } finally {
@@ -2875,6 +2911,10 @@ export default function RealEstateApp() {
   useEffect(() => {
     const handleAddHash = () => {
       if (window.location.hash !== "#add") return;
+      if (!sellerCabinetMode) {
+        window.location.assign(`${getSellerCabinetHref()}#add`);
+        return;
+      }
       const anchor = document.getElementById("add");
       if (anchor) {
         const top = anchor.getBoundingClientRect().top + window.scrollY - 96;
@@ -2891,7 +2931,7 @@ export default function RealEstateApp() {
     handleAddHash();
     window.addEventListener("hashchange", handleAddHash);
     return () => window.removeEventListener("hashchange", handleAddHash);
-  }, [currentUser]);
+  }, [currentUser, sellerCabinetMode]);
 
   return (
     <div className="bg-slate-50 text-slate-900">
@@ -2987,7 +3027,19 @@ export default function RealEstateApp() {
        </div>
       ) : null}
 
-      <section className="mx-auto max-w-7xl px-4 pb-12">
+      <section className={`mx-auto px-4 pb-12 ${sellerCabinetMode ? "max-w-6xl pt-8 sm:pt-12" : "max-w-7xl"}`}>
+       {sellerCabinetMode ? (
+         <div className="mb-6 overflow-hidden rounded-[32px] bg-[radial-gradient(circle_at_top_right,rgba(59,130,246,.35),transparent_38%),linear-gradient(135deg,#0f172a,#1e3a8a)] p-6 text-white shadow-2xl shadow-slate-900/15 sm:p-8">
+           <p className="text-xs font-black uppercase tracking-[0.24em] text-blue-200">Простір продавця</p>
+           <h1 className="mt-2 max-w-3xl text-3xl font-black leading-tight sm:text-5xl">
+             Керуйте оголошеннями без зайвих кроків
+           </h1>
+           <p className="mt-3 max-w-2xl text-sm leading-relaxed text-slate-200 sm:text-base">
+             Публікуйте житло, додавайте фото та змінюйте дані в одному зрозумілому кабінеті.
+           </p>
+         </div>
+       ) : null}
+       {!sellerCabinetMode ? (
        <div className="mb-4 rounded-[24px] border border-blue-200 bg-white p-3 shadow-sm lg:hidden">
          <button
            ref={mobileFiltersTriggerRef}
@@ -3008,10 +3060,24 @@ export default function RealEstateApp() {
            </span>
          </button>
        </div>
+       ) : null}
 
-       <div className="grid gap-6 lg:grid-cols-12">
-          <aside id="add" className="order-2 min-w-0 space-y-6 self-start lg:order-1 lg:col-span-4 lg:sticky lg:top-24">
-            <div id="auth" className="scroll-mt-28 rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+       <div className={sellerCabinetMode ? "block" : "grid gap-6 lg:grid-cols-12"}>
+          <aside
+            id="add"
+            className={
+              sellerCabinetMode
+                ? "mx-auto min-w-0 max-w-5xl"
+                : "order-2 min-w-0 space-y-6 self-start lg:order-1 lg:col-span-4 lg:sticky lg:top-24"
+            }
+          >
+            {sellerCabinetMode ? (
+            <div
+              id="auth"
+              tabIndex={-1}
+              aria-labelledby="seller-cabinet-title"
+              className="scroll-mt-28 rounded-[32px] border border-slate-200 bg-white p-5 shadow-xl shadow-slate-900/5 sm:p-7"
+            >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-3">
                   <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-slate-950 text-sm font-black text-white">
@@ -3019,7 +3085,7 @@ export default function RealEstateApp() {
                   </span>
                   <div className="min-w-0">
                     <p className="text-xs font-black uppercase tracking-wide text-blue-700">Кабінет продавця</p>
-                  <h2 className="mt-1 text-xl font-black text-slate-900">
+                  <h2 id="seller-cabinet-title" className="mt-1 text-xl font-black text-slate-900">
                       {currentUser ? currentUser.name : "Публікуйте житло самостійно"}
                   </h2>
                   </div>
@@ -3250,14 +3316,14 @@ export default function RealEstateApp() {
                     <button
                       type="submit"
                       disabled={authLoading}
-                      className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
+                      className="inline-flex min-h-12 items-center justify-center rounded-2xl bg-blue-600 px-5 text-sm font-black text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
                     >
                       {authLoading ? "Зачекайте..." : authMode === "login" ? "Увійти" : "Зареєструватися"}
                     </button>
                     <button
                       type="button"
                       onClick={() => { setAuthMode((current) => (current === "login" ? "register" : "login")); setAuthError(""); setAuthSuccess(""); }}
-                      className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                      className="inline-flex min-h-12 items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 text-sm font-bold text-slate-700 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
                     >
                       {authMode === "login" ? "Створити акаунт" : "Уже є акаунт"}
                     </button>
@@ -3265,7 +3331,7 @@ export default function RealEstateApp() {
                       <button
                         type="button"
                         onClick={() => { setAuthMode("forgot"); setAuthError(""); setAuthSuccess(""); setForgotError(""); setForgotEmail(authForm.email); setForgotDone(false); }}
-                        className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 hover:text-blue-700"
+                        className="inline-flex min-h-12 items-center justify-center rounded-2xl px-4 text-sm font-bold text-slate-600 transition hover:bg-slate-100 hover:text-blue-700"
                       >
                         Забули пароль?
                       </button>
@@ -3275,7 +3341,7 @@ export default function RealEstateApp() {
                 )
               ) : (
                 <div className="mt-4 space-y-4">
-                  <section className="rounded-3xl bg-slate-950 p-4 text-white">
+                  <section className="rounded-[28px] bg-[linear-gradient(135deg,#0f172a,#1e3a8a)] p-5 text-white shadow-xl shadow-slate-900/10 sm:p-6">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div className="min-w-0">
                         <p className="truncate text-sm font-semibold text-slate-300">{currentUser.email}</p>
@@ -3284,7 +3350,7 @@ export default function RealEstateApp() {
                       <button
                         type="button"
                         onClick={() => (planLimitReached ? openPlansModal() : openCreateListingModal())}
-                        className="rounded-2xl bg-blue-600 px-4 py-3 text-sm font-black text-white transition hover:bg-blue-700"
+                        className="inline-flex min-h-12 w-full items-center justify-center rounded-2xl bg-white px-5 text-sm font-black text-slate-950 shadow-lg transition hover:bg-blue-50 sm:w-auto"
                       >
                         {planLimitReached
                           ? "Оновити тариф"
@@ -3293,13 +3359,13 @@ export default function RealEstateApp() {
                             : "Створити оголошення"}
                       </button>
                     </div>
-                    <dl className="mt-4 grid grid-cols-3 gap-2">
+                    <dl className="mt-5 grid grid-cols-3 gap-2 sm:gap-3">
                       {[
                         ["Активні", activeMyListingsCount],
                         ["Усього", myListings.length],
                         ["Фото", myListingPhotoCount],
                       ].map(([label, value]) => (
-                        <div key={label} className="rounded-2xl bg-white/10 px-3 py-2">
+                        <div key={label} className="rounded-2xl border border-white/10 bg-white/10 px-3 py-3">
                           <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{label}</dt>
                           <dd className="mt-1 text-xl font-black text-white">{value}</dd>
                         </div>
@@ -3344,7 +3410,7 @@ export default function RealEstateApp() {
                         <button
                           type="button"
                           onClick={() => openPlansModal()}
-                          className="rounded-xl bg-blue-600 px-3 py-2 text-xs font-bold text-white"
+                          className="inline-flex min-h-11 items-center justify-center rounded-xl bg-blue-600 px-4 text-xs font-black text-white transition hover:bg-blue-700"
                         >
                           {planIsFree ? "Обрати тариф" : "Змінити тариф"}
                         </button>
@@ -3352,7 +3418,7 @@ export default function RealEstateApp() {
                           type="button"
                           onClick={switchAccountType}
                           disabled={accountTypeSwitching}
-                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60"
+                          className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-xs font-bold text-slate-700 transition hover:border-blue-200 hover:bg-blue-50 disabled:opacity-60"
                         >
                           {accountTypeSwitching
                             ? "Перемикаємо…"
@@ -3365,7 +3431,7 @@ export default function RealEstateApp() {
                         <button
                           type="button"
                           onClick={logoutProfile}
-                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                          className="inline-flex min-h-11 items-center justify-center rounded-xl px-4 text-xs font-bold text-slate-500 transition hover:bg-rose-50 hover:text-rose-700"
                         >
                           Вийти
                         </button>
@@ -3373,7 +3439,12 @@ export default function RealEstateApp() {
                     </div>
                   </details>
                   {publishSuccess ? (
-                    <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-4" role="status">
+                    <div
+                      id="publish-success"
+                      tabIndex={-1}
+                      className="rounded-2xl border border-emerald-300 bg-emerald-50 p-4"
+                      role="status"
+                    >
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
                           <p className="font-black text-emerald-900">
@@ -3438,14 +3509,14 @@ export default function RealEstateApp() {
                       ))}
                     </div>
                     {visibleMyListings.length ? (
-                      <ul className="mt-3 grid gap-3 xl:grid-cols-2">
+                      <ul className="mt-4 grid gap-4 lg:grid-cols-2">
                         {visibleMyListings.map((item) => {
                           const image = Array.isArray(item.images) ? item.images.find(Boolean) : "";
                           const photoCount = Number(item.image_count ?? (Array.isArray(item.images) ? item.images.filter(Boolean).length : 0));
                           const videoCount = Number(item.video_count ?? (Array.isArray(item.videos) ? item.videos.filter(Boolean).length : 0));
                           const completeness = getListingCompleteness(item).score;
                           return (
-                          <li key={item.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                          <li key={item.id} className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg">
                             <div className="grid sm:grid-cols-[150px_1fr]">
                               <div className="aspect-[16/9] bg-slate-200 sm:aspect-auto sm:min-h-[160px]">
                                 {image ? (
@@ -3488,21 +3559,21 @@ export default function RealEstateApp() {
                                 <div className="mt-4 flex flex-wrap gap-2">
                                   <a
                                     href={`/listing/${item.id}`}
-                                    className="inline-flex min-h-11 items-center rounded-xl border border-slate-200 px-3 text-xs font-bold text-slate-700"
+                                    className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-200 px-3 text-xs font-bold text-slate-700 transition hover:bg-slate-50"
                                   >
-                                    На сайті
+                                    Переглянути
                                   </a>
                               <button
                                 type="button"
                                 onClick={() => openEditListingModal(item)}
-                                className="min-h-11 rounded-xl border border-blue-200 bg-blue-50 px-3 text-xs font-bold text-blue-700 transition hover:bg-blue-100"
+                                className="min-h-11 rounded-xl bg-blue-600 px-4 text-xs font-black text-white transition hover:bg-blue-700"
                               >
                                 Редагувати
                               </button>
                                   <button
                                     type="button"
                                     onClick={() => requestDeleteListing(item)}
-                                    className="min-h-11 rounded-xl border border-red-200 bg-red-50 px-3 text-xs font-bold text-red-700 transition hover:bg-red-100"
+                                    className="min-h-11 rounded-xl px-3 text-xs font-bold text-slate-500 transition hover:bg-red-50 hover:text-red-700"
                                   >
                                     Видалити
                                   </button>
@@ -3522,6 +3593,8 @@ export default function RealEstateApp() {
                 </div>
               )}
             </div>
+            ) : (
+            <>
 
             <div
               id="search"
@@ -4020,8 +4093,11 @@ export default function RealEstateApp() {
                 )}
               </div>
             </div>
+            </>
+            )}
           </aside>
 
+          {!sellerCabinetMode ? (
           <div className="order-1 space-y-4 lg:order-2 lg:col-span-8">
             <div
               id="results"
@@ -4183,10 +4259,12 @@ export default function RealEstateApp() {
               </div>
             )}
           </div>
+          ) : null}
         </div>
       </section>
 
-      {pwaOfferEligible &&
+      {!sellerCabinetMode &&
+      pwaOfferEligible &&
       !pwaInstalled &&
       !pwaInstallDismissed &&
       !pwaHiddenForSession &&
@@ -4789,7 +4867,10 @@ if (typeof document !== "undefined") {
       root.dataset.mounted = "true";
       window.ReactDOM.createRoot(root).render(React.createElement(RealEstateApp));
     };
-    const hero = document.querySelector('[data-role="homepage-hero"]');
+    const sellerPage =
+      /^\/seller\/?$/.test(window.location.pathname) ||
+      new URLSearchParams(window.location.search).get("seller") === "1";
+    const hero = sellerPage ? null : document.querySelector('[data-role="homepage-hero"]');
     const canObserveHeroPaint =
       hero &&
       "PerformanceObserver" in window &&

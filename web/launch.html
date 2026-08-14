@@ -32,6 +32,12 @@
         }
       }
     }
+    document.addEventListener('DOMContentLoaded', () => {
+      if (!['localhost', '127.0.0.1'].includes(window.location.hostname)) return;
+      document.querySelectorAll('[data-seller-link]').forEach((link) => {
+        link.href = 'real-estate-demo.html?seller=1#add';
+      });
+    });
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
@@ -63,7 +69,7 @@
         <a href="#eoselya" class="hover:text-blue-700 transition">єОселя</a>
       </div>
       <div class="flex items-center gap-2">
-        <a href="real-estate-demo.html#add"
+        <a href="/seller#add" data-seller-link
            class="bg-yellow-400 hover:bg-yellow-300 text-blue-900 text-sm font-bold px-4 py-2.5 rounded-xl transition shadow-md shadow-yellow-300/40">
           + Додати оголошення
         </a>
@@ -95,7 +101,7 @@
            class="bg-yellow-400 hover:bg-yellow-300 text-blue-900 font-black text-lg px-10 py-4 rounded-2xl transition shadow-xl shadow-yellow-400/30">
           🏠 Переглянути об'єкти
         </a>
-        <a href="real-estate-demo.html#add"
+        <a href="/seller#add" data-seller-link
            class="bg-white/10 hover:bg-white/20 text-white font-semibold text-lg px-10 py-4 rounded-2xl border border-white/30 transition">
           + Додати оголошення
         </a>
@@ -304,7 +310,7 @@
            class="bg-yellow-400 hover:bg-yellow-300 text-blue-900 font-black text-lg px-10 py-4 rounded-2xl transition shadow-xl">
           🏠 Відкрити застосунок
         </a>
-        <a href="real-estate-demo.html#add"
+        <a href="/seller#add" data-seller-link
            class="bg-white/10 hover:bg-white/20 text-white font-semibold text-lg px-10 py-4 rounded-2xl border border-white/30 transition">
           + Додати оголошення
         </a>

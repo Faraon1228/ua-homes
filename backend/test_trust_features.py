@@ -781,6 +781,7 @@ class TrustFeatureTests(unittest.TestCase):
         with (
             mock.patch.object(app_module, "_production_secret_required", return_value=True),
             mock.patch.object(app_module, "_email_provider_configured", return_value=True),
+            mock.patch.object(app_module, "public_seller_url", return_value="https://ua-dim.com/seller"),
             mock.patch.object(app_module, "_send_email", return_value=True) as send_email,
         ):
             response = self.client.post(
@@ -793,6 +794,8 @@ class TrustFeatureTests(unittest.TestCase):
         html_body = send_email.call_args.args[3]
         self.assertIn("#reset_token=", text_body)
         self.assertIn("#reset_token=", html_body)
+        self.assertIn("/seller#reset_token=", text_body)
+        self.assertIn("/seller#reset_token=", html_body)
         self.assertNotIn("?reset_token=", text_body)
         self.assertNotIn("?reset_token=", html_body)
 

@@ -68,6 +68,12 @@
   to = "/real-estate-demo.html"
   status = 200
 
+# Dedicated seller cabinet route
+[[redirects]]
+  from = "/seller"
+  to = "/real-estate-demo.html"
+  status = 200
+
 # /admin → admin panel
 [[redirects]]
   from = "/admin"

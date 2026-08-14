@@ -69,6 +69,14 @@ python3 app.py
 Обидва застосунки мають окремі Android/iOS збірки та можуть бути встановлені
 одночасно.
 
+Android release-збірки підписуються окремими upload keys через локальні
+`android/key.properties` і GitHub Actions secrets. Ключі та паролі ігноруються
+git. Workflow `Build store releases` створює підписані `.aab` для Google Play.
+
+iOS store-збірка використовує `Apple Distribution` certificate і App Store
+provisioning profile з GitHub Secrets. Без платної Apple Developer Program
+залишається доступною лише unsigned CI-збірка або локальний Development build.
+
 ## 🛠️ Архітектура
 
 ### Стек технологій

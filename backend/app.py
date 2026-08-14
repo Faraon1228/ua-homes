@@ -3582,6 +3582,13 @@ def public_app_url() -> str:
     return f"{public_app_base_url()}/real-estate-demo.html"
 
 
+def public_seller_url() -> str:
+    base = public_app_base_url()
+    if urlsplit(base).hostname in {"localhost", "127.0.0.1"}:
+        return f"{base}/real-estate-demo.html?seller=1"
+    return f"{base}/seller"
+
+
 # ─── S3 / Direct Upload Support ──────────────────────────────────────────────
 
 def generate_presigned_upload_url(
@@ -4620,7 +4627,7 @@ def forgot_password():
     )
     db.commit()
 
-    reset_url = f"{public_app_url()}#reset_token={raw_token}"
+    reset_url = f"{public_seller_url()}#reset_token={raw_token}"
     subject = "Відновлення пароля — UA-Dim"
     body_text = f"Для відновлення пароля перейдіть за посиланням (дійсне 30 хв): {reset_url}"
     body_html = (

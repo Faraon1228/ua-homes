@@ -29,6 +29,7 @@ jobs:
             build: apk --release
             artifact: drive-community-android-apk
             artifact_path: build/app/outputs/flutter-apk/app-release.apk
+            fingerprint: c6044313521a97dd62aecb0e800c5b6eafd20e463017a88398ef006bb2725967
           - app: DriveCommunity
             platform: iOS
             runner: macos-15
@@ -43,6 +44,7 @@ jobs:
             build: apk --release
             artifact: ua-dim-android-apk
             artifact_path: apps/ua_dim/build/app/outputs/flutter-apk/app-release.apk
+            fingerprint: 2ba6428754eaba71fb0ea21f721773be5288c98663f30e18e11212272eb22cde
           - app: UA-Dim
             platform: iOS
             runner: macos-15
@@ -57,6 +59,22 @@ jobs:
         with:
           channel: stable
           cache: true
+      - name: Configure Android signing
+        if: matrix.platform == 'Android'
+        env:
+          KEYSTORE_BASE64: ${{ matrix.app == 'UA-Dim' && secrets.UA_DIM_ANDROID_KEYSTORE_BASE64 || secrets.DRIVE_COMMUNITY_ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ matrix.app == 'UA-Dim' && secrets.UA_DIM_ANDROID_KEYSTORE_PASSWORD || secrets.DRIVE_COMMUNITY_ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ matrix.app == 'UA-Dim' && 'ua_dim_upload' || 'drive_community_upload' }}
+        run: |
+          test -n "$KEYSTORE_BASE64" || { echo "Android keystore secret is missing"; exit 1; }
+          test -n "$KEYSTORE_PASSWORD" || { echo "Android keystore password is missing"; exit 1; }
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "${{ matrix.directory }}/android/app/upload-keystore.jks"
+          {
+            printf 'storePassword=%s\n' "$KEYSTORE_PASSWORD"
+            printf 'keyPassword=%s\n' "$KEYSTORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+            printf 'storeFile=upload-keystore.jks\n'
+          } > "${{ matrix.directory }}/android/key.properties"
       - run: flutter pub get
         working-directory: ${{ matrix.directory }}
       - run: flutter analyze lib test
@@ -65,6 +83,13 @@ jobs:
         working-directory: ${{ matrix.directory }}
       - run: flutter build ${{ matrix.build }}
         working-directory: ${{ matrix.directory }}
+      - name: Verify Android release signature
+        if: matrix.platform == 'Android'
+        run: |
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)"
+          test -x "$APKSIGNER" || { echo "apksigner was not found"; exit 1; }
+          "$APKSIGNER" verify --print-certs "${{ matrix.artifact_path }}" |
+            grep -F "Signer #1 certificate SHA-256 digest: ${{ matrix.fingerprint }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
