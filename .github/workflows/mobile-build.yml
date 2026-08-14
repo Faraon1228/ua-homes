@@ -88,8 +88,19 @@ jobs:
         run: |
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)"
           test -x "$APKSIGNER" || { echo "apksigner was not found"; exit 1; }
-          "$APKSIGNER" verify --print-certs "${{ matrix.artifact_path }}" |
-            grep -F "Signer #1 certificate SHA-256 digest: ${{ matrix.fingerprint }}"
+          CERT_OUTPUT="$("$APKSIGNER" verify --print-certs "${{ matrix.artifact_path }}")"
+          printf '%s\n' "$CERT_OUTPUT"
+          ACTUAL_FINGERPRINT="$(
+            printf '%s\n' "$CERT_OUTPUT" |
+              sed -n 's/^Signer #1 certificate SHA-256 digest: //p' |
+              head -1 |
+              tr '[:upper:]' '[:lower:]' |
+              tr -d ':[:space:]'
+          )"
+          test "$ACTUAL_FINGERPRINT" = "${{ matrix.fingerprint }}" || {
+            echo "Unexpected Android signing certificate: $ACTUAL_FINGERPRINT"
+            exit 1
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
