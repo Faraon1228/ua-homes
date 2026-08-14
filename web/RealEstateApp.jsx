@@ -2136,7 +2136,7 @@ export default function RealEstateApp() {
       target.scrollIntoView({ behavior: getPreferredScrollBehavior(), block: "start" });
     }
   };
-  const openSellerCabinet = (focusPublishStatus = false) => {
+  const openSellerCabinet = (focusMyListings = false) => {
     if (typeof window === "undefined") return;
     if (!sellerCabinetMode) {
       window.location.assign(getSellerCabinetHref());
@@ -2144,12 +2144,14 @@ export default function RealEstateApp() {
     }
     const cabinet = document.getElementById("auth");
     if (!cabinet) return;
-    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#auth`);
+    const destination = focusMyListings ? document.getElementById("my-listings") : cabinet;
+    if (!destination) return;
+    const destinationHash = focusMyListings ? "my-listings" : "auth";
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${destinationHash}`);
     window.requestAnimationFrame(() => {
-      cabinet.scrollIntoView({ behavior: getPreferredScrollBehavior(), block: "start" });
+      destination.scrollIntoView({ behavior: getPreferredScrollBehavior(), block: "start" });
       window.requestAnimationFrame(() => {
-        const focusTarget = focusPublishStatus ? document.getElementById("publish-success") : cabinet;
-        focusTarget?.focus({ preventScroll: true });
+        destination.focus({ preventScroll: true });
       });
     });
   };
@@ -2434,6 +2436,7 @@ export default function RealEstateApp() {
   };
 
   const closeListingModal = () => {
+    if (listingSubmitting) return;
     setShowCreateListingModal(false);
     setEditingListingId(null);
     setListingForm(createInitialListingForm());
@@ -2695,6 +2698,10 @@ export default function RealEstateApp() {
     }
     setListingSubmitting(true);
     setListingMessage("");
+    const isEditing = Boolean(editingListingId);
+    setMediaUploadStatus(
+      isEditing ? "Зміни зберігаються…" : "Оголошення завантажується… Не закривайте сторінку."
+    );
     try {
       const imageUrls = listingForm.images.filter(Boolean).slice(0, 8);
       const uploadedStorageUrls = selectedListingFiles.length
@@ -2726,7 +2733,7 @@ export default function RealEstateApp() {
         videos: [...uploadedVideoUrls, ...videoUrls].slice(0, 2),
       };
 
-      const isEditing = Boolean(editingListingId);
+      setMediaUploadStatus(isEditing ? "Оновлюємо оголошення…" : "Публікуємо оголошення…");
       const response = await fetch(getApiUrl(isEditing ? `/listings/${editingListingId}` : "/listings"), {
         method: isEditing ? "PATCH" : "POST",
         headers: {
@@ -2757,6 +2764,7 @@ export default function RealEstateApp() {
         title: result.listing?.title || payload.title,
         isEditing,
       });
+      setMyListingsFilter("all");
       setListingMessage(
         `${
           isEditing
@@ -3103,7 +3111,7 @@ export default function RealEstateApp() {
 
               {authError ? <div id="auth-error" role="alert" className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{authError}</div> : null}
               {authSuccess ? <div id="auth-success" role="status" aria-live="polite" className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{authSuccess}</div> : null}
-              {listingMessage ? <div id="listing-message" role="status" aria-live="polite" className="mt-3 rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">{listingMessage}</div> : null}
+              {listingMessage && !showCreateListingModal ? <div id="listing-message" role="status" aria-live="polite" className="mt-3 rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">{listingMessage}</div> : null}
 
               {!currentUser ? (
                 authMode === "forgot" ? (
@@ -3441,16 +3449,20 @@ export default function RealEstateApp() {
                   {publishSuccess ? (
                     <div
                       id="publish-success"
-                      tabIndex={-1}
                       className="rounded-2xl border border-emerald-300 bg-emerald-50 p-4"
                       role="status"
+                      aria-live="polite"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
                           <p className="font-black text-emerald-900">
-                            {publishSuccess.isEditing ? "Зміни вже на сайті" : "Оголошення опубліковано"}
+                            {publishSuccess.isEditing
+                              ? "Зміни успішно завантажено"
+                              : "Оголошення успішно завантажено й опубліковано"}
                           </p>
-                          <p className="mt-1 text-sm text-emerald-800">{publishSuccess.title}</p>
+                          <p className="mt-1 text-sm text-emerald-800">
+                            {publishSuccess.title} уже доступне в розділі «Мої оголошення».
+                          </p>
                         </div>
                         <div className="flex gap-2">
                           {publishSuccess.id ? (
@@ -3474,9 +3486,14 @@ export default function RealEstateApp() {
                     </div>
                   ) : null}
 
-                  <div className="rounded-3xl border border-slate-200 bg-slate-50 p-3 sm:p-4">
+                  <div
+                    id="my-listings"
+                    tabIndex={-1}
+                    aria-labelledby="my-listings-title"
+                    className="scroll-mt-4 rounded-3xl border border-slate-200 bg-slate-50 p-3 outline-none focus-visible:ring-4 focus-visible:ring-blue-200 sm:p-4"
+                  >
                     <div className="flex items-center justify-between gap-3">
-                      <p className="text-xs font-black uppercase tracking-wide text-slate-500">Мої оголошення</p>
+                      <h2 id="my-listings-title" className="text-xs font-black uppercase tracking-wide text-slate-500">Мої оголошення</h2>
                       {myListingsLoading ? (
                         <span className="text-xs text-slate-500">Завантаження…</span>
                       ) : (
@@ -4407,8 +4424,9 @@ export default function RealEstateApp() {
                   closeListingModal();
                   setListingMessage("");
                 }}
+                disabled={listingSubmitting}
                 aria-label="Закрити форму оголошення"
-                className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700"
+                className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 ✕
               </button>
@@ -4417,7 +4435,7 @@ export default function RealEstateApp() {
             <form
               onSubmit={handleCreateListing}
               aria-busy={listingSubmitting}
-              aria-describedby={listingMessage ? "listing-message" : undefined}
+              aria-describedby={listingMessage ? "listing-form-message" : undefined}
               className="mt-6 grid gap-4 md:grid-cols-2"
             >
               <div className="md:col-span-2">
@@ -4585,21 +4603,23 @@ export default function RealEstateApp() {
               </div>
               <div className="md:col-span-2">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <label className="text-xs font-bold uppercase tracking-wide text-slate-500">Фото (URL / файли)</label>
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Фото оголошення</p>
+                    <p className="mt-1 text-xs text-slate-500">Додайте до 8 фотографій об'єкта.</p>
+                  </div>
                   <button
                     type="button"
                     onClick={addListingImageField}
-                    className="rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700"
+                    className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
                   >
-                    + Додати URL
+                    Додати фото за посиланням
                   </button>
                 </div>
-                <div className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4">
+                <div className="mt-3 rounded-3xl border border-blue-100 bg-blue-50/70 p-4">
                   <div className="grid gap-2 sm:grid-cols-2">
-                    <label className="flex min-h-32 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-5 text-center text-sm font-semibold text-slate-700 transition hover:border-blue-300 hover:bg-blue-50">
-                      <span className="text-lg font-black text-blue-600">⬆</span>
-                      <span>Файли або галерея</span>
-                      <span className="text-xs font-medium text-slate-500">До 8 фото, 10 МБ кожне. JPG, PNG, WEBP, AVIF, HEIC/HEIF.</span>
+                    <label className="flex min-h-14 cursor-pointer items-center justify-center gap-3 rounded-2xl bg-blue-600 px-5 text-center text-sm font-black text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 focus-within:ring-4 focus-within:ring-blue-200">
+                      <span className="text-xl" aria-hidden="true">＋</span>
+                      <span>Обрати фото</span>
                       <input
                         type="file"
                         multiple
@@ -4609,10 +4629,9 @@ export default function RealEstateApp() {
                       />
                     </label>
                     {isMobileDevice ? (
-                      <label className="flex min-h-32 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-5 text-center text-sm font-semibold text-slate-700 transition hover:border-blue-300 hover:bg-blue-50">
-                        <span className="text-lg" aria-hidden="true">📷</span>
+                      <label className="flex min-h-14 cursor-pointer items-center justify-center gap-3 rounded-2xl border border-blue-200 bg-white px-5 text-center text-sm font-black text-blue-700 transition hover:border-blue-300 hover:bg-blue-100 focus-within:ring-4 focus-within:ring-blue-200">
+                        <span className="text-xl" aria-hidden="true">📷</span>
                         <span>Зробити фото</span>
-                        <span className="text-xs font-medium text-slate-500">Відкрити основну камеру пристрою.</span>
                         <input
                           type="file"
                           accept="image/*"
@@ -4623,6 +4642,9 @@ export default function RealEstateApp() {
                       </label>
                     ) : null}
                   </div>
+                  <p className="mt-3 text-xs leading-relaxed text-slate-600">
+                    JPG, PNG, WEBP, AVIF, HEIC/HEIF · до 10 МБ кожне.
+                  </p>
                   {selectedListingFiles.length ? (
                     <div className="mt-3 space-y-3">
                       <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3">
@@ -4716,12 +4738,14 @@ export default function RealEstateApp() {
                 </div>
               </div>
               <div className="md:col-span-2">
-                <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Відео</p>
-                <div className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4">
-                  <label className="flex min-h-32 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-5 text-center text-sm font-semibold text-slate-700 transition hover:border-blue-300 hover:bg-blue-50">
-                    <span className="text-xl" aria-hidden="true">🎥</span>
-                    <span>Додати відео</span>
-                    <span className="text-xs font-medium text-slate-500">До 2 відео, 100 МБ кожне. MP4, MOV з iPhone, WEBM або M4V.</span>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Відео оголошення</p>
+                  <p className="mt-1 text-xs text-slate-500">Додайте до 2 коротких відео або відеотурів.</p>
+                </div>
+                <div className="mt-3 rounded-3xl border border-violet-100 bg-violet-50/70 p-4">
+                  <label className="flex min-h-14 cursor-pointer items-center justify-center gap-3 rounded-2xl bg-slate-900 px-5 text-center text-sm font-black text-white shadow-lg shadow-slate-900/15 transition hover:bg-violet-700 focus-within:ring-4 focus-within:ring-violet-200">
+                    <span className="text-xl" aria-hidden="true">▶</span>
+                    <span>Обрати відео</span>
                     <input
                       type="file"
                       multiple
@@ -4730,6 +4754,9 @@ export default function RealEstateApp() {
                       className="sr-only"
                     />
                   </label>
+                  <p className="mt-3 text-xs leading-relaxed text-slate-600">
+                    MP4, MOV з iPhone, WEBM або M4V · до 100 МБ кожне.
+                  </p>
                   {listingForm.videos.length || selectedListingVideoPreviews.length ? (
                     <div className="mt-3 grid gap-3 sm:grid-cols-2">
                       {listingForm.videos.map((videoUrl, index) => (
@@ -4768,13 +4795,24 @@ export default function RealEstateApp() {
                   {mediaUploadStatus}
                 </p>
               ) : null}
+              {listingMessage ? (
+                <p id="listing-form-message" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-800 md:col-span-2" role="alert">
+                  {listingMessage}
+                </p>
+              ) : null}
               <div className="flex flex-wrap gap-3 md:col-span-2">
                 <button
                   type="submit"
                   disabled={listingSubmitting}
-                  className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
+                  className="inline-flex min-h-12 items-center justify-center rounded-2xl bg-blue-600 px-5 text-sm font-black text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                  {listingSubmitting ? "Зберігаємо…" : editingListingId ? "Зберегти зміни" : "Публікувати оголошення"}
+                  {listingSubmitting
+                    ? editingListingId
+                      ? "Зміни зберігаються…"
+                      : "Оголошення завантажується…"
+                    : editingListingId
+                      ? "Зберегти зміни"
+                      : "Опублікувати оголошення"}
                 </button>
                 {editingListingId ? (
                   <button
@@ -4799,7 +4837,8 @@ export default function RealEstateApp() {
                     closeListingModal();
                     setListingMessage("");
                   }}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                  disabled={listingSubmitting}
+                  className="min-h-12 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Скасувати
                 </button>
