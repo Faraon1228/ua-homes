@@ -25,6 +25,7 @@ import sqlite3
 import secrets
 import statistics
 import datetime
+import tempfile
 import time
 import sys
 from decimal import Decimal, InvalidOperation
@@ -34,7 +35,7 @@ from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import bcrypt
 import jwt
-from flask import Flask, Response, g, jsonify, request
+from flask import Flask, Response, g, jsonify, request, send_file
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -1270,6 +1271,15 @@ ALERTS_PUSH_WEBHOOK_URL = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_URL", "")
 ALERTS_PUSH_WEBHOOK_BEARER = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_BEARER", "").strip()
 
 
+@app.before_request
+def assign_request_id():
+    incoming_request_id = request.headers.get("X-Request-ID", "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", incoming_request_id):
+        g.request_id = incoming_request_id
+    else:
+        g.request_id = secrets.token_hex(12)
+
+
 def _cache_control_for_request() -> str | None:
     if request.method != "GET":
         return None
@@ -1318,6 +1328,7 @@ def _allow_cors_for_request(response: Response) -> Response:
 
 @app.after_request
 def apply_security_headers(response):
+    response.headers.setdefault("X-Request-ID", getattr(g, "request_id", secrets.token_hex(12)))
     for header, value in SECURITY_HEADERS.items():
         response.headers.setdefault(header, value)
 
@@ -6537,6 +6548,32 @@ def _insert_observability_event(
     )
 
 
+def _safe_observability_page_url(value) -> str | None:
+    raw_url = strip(value or "", 1024)
+    if not raw_url:
+        return None
+    try:
+        parsed = urlsplit(raw_url)
+    except ValueError:
+        return None
+    if parsed.scheme and parsed.scheme not in {"http", "https"}:
+        return None
+    if parsed.scheme and parsed.netloc:
+        hostname = parsed.hostname
+        if not hostname:
+            return None
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
+        host = f"[{hostname}]" if ":" in hostname else hostname
+        authority = f"{host}:{port}" if port is not None else host
+        return f"{parsed.scheme}://{authority}{parsed.path or '/'}"
+    if raw_url.startswith("/"):
+        return parsed.path or "/"
+    return None
+
+
 @app.route("/api/analytics/summary", methods=["GET"])
 def analytics_summary():
     db = get_db()
@@ -6766,6 +6803,7 @@ def create_lead_request():
 
 
 @app.route("/api/analytics/client-telemetry", methods=["POST"])
+@limiter.limit("120 per hour")
 def analytics_client_telemetry():
     db = get_db()
     data = _parse_json_payload()
@@ -6777,7 +6815,7 @@ def analytics_client_telemetry():
         return jsonify(error="event_type is required"), 400
 
     source = strip(data.get("source", ""), 255) or None
-    page_url = strip(data.get("page_url", ""), 1024) or None
+    page_url = _safe_observability_page_url(data.get("page_url"))
     session_id = strip(data.get("session_id", ""), 120) or None
     message = strip(data.get("message", ""), 1200) or None
     stack = strip(data.get("stack", ""), 8000) or None
@@ -6804,6 +6842,7 @@ def analytics_client_telemetry():
 
 
 @app.route("/api/analytics/web-vitals", methods=["POST"])
+@limiter.limit("600 per hour")
 def analytics_web_vitals():
     db = get_db()
     data = _parse_json_payload()
@@ -6829,7 +6868,7 @@ def analytics_web_vitals():
         return jsonify(error="rating must be good, needs-improvement, or poor"), 400
 
     source = strip(data.get("source", ""), 255) or None
-    page_url = strip(data.get("page_url", ""), 1024) or None
+    page_url = _safe_observability_page_url(data.get("page_url"))
     session_id = strip(data.get("session_id", ""), 120) or None
     user_agent = strip(request.headers.get("User-Agent", ""), 400) or None
 
@@ -8361,7 +8400,84 @@ def seo_audit():
 
 @app.route("/api/health")
 def health():
-    return jsonify(status="ok", service="UA Homes API v2")
+    try:
+        database = get_db()
+        database.execute("SELECT 1 AS ready").fetchone()
+    except Exception:
+        app.logger.exception(
+            "Database readiness check failed request_id=%s",
+            getattr(g, "request_id", "unknown"),
+        )
+        return jsonify(status="error", service="UA Homes API v2", database="unavailable"), 503
+    return jsonify(status="ok", service="UA Homes API v2", database="ok")
+
+
+def _backup_request_authorized() -> tuple[bool, int]:
+    configured_token = os.environ.get("UA_HOMES_BACKUP_TOKEN", "").strip()
+    if not configured_token:
+        return False, 503
+    authorization = request.headers.get("Authorization", "")
+    scheme, _, provided_token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not provided_token:
+        return False, 401
+    return hmac.compare_digest(provided_token, configured_token), 401
+
+
+@app.route("/api/operations/backup", methods=["POST"])
+@limiter.limit("6 per hour")
+def create_operations_backup():
+    authorized, error_status = _backup_request_authorized()
+    if not authorized:
+        if error_status == 503:
+            app.logger.error("Database backup requested before UA_HOMES_BACKUP_TOKEN was configured")
+            return jsonify(error="Database backups are not configured"), 503
+        return jsonify(error="Unauthorized"), 401
+    if _is_postgres():
+        return jsonify(error="PostgreSQL backups require the managed database backup workflow"), 501
+
+    from operations_backup import create_backup
+
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    filename = f"ua-homes-{timestamp}.sqlite3"
+    temporary_directory = tempfile.mkdtemp(prefix="ua-homes-backup-")
+    backup_path = os.path.join(temporary_directory, filename)
+    try:
+        summary = create_backup(DB_PATH, backup_path)
+    except Exception:
+        try:
+            os.rmdir(temporary_directory)
+        except OSError:
+            pass
+        app.logger.exception(
+            "Database backup failed request_id=%s",
+            getattr(g, "request_id", "unknown"),
+        )
+        return jsonify(error="Database backup failed"), 500
+
+    backup_file = open(backup_path, "rb")
+
+    def cleanup_backup():
+        try:
+            backup_file.close()
+            os.remove(backup_path)
+            os.rmdir(temporary_directory)
+        except OSError as exc:
+            app.logger.warning("Temporary database backup cleanup failed: %s", exc)
+
+    response = send_file(
+        backup_file,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.sqlite3",
+        conditional=False,
+    )
+    response.direct_passthrough = False
+    response.call_on_close(cleanup_backup)
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Backup-SHA256"] = summary["sha256"]
+    response.headers["X-Backup-Users"] = str(summary["row_counts"]["users"])
+    response.headers["X-Backup-Listings"] = str(summary["row_counts"]["listings"])
+    return response
 
 
 # ─── Premium / LiqPay payment ─────────────────────────────────────────────────

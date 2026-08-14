@@ -14,6 +14,34 @@
 | Variable | Description | Default |
 |---|---|---|
 | `DATABASE_URL` | PostgreSQL DSN | SQLite (local dev) |
+| `UA_HOMES_DB_PATH` | Persistent SQLite path used when `DATABASE_URL` is absent | `backend/ua_homes.db` |
+
+## Backups and production monitoring
+
+| Variable / secret | Location | Description |
+|---|---|---|
+| `UA_HOMES_BACKUP_TOKEN` | Railway + GitHub Actions | Random bearer token protecting `POST /api/operations/backup` |
+| `UA_HOMES_BACKUP_ENCRYPTION_KEY` | GitHub Actions + secure offline copy | Passphrase used to encrypt database backup artifacts |
+
+`Backup production database` runs daily and can be started manually. It downloads
+a consistent SQLite snapshot over HTTPS, checks the server checksum, runs
+`PRAGMA integrity_check`, performs a temporary restore drill, encrypts the archive
+with AES-256-CBC/PBKDF2, and retains only the encrypted GitHub artifact for 30 days.
+
+To validate a decrypted snapshot locally:
+
+```bash
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+  -pass env:UA_HOMES_BACKUP_ENCRYPTION_KEY \
+  -in ua-homes-backup.tar.gz.enc -out ua-homes-backup.tar.gz
+tar -xzf ua-homes-backup.tar.gz
+python3 backend/operations_backup.py verify --database backup.sqlite3
+python3 backend/operations_backup.py restore-drill --database backup.sqlite3
+```
+
+`Monitor production health` runs every 15 minutes against backend readiness,
+the public listings API, and the seller frontend. It opens a single GitHub issue
+when checks fail and closes that issue after recovery.
 
 ## Rate limiting
 

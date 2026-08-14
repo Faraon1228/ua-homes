@@ -24,6 +24,7 @@ os.environ.pop("DATABASE_URL", None)
 
 app_module = importlib.import_module("app")
 media_migration = importlib.import_module("migrate_legacy_listing_media")
+operations_backup = importlib.import_module("operations_backup")
 
 
 class TrustFeatureTests(unittest.TestCase):
@@ -37,6 +38,7 @@ class TrustFeatureTests(unittest.TestCase):
         with sqlite3.connect(TEST_DB) as db:
             db.execute("PRAGMA foreign_keys=ON")
             for table in (
+                "client_observability_events",
                 "premium_orders",
                 "listing_reports",
                 "listing_change_history",
@@ -136,6 +138,80 @@ class TrustFeatureTests(unittest.TestCase):
     @staticmethod
     def _auth(token):
         return {"Authorization": f"Bearer {token}"}
+
+    def test_health_checks_database_and_correlates_requests(self):
+        request_id = "operations-test-request-123"
+        response = self.client.get("/api/health", headers={"X-Request-ID": request_id})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["database"], "ok")
+        self.assertEqual(response.headers["X-Request-ID"], request_id)
+
+        with mock.patch.object(app_module, "get_db", side_effect=sqlite3.OperationalError("offline")):
+            unavailable = self.client.get("/api/health")
+        self.assertEqual(unavailable.status_code, 503)
+        self.assertEqual(unavailable.get_json()["database"], "unavailable")
+        self.assertRegex(unavailable.headers["X-Request-ID"], r"^[a-f0-9]{24}$")
+
+    def test_authenticated_backup_export_and_restore_drill(self):
+        with mock.patch.dict(os.environ, {"UA_HOMES_BACKUP_TOKEN": ""}):
+            not_configured = self.client.post("/api/operations/backup")
+        self.assertEqual(not_configured.status_code, 503)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            export_directory = os.path.join(temporary_directory, "export")
+            os.mkdir(export_directory)
+            with mock.patch.dict(os.environ, {"UA_HOMES_BACKUP_TOKEN": "backup-test-token"}):
+                unauthorized = self.client.post(
+                    "/api/operations/backup",
+                    headers={"Authorization": "Bearer wrong-token"},
+                )
+                self.assertEqual(unauthorized.status_code, 401)
+
+                app_module.limiter.reset()
+                with mock.patch.object(
+                    app_module.tempfile,
+                    "mkdtemp",
+                    return_value=export_directory,
+                ):
+                    response = self.client.post(
+                        "/api/operations/backup",
+                        headers={"Authorization": "Bearer backup-test-token"},
+                        buffered=True,
+                    )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["Cache-Control"], "private, no-store")
+            self.assertRegex(response.headers["X-Backup-SHA256"], r"^[a-f0-9]{64}$")
+            backup_sha256 = response.headers["X-Backup-SHA256"]
+            backup_bytes = response.data
+            response.close()
+            self.assertFalse(os.path.exists(export_directory))
+
+            backup_path = os.path.join(temporary_directory, "backup.sqlite3")
+            with open(backup_path, "wb") as backup_file:
+                backup_file.write(backup_bytes)
+            summary = operations_backup.verify_database(backup_path)
+            drill = operations_backup.restore_drill(backup_path)
+
+        self.assertEqual(summary["sha256"], backup_sha256)
+        self.assertEqual(summary["row_counts"], {"users": 3, "listings": 3})
+        self.assertEqual(drill["restore_drill"], "ok")
+
+    def test_client_observability_strips_query_and_fragment(self):
+        response = self.client.post(
+            "/api/analytics/client-telemetry",
+            json={
+                "event_type": "runtime_error",
+                "message": "Test failure",
+                "page_url": "https://test-user:test-password@ua-dim.com/seller?reset_token=secret#private",
+            },
+        )
+        self.assertEqual(response.status_code, 201)
+        with sqlite3.connect(TEST_DB) as database:
+            stored_url = database.execute(
+                "SELECT page_url FROM client_observability_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+        self.assertEqual(stored_url, "https://ua-dim.com/seller")
 
     def test_schema_and_public_privacy_and_seller_type(self):
         with sqlite3.connect(TEST_DB) as db:

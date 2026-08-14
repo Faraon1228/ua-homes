@@ -1,0 +1,120 @@
+name: Monitor production health
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: production-health-monitor
+  cancel-in-progress: true
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      BACKEND_URL: https://backend-production-51964.up.railway.app
+      SELLER_URL: https://ua-dim.com/seller
+    steps:
+      - name: Check production services
+        id: health
+        run: |
+          failures=0
+          : > health-report.txt
+
+          if curl --fail --silent --show-error --max-time 20 \
+            "$BACKEND_URL/api/health" \
+            --output backend-health.json &&
+            python3 - <<'PY'
+          import json
+          with open("backend-health.json", encoding="utf-8") as response_file:
+              payload = json.load(response_file)
+          assert payload.get("status") == "ok", payload
+          assert payload.get("database") == "ok", payload
+          PY
+          then
+            echo "OK backend readiness" | tee -a health-report.txt
+          else
+            echo "FAIL backend readiness" | tee -a health-report.txt
+            failures=1
+          fi
+
+          if curl --fail --silent --show-error --max-time 20 \
+            "$BACKEND_URL/api/listings?status=published&limit=1" \
+            --output listings.json &&
+            python3 - <<'PY'
+          import json
+          with open("listings.json", encoding="utf-8") as response_file:
+              payload = json.load(response_file)
+          assert isinstance(payload.get("listings"), list), payload
+          PY
+          then
+            echo "OK public listings API" | tee -a health-report.txt
+          else
+            echo "FAIL public listings API" | tee -a health-report.txt
+            failures=1
+          fi
+
+          if curl --fail --silent --show-error --max-time 20 \
+            "$SELLER_URL" \
+            --output seller.html &&
+            grep -Fq 'id="root"' seller.html &&
+            grep -Fq 'real-estate-app.js?v=' seller.html
+          then
+            echo "OK seller frontend" | tee -a health-report.txt
+          else
+            echo "FAIL seller frontend" | tee -a health-report.txt
+            failures=1
+          fi
+
+          cat health-report.txt >> "$GITHUB_STEP_SUMMARY"
+          if [ "$failures" -eq 0 ]; then
+            echo "healthy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or resolve production incident
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEALTHY: ${{ steps.health.outputs.healthy }}
+        run: |
+          TITLE="[ops] Production health check failed"
+          ISSUE_NUMBER="$(
+            gh issue list \
+              --repo "$GITHUB_REPOSITORY" \
+              --state open \
+              --search "\"$TITLE\" in:title" \
+              --json number \
+              --jq '.[0].number // empty'
+          )"
+
+          if [ "$HEALTHY" != "true" ]; then
+            if [ -z "$ISSUE_NUMBER" ]; then
+              {
+                echo "Automated production health checks failed."
+                echo
+                echo '```text'
+                cat health-report.txt
+                echo '```'
+                echo
+                echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+              } > incident-body.md
+              gh issue create \
+                --repo "$GITHUB_REPOSITORY" \
+                --title "$TITLE" \
+                --body-file incident-body.md
+            fi
+            exit 1
+          fi
+
+          if [ -n "$ISSUE_NUMBER" ]; then
+            gh issue close "$ISSUE_NUMBER" \
+              --repo "$GITHUB_REPOSITORY" \
+              --comment "Production health checks recovered in $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
+          fi

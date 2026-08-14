@@ -1,0 +1,96 @@
+name: Backup production database
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 2 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-database-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BACKUP_TOKEN: ${{ secrets.UA_HOMES_BACKUP_TOKEN }}
+      BACKUP_ENCRYPTION_KEY: ${{ secrets.UA_HOMES_BACKUP_ENCRYPTION_KEY }}
+      BACKEND_URL: https://backend-production-51964.up.railway.app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate backup secrets
+        run: |
+          test -n "$BACKUP_TOKEN" || { echo "UA_HOMES_BACKUP_TOKEN is missing"; exit 1; }
+          test -n "$BACKUP_ENCRYPTION_KEY" || { echo "UA_HOMES_BACKUP_ENCRYPTION_KEY is missing"; exit 1; }
+
+      - name: Download consistent database snapshot
+        run: |
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --request POST \
+            --retry 3 \
+            --retry-max-time 60 \
+            --connect-timeout 15 \
+            --max-time 120 \
+            --header "Authorization: Bearer $BACKUP_TOKEN" \
+            --dump-header backup-headers.txt \
+            --output backup.sqlite3 \
+            "$BACKEND_URL/api/operations/backup"
+
+          SERVER_SHA="$(
+            awk 'tolower($1) == "x-backup-sha256:" {gsub("\r", "", $2); print $2}' backup-headers.txt
+          )"
+          LOCAL_SHA="$(sha256sum backup.sqlite3 | awk '{print $1}')"
+          test -n "$SERVER_SHA" || { echo "Backup checksum header is missing"; exit 1; }
+          test "$LOCAL_SHA" = "$SERVER_SHA" || { echo "Downloaded backup checksum mismatch"; exit 1; }
+
+      - name: Verify backup and restore drill
+        run: |
+          python3 backend/operations_backup.py verify --database backup.sqlite3 > backup-summary.json
+          python3 backend/operations_backup.py restore-drill --database backup.sqlite3 > restore-drill.json
+          grep -F '"integrity": "ok"' backup-summary.json
+          grep -F '"restore_drill": "ok"' restore-drill.json
+
+      - name: Encrypt and re-verify archive
+        run: |
+          tar -czf ua-homes-backup.tar.gz backup.sqlite3 backup-summary.json restore-drill.json
+          openssl enc \
+            -aes-256-cbc \
+            -salt \
+            -pbkdf2 \
+            -iter 200000 \
+            -pass env:BACKUP_ENCRYPTION_KEY \
+            -in ua-homes-backup.tar.gz \
+            -out ua-homes-backup.tar.gz.enc
+          sha256sum ua-homes-backup.tar.gz.enc > ua-homes-backup.tar.gz.enc.sha256
+
+          mkdir restored
+          openssl enc \
+            -d \
+            -aes-256-cbc \
+            -pbkdf2 \
+            -iter 200000 \
+            -pass env:BACKUP_ENCRYPTION_KEY \
+            -in ua-homes-backup.tar.gz.enc \
+            -out restored/archive.tar.gz
+          tar -xzf restored/archive.tar.gz -C restored
+          python3 backend/operations_backup.py verify --database restored/backup.sqlite3
+
+          rm -f backup.sqlite3 backup-headers.txt backup-summary.json restore-drill.json ua-homes-backup.tar.gz
+          rm -rf restored
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ua-homes-database-backup-${{ github.run_id }}
+          path: |
+            ua-homes-backup.tar.gz.enc
+            ua-homes-backup.tar.gz.enc.sha256
+          if-no-files-found: error
+          retention-days: 30
