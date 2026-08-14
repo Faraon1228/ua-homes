@@ -35,6 +35,9 @@ esac
 
 # ── esbuild binary ──
 ESBUILD="$TOOLS_DIR/esbuild"
+if [ -x "$ESBUILD" ] && ! "$ESBUILD" --version >/dev/null 2>&1; then
+  rm -f "$ESBUILD"
+fi
 if [ ! -x "$ESBUILD" ]; then
   ESBUILD_VERSION="0.24.2"
   PKG="@esbuild/$ESBUILD_PLATFORM"
@@ -47,6 +50,9 @@ fi
 
 # ── tailwindcss standalone binary ──
 TAILWIND="$TOOLS_DIR/tailwindcss"
+if [ -x "$TAILWIND" ] && ! "$TAILWIND" --help >/dev/null 2>&1; then
+  rm -f "$TAILWIND"
+fi
 if [ ! -x "$TAILWIND" ]; then
   TWVER="3.4.17"
   echo "⬇  Downloading tailwindcss ${TWVER}..."
