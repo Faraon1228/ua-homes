@@ -1,7 +1,7 @@
 #!/bin/bash
 # Recompile JSX → real-estate-app.js and regenerate purged ua-homes.css.
-# Downloads esbuild and tailwindcss binaries on first run (macOS arm64 / amd64).
-set -e
+# Downloads pinned esbuild and tailwindcss binaries on first run.
+set -euo pipefail
 
 REPO_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
 WEB_DIR="$REPO_DIR/web"
@@ -10,12 +10,34 @@ mkdir -p "$TOOLS_DIR"
 
 ARCH=$(uname -m)
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+case "$OS-$ARCH" in
+  darwin-arm64)
+    ESBUILD_PLATFORM="darwin-arm64"
+    TAILWIND_PLATFORM="macos-arm64"
+    ;;
+  darwin-x86_64)
+    ESBUILD_PLATFORM="darwin-x64"
+    TAILWIND_PLATFORM="macos-x64"
+    ;;
+  linux-aarch64|linux-arm64)
+    ESBUILD_PLATFORM="linux-arm64"
+    TAILWIND_PLATFORM="linux-arm64"
+    ;;
+  linux-x86_64)
+    ESBUILD_PLATFORM="linux-x64"
+    TAILWIND_PLATFORM="linux-x64"
+    ;;
+  *)
+    echo "Unsupported frontend build platform: $OS-$ARCH" >&2
+    exit 1
+    ;;
+esac
 
 # ── esbuild binary ──
 ESBUILD="$TOOLS_DIR/esbuild"
 if [ ! -x "$ESBUILD" ]; then
   ESBUILD_VERSION="0.24.2"
-  if [ "$ARCH" = "arm64" ]; then PKG="@esbuild/darwin-arm64"; else PKG="@esbuild/darwin-x64"; fi
+  PKG="@esbuild/$ESBUILD_PLATFORM"
   echo "⬇  Downloading esbuild ${ESBUILD_VERSION}..."
   curl -fsSL "https://registry.npmjs.org/${PKG}/-/${PKG##*/}-${ESBUILD_VERSION}.tgz" \
     | tar xz -C "$TOOLS_DIR" --strip-components=2 package/bin/esbuild
@@ -26,11 +48,10 @@ fi
 # ── tailwindcss standalone binary ──
 TAILWIND="$TOOLS_DIR/tailwindcss"
 if [ ! -x "$TAILWIND" ]; then
-  if [ "$ARCH" = "arm64" ]; then SUFFIX="macos-arm64"; else SUFFIX="macos-x64"; fi
   TWVER="3.4.17"
   echo "⬇  Downloading tailwindcss ${TWVER}..."
   curl -fsSLo "$TAILWIND" \
-    "https://github.com/tailwindlabs/tailwindcss/releases/download/v${TWVER}/tailwindcss-${SUFFIX}"
+    "https://github.com/tailwindlabs/tailwindcss/releases/download/v${TWVER}/tailwindcss-${TAILWIND_PLATFORM}"
   chmod +x "$TAILWIND"
   echo "   ✅ tailwindcss ready"
 fi
@@ -44,14 +65,19 @@ echo "🔨 Compiling JSX → real-estate-app.js ..."
 
 # ── generate purged Tailwind CSS ──
 echo "🎨 Generating purged ua-homes.css ..."
-cat > /tmp/tw-input.css <<'CSS'
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ua-dim-frontend.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
+TW_INPUT="$TMP_DIR/input.css"
+TW_CONFIG="$TMP_DIR/config.js"
+
+cat > "$TW_INPUT" <<'CSS'
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 CSS
-cat "$WEB_DIR/ua-dim-modern.css" >> /tmp/tw-input.css
+cat "$WEB_DIR/ua-dim-modern.css" >> "$TW_INPUT"
 
-cat > /tmp/tw-config.js <<JS
+cat > "$TW_CONFIG" <<JS
 module.exports = {
   content: [
     '${WEB_DIR}/real-estate-demo.html',
@@ -63,11 +89,9 @@ module.exports = {
   plugins: [],
 }
 JS
-# Expand variable inside heredoc
-sed -i '' "s|\${WEB_DIR}|${WEB_DIR}|g" /tmp/tw-config.js
 
-"$TAILWIND" -i /tmp/tw-input.css -o "$WEB_DIR/ua-homes.css" \
-  --config /tmp/tw-config.js --minify 2>&1 | grep -v "^Browserslist"
+"$TAILWIND" -i "$TW_INPUT" -o "$WEB_DIR/ua-homes.css" \
+  --config "$TW_CONFIG" --minify 2>&1 | sed '/^Browserslist/d'
 
 echo "   ✅ ua-homes.css ($(wc -c < "$WEB_DIR/ua-homes.css" | tr -d ' ') bytes)"
 echo ""
