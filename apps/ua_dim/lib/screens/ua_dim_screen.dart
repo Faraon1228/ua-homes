@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 const String uaDimProductionUrl =
     'https://ua-dim.com/real-estate-demo.html'
@@ -88,6 +89,40 @@ class _UaDimScreenState extends State<UaDimScreen> {
       )
       ..loadRequest(Uri.parse(uaDimProductionUrl));
     _configureNativeIntegration();
+    _configureAndroidFileSelector();
+  }
+
+  Future<void> _configureAndroidFileSelector() async {
+    final platformController = _controller.platform;
+    if (!_supportsAndroidNativeIntegration ||
+        platformController is! AndroidWebViewController) {
+      return;
+    }
+    try {
+      await platformController.setOnShowFileSelector(_selectAndroidFiles);
+    } on PlatformException catch (error) {
+      debugPrint('UA-Dim Android file selector unavailable: ${error.message}');
+    }
+  }
+
+  Future<List<String>> _selectAndroidFiles(FileSelectorParams params) async {
+    try {
+      return await _nativeChannel.invokeListMethod<String>('pickFiles', {
+            'acceptTypes': params.acceptTypes,
+            'allowMultiple': params.mode == FileSelectorMode.openMultiple,
+            'capture': params.isCaptureEnabled,
+          }) ??
+          const [];
+    } on PlatformException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error.message ?? 'Не вдалося обрати медіафайл'),
+          ),
+        );
+      }
+      return const [];
+    }
   }
 
   Future<void> _configureNativeIntegration() async {
@@ -178,6 +213,10 @@ class _UaDimScreenState extends State<UaDimScreen> {
   void dispose() {
     if (_supportsAndroidNativeIntegration) {
       _nativeChannel.setMethodCallHandler(null);
+      final platformController = _controller.platform;
+      if (platformController is AndroidWebViewController) {
+        platformController.setOnShowFileSelector(null);
+      }
     }
     super.dispose();
   }
