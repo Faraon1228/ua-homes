@@ -77,7 +77,7 @@ jobs:
           - app: drive_community
             label: DriveCommunity
             directory: .
-            bundle_id: com.drivecommunity.app
+            bundle_id: ua.drivecommunity.app
             artifact: drive-community-ios-ipa
           - app: ua_dim
             label: UA-Dim
