@@ -2,6 +2,12 @@ name: Build UA-Dim iOS store release
 
 on:
   workflow_dispatch:
+    inputs:
+      upload_to_testflight:
+        description: Upload the validated IPA to TestFlight
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -10,6 +16,9 @@ jobs:
   ios:
     name: UA-Dim signed iOS archive
     runs-on: macos-15
+    env:
+      TEAM_ID: W235UPAZYJ
+      UPLOAD_TO_TESTFLIGHT: ${{ inputs.upload_to_testflight }}
     defaults:
       run:
         working-directory: apps/ua_dim
@@ -19,16 +28,69 @@ jobs:
         with:
           flutter-version: "3.47.0"
           cache: true
-      - name: Configure Apple Distribution signing
+      - name: Select Apple signing mode
+        env:
+          ASC_ISSUER_ID: ${{ secrets.UA_DIM_APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.UA_DIM_APP_STORE_CONNECT_KEY_ID }}
+          ASC_PRIVATE_KEY_BASE64: ${{ secrets.UA_DIM_APP_STORE_CONNECT_PRIVATE_KEY_BASE64 }}
+          CERTIFICATE_BASE64: ${{ secrets.UA_DIM_IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.UA_DIM_IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.UA_DIM_IOS_APP_STORE_PROFILE_BASE64 }}
+        run: |
+          API_SECRETS=0
+          MANUAL_SECRETS=0
+          test -n "$ASC_ISSUER_ID" && test -n "$ASC_KEY_ID" && test -n "$ASC_PRIVATE_KEY_BASE64" && API_SECRETS=1
+          test -n "$CERTIFICATE_BASE64" && test -n "$CERTIFICATE_PASSWORD" && test -n "$PROFILE_BASE64" && MANUAL_SECRETS=1
+
+          if [ "$API_SECRETS" -eq 1 ]; then
+            echo "SIGNING_MODE=api" >> "$GITHUB_ENV"
+          elif [ "$MANUAL_SECRETS" -eq 1 ]; then
+            if [ "$UPLOAD_TO_TESTFLIGHT" = "true" ]; then
+              echo "TestFlight upload requires App Store Connect API secrets"
+              exit 1
+            fi
+            echo "SIGNING_MODE=manual" >> "$GITHUB_ENV"
+          else
+            echo "Configure all App Store Connect API secrets or all manual signing secrets"
+            exit 1
+          fi
+      - name: Configure App Store Connect API
+        if: env.SIGNING_MODE == 'api'
+        env:
+          ASC_ISSUER_ID_SECRET: ${{ secrets.UA_DIM_APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_KEY_ID_SECRET: ${{ secrets.UA_DIM_APP_STORE_CONNECT_KEY_ID }}
+          ASC_PRIVATE_KEY_BASE64: ${{ secrets.UA_DIM_APP_STORE_CONNECT_PRIVATE_KEY_BASE64 }}
+        run: |
+          [[ "$ASC_KEY_ID_SECRET" =~ ^[A-Z0-9]+$ ]] || {
+            echo "Invalid App Store Connect key ID"
+            exit 1
+          }
+          [[ "$ASC_ISSUER_ID_SECRET" =~ ^[0-9a-fA-F-]+$ ]] || {
+            echo "Invalid App Store Connect issuer ID"
+            exit 1
+          }
+
+          ASC_KEYS_DIR="$HOME/.appstoreconnect/private_keys"
+          ASC_KEY_PATH="$ASC_KEYS_DIR/AuthKey_$ASC_KEY_ID_SECRET.p8"
+          mkdir -p "$ASC_KEYS_DIR"
+          printf '%s' "$ASC_PRIVATE_KEY_BASE64" | base64 --decode > "$ASC_KEY_PATH"
+          chmod 600 "$ASC_KEY_PATH"
+          grep -q "BEGIN PRIVATE KEY" "$ASC_KEY_PATH" || {
+            echo "Invalid App Store Connect private key"
+            exit 1
+          }
+          {
+            printf 'ASC_ISSUER_ID=%s\n' "$ASC_ISSUER_ID_SECRET"
+            printf 'ASC_KEY_ID=%s\n' "$ASC_KEY_ID_SECRET"
+            printf 'ASC_KEY_PATH=%s\n' "$ASC_KEY_PATH"
+          } >> "$GITHUB_ENV"
+      - name: Configure manual Apple Distribution signing
+        if: env.SIGNING_MODE == 'manual'
         env:
           CERTIFICATE_BASE64: ${{ secrets.UA_DIM_IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.UA_DIM_IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
           PROFILE_BASE64: ${{ secrets.UA_DIM_IOS_APP_STORE_PROFILE_BASE64 }}
         run: |
-          test -n "$CERTIFICATE_BASE64" || { echo "UA-Dim Apple Distribution certificate secret is missing"; exit 1; }
-          test -n "$CERTIFICATE_PASSWORD" || { echo "UA-Dim certificate password secret is missing"; exit 1; }
-          test -n "$PROFILE_BASE64" || { echo "UA-Dim App Store provisioning profile secret is missing"; exit 1; }
-
           CERTIFICATE_PATH="$RUNNER_TEMP/distribution.p12"
           PROFILE_PATH="$RUNNER_TEMP/app-store.mobileprovision"
           PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
@@ -47,18 +109,19 @@ jobs:
           security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
           PROFILE_UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")"
           PROFILE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_PLIST")"
-          TEAM_ID="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PROFILE_PLIST")"
+          PROFILE_TEAM_ID="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PROFILE_PLIST")"
           PROFILE_APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PROFILE_PLIST")"
+          test "$PROFILE_TEAM_ID" = "$TEAM_ID" || {
+            echo "Provisioning profile does not match the UA-Dim Apple team"
+            exit 1
+          }
           test "$PROFILE_APP_ID" = "$TEAM_ID.com.uadim.app" || {
             echo "Provisioning profile does not match com.uadim.app"
             exit 1
           }
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
           cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
-          {
-            printf 'PROFILE_NAME=%s\n' "$PROFILE_NAME"
-            printf 'TEAM_ID=%s\n' "$TEAM_ID"
-          } >> "$GITHUB_ENV"
+          printf 'PROFILE_NAME=%s\n' "$PROFILE_NAME" >> "$GITHUB_ENV"
       - name: Resolve Flutter dependencies
         run: flutter pub get
       - name: Analyze UA-Dim
@@ -67,7 +130,25 @@ jobs:
         run: flutter test
       - name: Prepare iOS build
         run: flutter build ios --release --no-codesign
-      - name: Create signed archive
+      - name: Create automatically signed archive
+        if: env.SIGNING_MODE == 'api'
+        run: |
+          xcodebuild \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/ios/archive/Runner.xcarchive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            archive \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM="$TEAM_ID"
+      - name: Create manually signed archive
+        if: env.SIGNING_MODE == 'manual'
         run: |
           xcodebuild \
             -workspace ios/Runner.xcworkspace \
@@ -81,7 +162,26 @@ jobs:
             DEVELOPMENT_TEAM="$TEAM_ID" \
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
             CODE_SIGN_IDENTITY="Apple Distribution"
-      - name: Export signed IPA
+      - name: Export automatically signed IPA
+        if: env.SIGNING_MODE == 'api'
+        run: |
+          EXPORT_OPTIONS="$RUNNER_TEMP/ExportOptions.plist"
+          /usr/libexec/PlistBuddy -c 'Add :method string app-store-connect' "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c 'Add :destination string export' "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c 'Add :signingStyle string automatic' "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c 'Add :manageAppVersionAndBuildNumber bool false' "$EXPORT_OPTIONS"
+          xcodebuild \
+            -exportArchive \
+            -archivePath build/ios/archive/Runner.xcarchive \
+            -exportPath build/ios/store \
+            -exportOptionsPlist "$EXPORT_OPTIONS" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+      - name: Export manually signed IPA
+        if: env.SIGNING_MODE == 'manual'
         run: |
           EXPORT_OPTIONS="$RUNNER_TEMP/ExportOptions.plist"
           /usr/libexec/PlistBuddy -c 'Add :method string app-store-connect' "$EXPORT_OPTIONS"
@@ -96,6 +196,30 @@ jobs:
             -archivePath build/ios/archive/Runner.xcarchive \
             -exportPath build/ios/store \
             -exportOptionsPlist "$EXPORT_OPTIONS"
+      - name: Validate App Store package
+        if: env.SIGNING_MODE == 'api'
+        run: |
+          IPA_PATH="$(find build/ios/store -maxdepth 1 -name '*.ipa' -print -quit)"
+          test -n "$IPA_PATH" || { echo "Exported UA-Dim IPA was not found"; exit 1; }
+          xcrun altool \
+            --validate-app \
+            --file "$IPA_PATH" \
+            --type ios \
+            --api-key "$ASC_KEY_ID" \
+            --api-issuer "$ASC_ISSUER_ID" \
+            --p8-file-path "$ASC_KEY_PATH"
+      - name: Upload to TestFlight
+        if: env.SIGNING_MODE == 'api' && inputs.upload_to_testflight
+        run: |
+          IPA_PATH="$(find build/ios/store -maxdepth 1 -name '*.ipa' -print -quit)"
+          test -n "$IPA_PATH" || { echo "Exported UA-Dim IPA was not found"; exit 1; }
+          xcrun altool \
+            --upload-app \
+            --file "$IPA_PATH" \
+            --type ios \
+            --api-key "$ASC_KEY_ID" \
+            --api-issuer "$ASC_ISSUER_ID" \
+            --p8-file-path "$ASC_KEY_PATH"
       - uses: actions/upload-artifact@v5
         with:
           name: ua-dim-ios-ipa

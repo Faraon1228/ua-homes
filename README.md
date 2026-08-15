@@ -74,9 +74,17 @@ Android release-збірки підписуються окремими upload ke
 git. Workflow `Build mobile apps` перевіряє окремо підписані APK обох
 застосунків; Google Play release automation буде винесено в окремі workflows.
 
-Workflow `Build UA-Dim iOS store release` збирає лише UA-Dim і використовує
-`Apple Distribution` certificate та App Store provisioning profile з GitHub
-Secrets. Store release DriveCommunity буде налаштовано окремо пізніше.
+Workflow `Build UA-Dim iOS store release` збирає лише UA-Dim. Основний режим
+використовує cloud-managed signing через App Store Connect API та може після
+валідації завантажити IPA у TestFlight. Для нього потрібні GitHub Secrets
+`UA_DIM_APP_STORE_CONNECT_ISSUER_ID`, `UA_DIM_APP_STORE_CONNECT_KEY_ID` і
+`UA_DIM_APP_STORE_CONNECT_PRIVATE_KEY_BASE64`. API key повинен мати доступ до
+Certificates, Identifiers & Profiles. Перед увімкненням
+`upload_to_testflight` в App Store Connect має існувати застосунок UA-Dim з
+bundle ID `com.uadim.app`. Ручний режим із
+`Apple Distribution` certificate та App Store provisioning profile лишається
+fallback для збірки IPA без завантаження. Store release DriveCommunity буде
+налаштовано окремо пізніше.
 
 ## 🛠️ Архітектура
 

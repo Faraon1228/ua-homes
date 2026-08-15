@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="112" y1="96" x2="912" y2="928" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="0.55" stop-color="#172554"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(792 182) rotate(135) scale(560)">
+      <stop stop-color="#38bdf8" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#38bdf8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#background)"/>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+  <path d="M196 438 512 178l316 260" fill="none" stroke="#fff" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="512" y="626" fill="#fff" font-family="Arial, Helvetica, sans-serif" font-size="244" font-weight="900" letter-spacing="-18" text-anchor="middle">UA</text>
+  <rect x="352" y="684" width="320" height="34" rx="17" fill="#facc15"/>
+  <text x="512" y="844" fill="#fff" font-family="Arial, Helvetica, sans-serif" font-size="144" font-weight="800" letter-spacing="4" text-anchor="middle">DIM</text>
+</svg>
