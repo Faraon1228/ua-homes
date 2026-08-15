@@ -60,8 +60,8 @@ python3 app.py
 ## 📱 Окремі мобільні застосунки
 
 - Кореневий Flutter-проєкт — `DriveCommunity`, окремий застосунок лише для
-  мотоспільноти: стрічка, історії, чати й профіль. Android application ID та
-  iOS bundle ID: `com.drivecommunity.app`.
+  мотоспільноти: стрічка, історії, чати й профіль. Android application ID:
+  `com.drivecommunity.app`; iOS bundle ID: `ua.drivecommunity.app`.
 - `apps/ua_dim/` — окремий застосунок `UA-Dim` для пошуку житла та кабінету
   продавця. Він відкриває canonical production UI `ua-dim.com` і не містить
   навігації DriveCommunity.
@@ -71,11 +71,12 @@ python3 app.py
 
 Android release-збірки підписуються окремими upload keys через локальні
 `android/key.properties` і GitHub Actions secrets. Ключі та паролі ігноруються
-git. Workflow `Build store releases` створює підписані `.aab` для Google Play.
+git. Workflow `Build mobile apps` перевіряє окремо підписані APK обох
+застосунків; Google Play release automation буде винесено в окремі workflows.
 
-iOS store-збірка використовує `Apple Distribution` certificate і App Store
-provisioning profile з GitHub Secrets. Без платної Apple Developer Program
-залишається доступною лише unsigned CI-збірка або локальний Development build.
+Workflow `Build UA-Dim iOS store release` збирає лише UA-Dim і використовує
+`Apple Distribution` certificate та App Store provisioning profile з GitHub
+Secrets. Store release DriveCommunity буде налаштовано окремо пізніше.
 
 ## 🛠️ Архітектура
 
