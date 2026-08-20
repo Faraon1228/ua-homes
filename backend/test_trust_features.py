@@ -41,6 +41,7 @@ class TrustFeatureTests(unittest.TestCase):
                 "client_observability_events",
                 "lead_funnel_events",
                 "lead_requests",
+                "push_devices",
                 "user_favorites",
                 "listing_alerts",
                 "premium_orders",
@@ -1080,6 +1081,71 @@ class TrustFeatureTests(unittest.TestCase):
                 {"minArea": 60},
             )
         )
+
+    def test_mobile_push_devices_follow_the_authenticated_account(self):
+        missing_auth = self.client.post(
+            "/api/push/devices",
+            json={"token": "device-token", "platform": "ios"},
+        )
+        self.assertEqual(missing_auth.status_code, 401)
+
+        registered = self.client.post(
+            "/api/push/devices",
+            json={"token": "device-token", "platform": "ios"},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(registered.status_code, 200)
+
+        moved_to_realtor = self.client.post(
+            "/api/push/devices",
+            json={"token": "device-token", "platform": "android"},
+            headers=self._auth(self.realtor_token),
+        )
+        self.assertEqual(moved_to_realtor.status_code, 200)
+        with sqlite3.connect(TEST_DB) as db:
+            device = db.execute(
+                "SELECT user_id, platform, is_active FROM push_devices WHERE token = ?",
+                ("device-token",),
+            ).fetchone()
+        self.assertEqual(device, (self.realtor_id, "android", 1))
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                """
+                INSERT INTO listing_alerts (user_id, email, name, filters)
+                VALUES (?, 'realtor@example.test', 'Push search', ?)
+                """,
+                (
+                    self.realtor_id,
+                    json.dumps({"city": "Київ", "channels": ["push"]}),
+                ),
+            )
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with mock.patch.object(
+                app_module,
+                "send_alert_push_payload",
+                return_value=True,
+            ) as send_push:
+                stats = app_module.dispatch_saved_alerts(
+                    db,
+                    listing_id=self.target_id,
+                )
+        self.assertEqual(stats["push_sent"], 1)
+        self.assertEqual(send_push.call_args.args[0]["device_tokens"], ["device-token"])
+
+        removed = self.client.delete(
+            "/api/push/devices",
+            json={"token": "device-token"},
+            headers=self._auth(self.realtor_token),
+        )
+        self.assertEqual(removed.status_code, 200)
+        with sqlite3.connect(TEST_DB) as db:
+            active = db.execute(
+                "SELECT is_active FROM push_devices WHERE token = ?",
+                ("device-token",),
+            ).fetchone()[0]
+        self.assertEqual(active, 0)
 
     def test_alert_dispatch_advances_same_timestamp_matches_and_marks_price_changes(self):
         with sqlite3.connect(TEST_DB) as db:

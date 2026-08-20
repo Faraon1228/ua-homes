@@ -35,6 +35,14 @@ dependencies:
   url_launcher: ^6.3.2
   webview_flutter: ^4.8.0
   webview_flutter_android: 4.14.0
+  app_links: ^7.2.1
+  connectivity_plus: ^7.3.1
+  flutter_secure_storage: ^9.2.4
+  share_plus: ^10.1.4
+  sentry_flutter: ^9.27.0
+  firebase_core: ^3.15.2
+  firebase_messaging: ^15.2.10
+  http: ^1.6.0
 
 dev_dependencies:
   flutter_test:

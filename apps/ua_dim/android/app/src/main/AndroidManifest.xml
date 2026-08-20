@@ -1,5 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
     <application
         android:label="UA-Dim"
@@ -37,6 +38,14 @@
                     android:scheme="https"
                     android:host="ua-dim.com"
                     android:pathPrefix="/listing/" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data
+                    android:scheme="uadim"
+                    android:host="listing" />
             </intent-filter>
         </activity>
         <provider

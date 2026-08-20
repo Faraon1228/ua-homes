@@ -1,11 +1,18 @@
 import 'dart:convert';
+import 'dart:async';
 
+import 'package:app_links/app_links.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
+
+import '../services/mobile_push_service.dart';
 
 const String uaDimProductionUrl =
     'https://ua-dim.com/real-estate-demo.html'
@@ -25,7 +32,11 @@ bool isUaDimListingUri(Uri uri) {
 
 Uri? parseUaDimNativeUri(Object? value) {
   if (value is! String || value.trim().isEmpty) return null;
-  final uri = Uri.tryParse(value.trim());
+  var uri = Uri.tryParse(value.trim());
+  if (uri?.scheme == 'uadim' && uri?.host == 'listing') {
+    final listingId = uri!.pathSegments.firstOrNull;
+    uri = Uri.parse('https://ua-dim.com/listing/$listingId');
+  }
   return uri != null && isUaDimListingUri(uri) ? uri : null;
 }
 
@@ -49,6 +60,13 @@ class _UaDimScreenState extends State<UaDimScreen> {
   bool _iosPhotoPickerAvailable = false;
   bool _iosPhotoBridgeAvailable = false;
   bool _isPickingIosPhotos = false;
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  final AppLinks _appLinks = AppLinks();
+  StreamSubscription<Uri>? _linkSubscription;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  String? _storedAuthToken;
+  bool _restoredAuthForPage = false;
+  bool _isOffline = false;
 
   bool get _supportsAndroidNativeIntegration =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
@@ -56,8 +74,7 @@ class _UaDimScreenState extends State<UaDimScreen> {
   bool get _supportsIosPhotoLibrary =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
 
-  bool get _canShareCurrentPage =>
-      _supportsAndroidNativeIntegration && isUaDimListingUri(_currentUri);
+  bool get _canShareCurrentPage => isUaDimListingUri(_currentUri);
 
   @override
   void initState() {
@@ -68,6 +85,10 @@ class _UaDimScreenState extends State<UaDimScreen> {
       ..addJavaScriptChannel(
         'UaDimMediaPicker',
         onMessageReceived: _handleIosPhotoPickerMessage,
+      )
+      ..addJavaScriptChannel(
+        'UaDimAuth',
+        onMessageReceived: _handleAuthTokenMessage,
       )
       ..setNavigationDelegate(
         NavigationDelegate(
@@ -81,6 +102,8 @@ class _UaDimScreenState extends State<UaDimScreen> {
           },
           onPageFinished: (url) async {
             if (!mounted) return;
+            if (await _restoreAuthTokenIfNeeded()) return;
+            await _installAuthBridge();
             await _installIosPhotoPickerBridge();
             final canGoBack = await _controller.canGoBack();
             final title = await _controller.getTitle();
@@ -103,11 +126,97 @@ class _UaDimScreenState extends State<UaDimScreen> {
           },
           onNavigationRequest: _handleNavigationRequest,
         ),
-      )
-      ..loadRequest(Uri.parse(uaDimProductionUrl));
-    _configureNativeIntegration();
+      );
+    _initializeMobileSession();
     _configureAndroidFileSelector();
     _configureIosPhotoLibrary();
+  }
+
+  Future<void> _initializeMobileSession() async {
+    _storedAuthToken = await _secureStorage.read(key: 'uaDim.authToken');
+    await MobilePushService.instance.initialize(onOpenUri: _openInternalUri);
+    await MobilePushService.instance.setAuthToken(_storedAuthToken);
+    final initialUri = await _configureDeepLinks();
+    await _configureConnectivity();
+    if (!mounted) return;
+    _currentUri = initialUri ?? Uri.parse(uaDimProductionUrl);
+    await _controller.loadRequest(_currentUri);
+  }
+
+  Future<Uri?> _configureDeepLinks() async {
+    _linkSubscription = _appLinks.uriLinkStream.listen((uri) {
+      final listingUri = parseUaDimNativeUri(uri.toString());
+      if (listingUri != null) unawaited(_openInternalUri(listingUri));
+    });
+    final initialUri = await _appLinks.getInitialLink();
+    return parseUaDimNativeUri(initialUri?.toString());
+  }
+
+  Future<void> _configureConnectivity() async {
+    void update(List<ConnectivityResult> results) {
+      final offline =
+          results.isEmpty ||
+          results.every((result) => result == ConnectivityResult.none);
+      if (mounted && offline != _isOffline) {
+        setState(() => _isOffline = offline);
+      }
+    }
+
+    update(await Connectivity().checkConnectivity());
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen(
+      update,
+    );
+  }
+
+  Future<bool> _restoreAuthTokenIfNeeded() async {
+    final token = _storedAuthToken;
+    if (_restoredAuthForPage || token == null || token.isEmpty) return false;
+    _restoredAuthForPage = true;
+    final encodedToken = jsonEncode(token);
+    final changed = await _controller.runJavaScriptReturningResult('''
+      (() => {
+        if (window.sessionStorage.getItem('uaDim.authToken') === $encodedToken) return false;
+        window.sessionStorage.setItem('uaDim.authToken', $encodedToken);
+        window.localStorage.removeItem('uaDim.authToken');
+        return true;
+      })();
+    ''');
+    if (!isJavaScriptTrue(changed)) return false;
+    await _controller.reload();
+    return true;
+  }
+
+  Future<void> _installAuthBridge() async {
+    await _controller.runJavaScript('''
+      (() => {
+        if (window.__uaDimAuthBridgeInstalled) return;
+        window.__uaDimAuthBridgeInstalled = true;
+        let previous = null;
+        const syncAuth = () => {
+          const token = window.sessionStorage.getItem('uaDim.authToken')
+            || window.localStorage.getItem('uaDim.authToken')
+            || '';
+          if (token === previous) return;
+          previous = token;
+          UaDimAuth.postMessage(token);
+        };
+        window.addEventListener('storage', syncAuth);
+        window.setInterval(syncAuth, 1500);
+        syncAuth();
+      })();
+    ''');
+  }
+
+  Future<void> _handleAuthTokenMessage(JavaScriptMessage message) async {
+    final token = message.message.trim();
+    if (token == (_storedAuthToken ?? '')) return;
+    _storedAuthToken = token.isEmpty ? null : token;
+    if (token.isEmpty) {
+      await _secureStorage.delete(key: 'uaDim.authToken');
+    } else {
+      await _secureStorage.write(key: 'uaDim.authToken', value: token);
+    }
+    await MobilePushService.instance.setAuthToken(_storedAuthToken);
   }
 
   Future<void> _configureIosPhotoLibrary() async {
@@ -352,27 +461,9 @@ class _UaDimScreenState extends State<UaDimScreen> {
     }
   }
 
-  Future<void> _configureNativeIntegration() async {
-    if (!_supportsAndroidNativeIntegration) return;
-    _nativeChannel.setMethodCallHandler((call) async {
-      if (call.method != 'openUrl') return;
-      final uri = parseUaDimNativeUri(call.arguments);
-      if (uri != null) await _openInternalUri(uri);
-    });
-
-    try {
-      final initialUrl = await _nativeChannel.invokeMethod<String>(
-        'getInitialUrl',
-      );
-      final uri = parseUaDimNativeUri(initialUrl);
-      if (uri != null) await _openInternalUri(uri);
-    } on PlatformException catch (error) {
-      debugPrint('UA-Dim native launch URL unavailable: ${error.message}');
-    }
-  }
-
   Future<void> _openInternalUri(Uri uri) async {
     if (!isUaDimInternalUri(uri)) return;
+    _currentUri = uri;
     if (mounted) {
       setState(() {
         _isLoading = true;
@@ -385,16 +476,18 @@ class _UaDimScreenState extends State<UaDimScreen> {
   Future<void> _shareCurrentPage() async {
     if (!_canShareCurrentPage) return;
     try {
-      await _nativeChannel.invokeMethod<void>('share', {
-        'subject': _pageTitle,
-        'text': '$_pageTitle\n$_currentUri',
-      });
-    } on PlatformException catch (error) {
+      final box = context.findRenderObject() as RenderBox?;
+      await Share.share(
+        '$_pageTitle\n$_currentUri',
+        subject: _pageTitle,
+        sharePositionOrigin: box == null
+            ? null
+            : box.localToGlobal(Offset.zero) & box.size,
+      );
+    } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(error.message ?? 'Не вдалося поділитися оголошенням'),
-        ),
+        const SnackBar(content: Text('Не вдалося поділитися оголошенням')),
       );
     }
   }
@@ -431,13 +524,15 @@ class _UaDimScreenState extends State<UaDimScreen> {
       _isLoading = true;
       _loadError = null;
     });
-    _controller.loadRequest(Uri.parse(uaDimProductionUrl));
+    _controller.loadRequest(_currentUri);
   }
 
   @override
   void dispose() {
+    _linkSubscription?.cancel();
+    _connectivitySubscription?.cancel();
+    MobilePushService.instance.dispose();
     if (_supportsAndroidNativeIntegration) {
-      _nativeChannel.setMethodCallHandler(null);
       final platformController = _controller.platform;
       if (platformController is AndroidWebViewController) {
         platformController.setOnShowFileSelector(null);
@@ -459,6 +554,48 @@ class _UaDimScreenState extends State<UaDimScreen> {
           child: Stack(
             children: [
               WebViewWidget(controller: _controller),
+              if (_isOffline)
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: Material(
+                    color: const Color(0xFFB45309),
+                    child: SafeArea(
+                      bottom: false,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(
+                              Icons.cloud_off,
+                              color: Colors.white,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 8),
+                            const Expanded(
+                              child: Text(
+                                'Немає мережі. Відкрита сторінка залишається доступною.',
+                                style: TextStyle(color: Colors.white),
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: _retry,
+                              child: const Text(
+                                'Повторити',
+                                style: TextStyle(color: Colors.white),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               if (_loadError != null)
                 ColoredBox(
                   color: const Color(0xFFF1F5F9),
@@ -517,7 +654,12 @@ class _UaDimScreenState extends State<UaDimScreen> {
               if (_canShareCurrentPage && !_isLoading && _loadError == null)
                 Positioned(
                   right: 16,
-                  bottom: 16,
+                  bottom:
+                      _supportsIosPhotoLibrary &&
+                          _iosPhotoPickerAvailable &&
+                          _iosPhotoBridgeAvailable
+                      ? 80
+                      : 16,
                   child: FloatingActionButton.small(
                     heroTag: 'share-listing',
                     onPressed: _shareCurrentPage,

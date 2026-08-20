@@ -39,6 +39,7 @@ void main() {
       parseUaDimNativeUri('https://ua-dim.com/listing/42')?.path,
       '/listing/42',
     );
+    expect(parseUaDimNativeUri('uadim://listing/42')?.path, '/listing/42');
     expect(
       parseUaDimNativeUri('https://ua-dim.com/listing/not-a-number'),
       isNull,

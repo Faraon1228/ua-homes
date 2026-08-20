@@ -1048,6 +1048,9 @@ function getListingPipeline(listing) {
 
 function getStored(key, fallback) {
   if (typeof window === "undefined") return fallback;
+  if (key === "uaDim.authToken" && window.UaDimAuth?.postMessage) {
+    return window.sessionStorage.getItem(key) ?? window.localStorage.getItem(key) ?? fallback;
+  }
   const value = window.localStorage.getItem(key);
   return value ?? fallback;
 }
@@ -2104,7 +2107,15 @@ export default function RealEstateApp() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (authToken) {
+    if (window.UaDimAuth?.postMessage) {
+      if (authToken) {
+        window.sessionStorage.setItem("uaDim.authToken", authToken);
+      } else {
+        window.sessionStorage.removeItem("uaDim.authToken");
+      }
+      window.localStorage.removeItem("uaDim.authToken");
+      window.UaDimAuth.postMessage(authToken || "");
+    } else if (authToken) {
       window.localStorage.setItem("uaDim.authToken", authToken);
     } else {
       window.localStorage.removeItem("uaDim.authToken");
