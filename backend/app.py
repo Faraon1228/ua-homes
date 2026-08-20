@@ -353,13 +353,18 @@ class _DbCursorProxy:
         else:
             self._cursor.execute(translated, params)
         if self._is_postgres and self._looks_like_insert(translated):
+            savepoint = "ua_dim_lastval"
+            self._cursor.execute(f"SAVEPOINT {savepoint}")
             try:
                 self._cursor.execute("SELECT LASTVAL() AS lastrowid")
                 row = self._cursor.fetchone()
                 value = row.get("lastrowid") if hasattr(row, "get") else (row[0] if row else None)
                 self._lastrowid = int(value) if value is not None else None
             except Exception:
+                self._cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
                 self._lastrowid = None
+            finally:
+                self._cursor.execute(f"RELEASE SAVEPOINT {savepoint}")
         return self
 
     def executemany(self, query, params):
@@ -414,7 +419,7 @@ class _DbConnectionProxy:
     def cursor(self):
         if self._is_postgres:
             import psycopg2.extras
-            cursor = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cursor = self._conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         else:
             cursor = self._conn.cursor()
         return _DbCursorProxy(self, cursor, self._is_postgres)
@@ -735,7 +740,7 @@ def _init_postgres_db():
     import psycopg2
     import psycopg2.extras
 
-    db = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    db = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)
     db.autocommit = False
     try:
         cur = db.cursor()
@@ -1371,10 +1376,14 @@ def close_db(_exc=None):
     if db is not None:
         if _is_postgres():
             try:
-                db.commit()
-            except Exception:
-                pass
-        db.close()
+                if _exc is None:
+                    db.commit()
+                else:
+                    db.rollback()
+            finally:
+                db.close()
+        else:
+            db.close()
 
 
 # ─── Seed data ────────────────────────────────────────────────────────────────
@@ -2919,10 +2928,14 @@ def require_auth(f):
         user_id = int(payload["sub"])
         db = get_db()
         user_row = db.execute(
-            "SELECT id, email, auth_token_version FROM users WHERE id = ?",
+            "SELECT id, email, auth_token_version, status FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
-        if not user_row or not token_matches_user_version(payload, user_row):
+        if (
+            not user_row
+            or user_row["status"] != "active"
+            or not token_matches_user_version(payload, user_row)
+        ):
             return jsonify(error="Сесія недійсна — увійдіть знову"), 401
         g.user_id    = user_id
         g.user_email = payload["email"]
@@ -2940,10 +2953,10 @@ def get_optional_actor(db) -> tuple[int | None, bool]:
         return None, False
     user_id = int(payload["sub"])
     row = db.execute(
-        "SELECT role, auth_token_version FROM users WHERE id = ?",
+        "SELECT role, auth_token_version, status FROM users WHERE id = ?",
         (user_id,),
     ).fetchone()
-    if not row or not token_matches_user_version(payload, row):
+    if not row or row["status"] != "active" or not token_matches_user_version(payload, row):
         return None, False
     return user_id, row["role"] == "admin"
 
@@ -4027,6 +4040,16 @@ def abort_multipart_upload():
     return jsonify(status="ok")
 
 
+def _image_optimization_metadata(original_size: int, optimized_total: int) -> dict:
+    compression_ratio = round((1 - optimized_total / (original_size * 3)) * 100)
+    return {
+        "original_size": original_size,
+        "optimized_total": optimized_total,
+        "compression_ratio": compression_ratio,
+        "message": f"Created 3 WebP variants + AVIF. Compression: {compression_ratio}%",
+    }
+
+
 @app.route("/api/images/optimize", methods=["POST"])
 @require_auth
 def optimize_image():
@@ -4158,12 +4181,7 @@ def optimize_image():
            except Exception as e:
                print(f"AVIF conversion skipped: {e}")
         
-       results['metadata'] = {
-           'original_size': original_size,
-           'optimized_total': total_optimized,
-           'compression_ratio': round((1 - total_optimized / (original_size * 3)) * 100),
-           'message': f'Created 3 WebP variants + AVIF. Compression: {results["metadata"]["compression_ratio"]}%'
-       }
+       results['metadata'] = _image_optimization_metadata(original_size, total_optimized)
         
        return jsonify(results)
     
@@ -4443,6 +4461,7 @@ def register():
     except Exception as exc:
         if not _is_db_integrity_error(exc):
             raise
+        db.rollback()
         return jsonify(error="Цей email вже зареєстровано"), 409
 
     user_id = cur.lastrowid
@@ -4482,7 +4501,10 @@ def login():
     pw    = strip(data.get("password"), 128)
 
     db   = get_db()
-    row  = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    row  = db.execute(
+        "SELECT * FROM users WHERE email = ? AND status = 'active'",
+        (email,),
+    ).fetchone()
 
     stored_password = row["password_hash"] if row and _has_key(row, "password_hash") else None
     if not stored_password and row:
@@ -4804,6 +4826,27 @@ CURSOR_FIELD: dict[str, tuple[str, str]] = {
     "newest":     ("created_at", "desc"),
     "views-desc": ("views",      "desc"),
 }
+
+
+def _listing_search_filter(db, search: str) -> tuple[str, list, list[int]]:
+    token = f"%{search}%"
+    like_clause = " AND (l.title LIKE ? OR l.city LIKE ? OR l.district LIKE ? OR l.description LIKE ?)"
+    if _is_postgres():
+        return like_clause, [token, token, token, token], []
+
+    try:
+        fts_rows = db.execute(
+            "SELECT rowid FROM listings_fts WHERE listings_fts MATCH ? ORDER BY rank LIMIT 500",
+            (search,),
+        ).fetchall()
+        fts_ids = [int(row[0]) for row in fts_rows if int(row[0]) > 0]
+        if not fts_ids:
+            return " AND 1=0", [], []
+        placeholders = ",".join("?" for _ in fts_ids)
+        return f" AND l.id IN ({placeholders})", fts_ids, fts_ids[:200]
+    except Exception:
+        return like_clause, [token, token, token, token], []
+
 
 LISTING_SELECT = """
     SELECT l.id, l.user_id, l.title, l.city, l.district, l.property_type, l.condition_type,
@@ -5355,25 +5398,9 @@ def get_listings():
     if e_oselya:
         query += " AND l.e_oselya = 1"
     if search:
-        # Use FTS5 for full-text search; fall back to LIKE on error
-        try:
-            fts_rows = db.execute(
-                "SELECT rowid FROM listings_fts WHERE listings_fts MATCH ? ORDER BY rank LIMIT 500",
-                (search,)
-            ).fetchall()
-            fts_ids = [int(r[0]) for r in fts_rows if int(r[0]) > 0]
-            if fts_ids:
-                ranked_fts_ids = fts_ids[:200]
-                placeholders = ",".join("?" for _ in fts_ids)
-                query += f" AND l.id IN ({placeholders})"
-                params.extend(fts_ids)
-            else:
-                query += " AND 1=0"  # no FTS results
-        except Exception:
-            # FTS not available, fall back to LIKE
-            token = f"%{search}%"
-            query += " AND (l.title LIKE ? OR l.city LIKE ? OR l.district LIKE ? OR l.description LIKE ?)"
-            params.extend([token, token, token, token])
+        search_clause, search_params, ranked_fts_ids = _listing_search_filter(db, search)
+        query += search_clause
+        params.extend(search_params)
     if min_floor is not None:
         query += " AND l.floor >= ?"
         params.append(min_floor)
@@ -6529,6 +6556,7 @@ def get_map_listings():
                l.latitude, l.longitude, l.e_oselya, l.views, l.created_at
         FROM listings l
         WHERE l.latitude IS NOT NULL AND l.longitude IS NOT NULL
+          AND l.status = 'published' AND l.listing_status = 'active'
     """
     params: list = []
 
@@ -9093,7 +9121,6 @@ except ImportError:
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    init_db()
     port = int(os.environ.get("PORT", 5050))
     print(f"UA Homes API v2 → http://localhost:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)

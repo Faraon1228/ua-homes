@@ -292,6 +292,178 @@ class TrustFeatureTests(unittest.TestCase):
             )
         )
 
+    def test_map_only_returns_active_published_listings(self):
+        with sqlite3.connect(TEST_DB) as database:
+            pending_id = self._insert_listing(
+                database,
+                self.owner_id,
+                title="Pending map listing",
+                price=90_000,
+                area=45,
+                status="pending",
+            )
+            sold_id = self._insert_listing(
+                database,
+                self.owner_id,
+                title="Sold map listing",
+                price=110_000,
+                area=55,
+                listing_status="sold",
+            )
+            map_ids = (self.target_id, self.draft_id, pending_id, sold_id)
+            database.executemany(
+                "UPDATE listings SET latitude = ?, longitude = ? WHERE id = ?",
+                [(50.45, 30.52, listing_id) for listing_id in map_ids],
+            )
+            database.commit()
+
+        response = self.client.get("/api/map/listings")
+        self.assertEqual(response.status_code, 200)
+        returned_ids = {listing["id"] for listing in response.get_json()["listings"]}
+        self.assertIn(self.target_id, returned_ids)
+        self.assertNotIn(self.draft_id, returned_ids)
+        self.assertNotIn(pending_id, returned_ids)
+        self.assertNotIn(sold_id, returned_ids)
+
+    def test_admin_can_create_listing_with_complete_insert_contract(self):
+        response = self.client.post(
+            "/api/admin/listings",
+            headers=self._auth(self.admin_token),
+            json={
+                "title": "Admin-created listing",
+                "city": "Львів",
+                "district": "Галицький",
+                "price": 125_000,
+                "rooms": 3,
+                "area": 72.5,
+                "status": "draft",
+                "latitude": 49.84,
+                "longitude": 24.03,
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.get_json())
+        listing_id = response.get_json()["id"]
+        with sqlite3.connect(TEST_DB) as database:
+            row = database.execute(
+                "SELECT title, user_id, status, latitude, longitude FROM listings WHERE id = ?",
+                (listing_id,),
+            ).fetchone()
+        self.assertEqual(
+            row,
+            ("Admin-created listing", self.admin_id, "draft", 49.84, 24.03),
+        )
+
+    def test_suspended_users_and_admins_cannot_authenticate(self):
+        with sqlite3.connect(TEST_DB) as database:
+            database.execute(
+                "UPDATE users SET status = 'suspended' WHERE id = ?",
+                (self.owner_id,),
+            )
+            database.execute(
+                "UPDATE users SET status = 'suspended' WHERE id = ?",
+                (self.admin_id,),
+            )
+            database.commit()
+
+        login = self.client.post(
+            "/api/auth/login",
+            json={"email": "owner@example.test", "password": "hash"},
+        )
+        self.assertEqual(login.status_code, 401)
+        self.assertEqual(
+            self.client.get("/api/auth/me", headers=self._auth(self.owner_token)).status_code,
+            401,
+        )
+        self.assertEqual(
+            self.client.get("/api/listings?mine=1", headers=self._auth(self.owner_token)).status_code,
+            401,
+        )
+        self.assertEqual(
+            self.client.get(
+                "/api/admin/dashboard/stats",
+                headers=self._auth(self.admin_token),
+            ).status_code,
+            401,
+        )
+        admin_login = self.client.post(
+            "/api/admin/auth/login",
+            json={"email": "admin@example.test", "password": "hash"},
+        )
+        self.assertEqual(admin_login.status_code, 401)
+
+    def test_duplicate_registration_rolls_back_failed_transaction(self):
+        class DuplicateRegistrationDatabase:
+            def __init__(self):
+                self.rolled_back = False
+
+            def execute(self, _query, _params=None):
+                raise sqlite3.IntegrityError("duplicate email")
+
+            def rollback(self):
+                self.rolled_back = True
+
+        database = DuplicateRegistrationDatabase()
+        with mock.patch.object(app_module, "get_db", return_value=database):
+            response = self.client.post(
+                "/api/auth/register",
+                json={
+                    "name": "Duplicate",
+                    "email": "owner@example.test",
+                    "password": "password123",
+                },
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(database.rolled_back)
+
+    def test_admin_user_updates_validate_values_and_revoke_tokens(self):
+        invalid_role = self.client.put(
+            f"/api/admin/users/{self.owner_id}",
+            headers=self._auth(self.admin_token),
+            json={"role": "superuser"},
+        )
+        invalid_status = self.client.put(
+            f"/api/admin/users/{self.owner_id}",
+            headers=self._auth(self.admin_token),
+            json={"status": "deleted"},
+        )
+        self.assertEqual(invalid_role.status_code, 400)
+        self.assertEqual(invalid_status.status_code, 400)
+
+        suspended = self.client.put(
+            f"/api/admin/users/{self.owner_id}",
+            headers=self._auth(self.admin_token),
+            json={"status": "suspended"},
+        )
+        self.assertEqual(suspended.status_code, 200)
+        self.assertEqual(
+            self.client.get("/api/auth/me", headers=self._auth(self.owner_token)).status_code,
+            401,
+        )
+
+        role_changed = self.client.put(
+            f"/api/admin/users/{self.realtor_id}",
+            headers=self._auth(self.admin_token),
+            json={"role": "agent"},
+        )
+        self.assertEqual(role_changed.status_code, 200)
+        self.assertEqual(
+            self.client.get("/api/auth/me", headers=self._auth(self.realtor_token)).status_code,
+            401,
+        )
+
+        with sqlite3.connect(TEST_DB) as database:
+            owner = database.execute(
+                "SELECT role, status, auth_token_version FROM users WHERE id = ?",
+                (self.owner_id,),
+            ).fetchone()
+            realtor = database.execute(
+                "SELECT role, status, auth_token_version FROM users WHERE id = ?",
+                (self.realtor_id,),
+            ).fetchone()
+        self.assertEqual(owner, ("user", "suspended", 1))
+        self.assertEqual(realtor, ("agent", "active", 1))
+
     def test_admin_bootstrap_hashes_password_and_login_page_has_no_credentials(self):
         email = "secure-admin@example.test"
         password = "temporary-admin-password"
@@ -959,22 +1131,135 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(price_rows[0]["new_value"], "105000")
         self.assertEqual(price_rows[0]["actor_type"], "owner")
 
-    def test_postgres_cursor_exposes_captured_lastval(self):
+    def test_postgres_cursor_uses_dict_rows_with_numeric_and_named_access(self):
+        import psycopg2.extras
+
+        class FakeConnection:
+            def __init__(self):
+                self.cursor_factory = None
+
+            def cursor(self, *, cursor_factory):
+                self.cursor_factory = cursor_factory
+                return object()
+
+        connection = FakeConnection()
+        app_module._DbConnectionProxy(connection, is_postgres=True).cursor()
+        self.assertIs(connection.cursor_factory, psycopg2.extras.DictCursor)
+
+        class FakeDictCursor:
+            index = {"id": 0, "title": 1}
+            description = (None, None)
+
+        row = psycopg2.extras.DictRow(FakeDictCursor())
+        row[:] = [42, "Test listing"]
+        self.assertEqual(row[0], 42)
+        self.assertEqual(row["id"], 42)
+        self.assertEqual(dict(row), {"id": 42, "title": "Test listing"})
+
+    def test_postgres_cursor_exposes_captured_lastval_with_savepoint(self):
         class FakeCursor:
             lastrowid = None
 
             def __init__(self):
                 self.query = ""
+                self.queries = []
 
             def execute(self, query, params=None):
                 self.query = query
+                self.queries.append((query, params))
 
             def fetchone(self):
                 return {"lastrowid": 42} if self.query.startswith("SELECT LASTVAL()") else None
 
-        proxy = app_module._DbCursorProxy(None, FakeCursor(), is_postgres=True)
+        cursor = FakeCursor()
+        proxy = app_module._DbCursorProxy(None, cursor, is_postgres=True)
         proxy.execute("INSERT INTO listing_reports (listing_id) VALUES (?)", (1,))
         self.assertEqual(proxy.lastrowid, 42)
+        self.assertEqual(
+            [query for query, _params in cursor.queries],
+            [
+                "INSERT INTO listing_reports (listing_id) VALUES (%s)",
+                "SAVEPOINT ua_dim_lastval",
+                "SELECT LASTVAL() AS lastrowid",
+                "RELEASE SAVEPOINT ua_dim_lastval",
+            ],
+        )
+
+    def test_postgres_cursor_rolls_back_only_failed_lastval_lookup(self):
+        class FakeCursor:
+            def __init__(self):
+                self.queries = []
+
+            def execute(self, query, params=None):
+                self.queries.append((query, params))
+                if query.startswith("SELECT LASTVAL()"):
+                    raise RuntimeError("lastval is not yet defined")
+
+        cursor = FakeCursor()
+        proxy = app_module._DbCursorProxy(None, cursor, is_postgres=True)
+        proxy.execute("INSERT INTO listing_city_summary (city) VALUES (?)", ("Київ",))
+
+        self.assertIsNone(proxy.lastrowid)
+        self.assertEqual(
+            [query for query, _params in cursor.queries],
+            [
+                "INSERT INTO listing_city_summary (city) VALUES (%s)",
+                "SAVEPOINT ua_dim_lastval",
+                "SELECT LASTVAL() AS lastrowid",
+                "ROLLBACK TO SAVEPOINT ua_dim_lastval",
+                "RELEASE SAVEPOINT ua_dim_lastval",
+            ],
+        )
+
+    def test_postgres_listing_search_uses_like_without_querying_fts(self):
+        class NoQueryDatabase:
+            def execute(self, query, params=None):
+                raise AssertionError(f"PostgreSQL search unexpectedly executed: {query}")
+
+        with mock.patch.object(app_module, "_is_postgres", return_value=True):
+            clause, params, ranked_ids = app_module._listing_search_filter(
+                NoQueryDatabase(),
+                "Печерськ",
+            )
+
+        self.assertNotIn("listings_fts", clause)
+        self.assertIn("l.title LIKE ?", clause)
+        self.assertEqual(params, ["%Печерськ%"] * 4)
+        self.assertEqual(ranked_ids, [])
+
+    def test_database_teardown_commits_success_and_rolls_back_exception(self):
+        class FakeDatabase:
+            def __init__(self):
+                self.calls = []
+
+            def commit(self):
+                self.calls.append("commit")
+
+            def rollback(self):
+                self.calls.append("rollback")
+
+            def close(self):
+                self.calls.append("close")
+
+        successful = FakeDatabase()
+        with mock.patch.object(app_module, "_is_postgres", return_value=True):
+            with app_module.app.app_context():
+                app_module.g.db = successful
+                app_module.close_db()
+        self.assertEqual(successful.calls, ["commit", "close"])
+
+        failed = FakeDatabase()
+        with mock.patch.object(app_module, "_is_postgres", return_value=True):
+            with app_module.app.app_context():
+                app_module.g.db = failed
+                app_module.close_db(RuntimeError("request failed"))
+        self.assertEqual(failed.calls, ["rollback", "close"])
+
+    def test_image_optimization_metadata_is_built_without_self_reference(self):
+        metadata = app_module._image_optimization_metadata(300, 450)
+        self.assertEqual(metadata["compression_ratio"], 50)
+        self.assertEqual(metadata["optimized_total"], 450)
+        self.assertIn("Compression: 50%", metadata["message"])
 
     # ─── Stage-2 auth hardening tests ─────────────────────────────────────────
 

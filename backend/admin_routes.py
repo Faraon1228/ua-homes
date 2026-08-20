@@ -41,11 +41,15 @@ def require_auth_admin(f):
         from app import get_db, token_matches_user_version
         db = get_db()
         user = db.execute(
-            "SELECT role, auth_token_version FROM users WHERE id = ?",
+            "SELECT role, auth_token_version, status FROM users WHERE id = ?",
             (g.user_id,)
         ).fetchone()
 
-        if not user or not token_matches_user_version(payload, user):
+        if (
+            not user
+            or user["status"] != "active"
+            or not token_matches_user_version(payload, user)
+        ):
             return jsonify(error="Invalid token"), 401
         if user['role'] != 'admin':
             return jsonify(error="Admin access required"), 403
@@ -275,7 +279,7 @@ def admin_login():
         return jsonify(error="Email and password required"), 400
     
     user = db.execute(
-        "SELECT id, password_hash, role, auth_token_version FROM users WHERE email = ?",
+        "SELECT id, password_hash, role, auth_token_version, status FROM users WHERE email = ?",
         (email,)
     ).fetchone()
     
@@ -284,6 +288,8 @@ def admin_login():
     
     if user['role'] != 'admin':
         return jsonify(error="User is not an admin"), 403
+    if user['status'] != 'active':
+        return jsonify(error="Account inactive"), 401
     
     # Check password
     if not bcrypt.checkpw(password.encode(), user['password_hash'].encode()):
@@ -421,7 +427,7 @@ def admin_create_listing():
         (title, city, district, property_type, condition_type, price, rooms, area,
         floor, total_floors, year_built, e_oselya, description, status, listing_status, moderation_status, moderation_updated_at, published_at, user_id,
         latitude, longitude, source, has_photo_tour, has_video_tour, listing_highlights, capture_mode)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         data['title'],
         data['city'],
@@ -1266,20 +1272,37 @@ def admin_update_user(user_id):
     db = get_db()
     data = request.get_json() or {}
     
+    if 'role' not in data and 'status' not in data:
+        return jsonify(error="No updates provided"), 400
+
+    allowed_roles = {'user', 'agent', 'admin'}
+    allowed_statuses = {'active', 'inactive', 'suspended'}
+    role = str(data.get('role') or '').strip().lower() if 'role' in data else None
+    status = str(data.get('status') or '').strip().lower() if 'status' in data else None
+    if role is not None and role not in allowed_roles:
+        return jsonify(error=f"Invalid role. Allowed: {sorted(allowed_roles)}"), 400
+    if status is not None and status not in allowed_statuses:
+        return jsonify(error=f"Invalid status. Allowed: {sorted(allowed_statuses)}"), 400
+
+    existing = db.execute(
+        "SELECT role, status FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if not existing:
+        return jsonify(error="User not found"), 404
+
     updates = []
     params = []
-    
-    if 'role' in data:
+    if role is not None and role != existing['role']:
         updates.append("role = ?")
-        params.append(data['role'])
-    
-    if 'status' in data:
+        params.append(role)
+    if status is not None and status != existing['status']:
         updates.append("status = ?")
-        params.append(data['status'])
-    
+        params.append(status)
     if not updates:
-        return jsonify(error="No updates provided"), 400
-    
+        return jsonify(ok=True)
+
+    updates.append("auth_token_version = auth_token_version + 1")
     params.append(user_id)
     query = f"UPDATE users SET {', '.join(updates)} WHERE id = ?"
     
