@@ -17,6 +17,7 @@
 | `UA_HOMES_DB_PATH` | Persistent SQLite path used when `DATABASE_URL` is absent | `backend/ua_homes.db` |
 | `UA_HOMES_SEED_DEMO_DATA` | Seed demo users/listings into a fresh PostgreSQL database | `false` |
 | `UA_HOMES_REQUIRE_POSTGRES` | Fail startup rather than silently use SQLite | `false` |
+| `UA_HOMES_MAINTENANCE_MODE` | Reject mutations with `503`/`Retry-After` during cutover | `false` |
 
 Production must use PostgreSQL. Keep SQLite only for local development and as the
 source of the one-time migration:

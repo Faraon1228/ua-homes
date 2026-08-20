@@ -201,6 +201,22 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(unavailable.get_json()["database_engine"], "sqlite")
         self.assertRegex(unavailable.headers["X-Request-ID"], r"^[a-f0-9]{24}$")
 
+    def test_maintenance_mode_blocks_writes_but_keeps_backup_available(self):
+        with mock.patch.object(app_module, "MAINTENANCE_MODE", True):
+            blocked = self.client.post(
+                f"/api/listings/{self.target_id}/inquiries",
+                json={
+                    "name": "Покупець",
+                    "phone": "+380671234567",
+                    "message": "Коли можна переглянути?",
+                },
+            )
+            backup = self.client.post("/api/operations/backup")
+        self.assertEqual(blocked.status_code, 503)
+        self.assertEqual(blocked.get_json()["code"], "maintenance")
+        self.assertEqual(blocked.headers["Retry-After"], "60")
+        self.assertNotEqual(backup.get_json().get("code"), "maintenance")
+
     def test_authenticated_backup_export_and_restore_drill(self):
         with mock.patch.dict(os.environ, {"UA_HOMES_BACKUP_TOKEN": ""}):
             not_configured = self.client.post("/api/operations/backup")
