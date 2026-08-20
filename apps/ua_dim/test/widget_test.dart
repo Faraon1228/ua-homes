@@ -39,9 +39,21 @@ void main() {
       parseUaDimNativeUri('https://ua-dim.com/listing/42')?.path,
       '/listing/42',
     );
-    expect(parseUaDimNativeUri('https://ua-dim.com/listing/not-a-number'), isNull);
+    expect(
+      parseUaDimNativeUri('https://ua-dim.com/listing/not-a-number'),
+      isNull,
+    );
     expect(parseUaDimNativeUri('https://ua-dim.com/listing/42/edit'), isNull);
     expect(parseUaDimNativeUri('https://example.com/listing/42'), isNull);
     expect(parseUaDimNativeUri('mailto:feedback@ua-dim.com'), isNull);
+  });
+
+  test('UA-Dim normalizes JavaScript boolean results', () {
+    expect(isJavaScriptTrue(true), isTrue);
+    expect(isJavaScriptTrue('true'), isTrue);
+    expect(isJavaScriptTrue(1), isTrue);
+    expect(isJavaScriptTrue(false), isFalse);
+    expect(isJavaScriptTrue('false'), isFalse);
+    expect(isJavaScriptTrue(null), isFalse);
   });
 }

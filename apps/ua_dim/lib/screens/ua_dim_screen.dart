@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -27,6 +29,9 @@ Uri? parseUaDimNativeUri(Object? value) {
   return uri != null && isUaDimListingUri(uri) ? uri : null;
 }
 
+bool isJavaScriptTrue(Object? value) =>
+    value == true || value == 'true' || value == 1;
+
 class UaDimScreen extends StatefulWidget {
   const UaDimScreen({super.key});
 
@@ -41,9 +46,15 @@ class _UaDimScreenState extends State<UaDimScreen> {
   String? _loadError;
   Uri _currentUri = Uri.parse(uaDimProductionUrl);
   String _pageTitle = 'UA-Dim';
+  bool _iosPhotoPickerAvailable = false;
+  bool _iosPhotoBridgeAvailable = false;
+  bool _isPickingIosPhotos = false;
 
   bool get _supportsAndroidNativeIntegration =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  bool get _supportsIosPhotoLibrary =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
 
   bool get _canShareCurrentPage =>
       _supportsAndroidNativeIntegration && isUaDimListingUri(_currentUri);
@@ -54,6 +65,10 @@ class _UaDimScreenState extends State<UaDimScreen> {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0xFFF1F5F9))
+      ..addJavaScriptChannel(
+        'UaDimMediaPicker',
+        onMessageReceived: _handleIosPhotoPickerMessage,
+      )
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (_) {
@@ -61,10 +76,12 @@ class _UaDimScreenState extends State<UaDimScreen> {
             setState(() {
               _isLoading = true;
               _loadError = null;
+              _iosPhotoBridgeAvailable = false;
             });
           },
           onPageFinished: (url) async {
             if (!mounted) return;
+            await _installIosPhotoPickerBridge();
             final canGoBack = await _controller.canGoBack();
             final title = await _controller.getTitle();
             if (!mounted) return;
@@ -90,6 +107,216 @@ class _UaDimScreenState extends State<UaDimScreen> {
       ..loadRequest(Uri.parse(uaDimProductionUrl));
     _configureNativeIntegration();
     _configureAndroidFileSelector();
+    _configureIosPhotoLibrary();
+  }
+
+  Future<void> _configureIosPhotoLibrary() async {
+    if (!_supportsIosPhotoLibrary) return;
+    try {
+      _iosPhotoPickerAvailable =
+          await _nativeChannel.invokeMethod<bool>('supportsPhotoPicker') ??
+          false;
+      if (mounted) setState(() {});
+      await _installIosPhotoPickerBridge();
+    } on PlatformException catch (error) {
+      debugPrint('UA-Dim iOS photo picker unavailable: ${error.message}');
+    }
+  }
+
+  Future<void> _installIosPhotoPickerBridge() async {
+    if (!_supportsIosPhotoLibrary || !_iosPhotoPickerAvailable) {
+      _setIosPhotoBridgeAvailable(false);
+      return;
+    }
+    try {
+      final capability = await _controller.runJavaScriptReturningResult('''
+        (() => typeof DataTransfer === 'function' && typeof File === 'function')();
+      ''');
+      if (!isJavaScriptTrue(capability)) {
+        _setIosPhotoBridgeAvailable(false);
+        return;
+      }
+      await _controller.runJavaScript('''
+        (() => {
+          if (window.__uaDimPhotoPickerInstalled) return;
+          window.__uaDimPhotoPickerInstalled = true;
+          document.addEventListener('click', (event) => {
+            const target = event.target;
+            const directInput = target instanceof Element
+              ? target.closest('input[type="file"]')
+              : null;
+            const input = directInput || (
+              target instanceof Element
+                ? target.closest('label')?.querySelector('input[type="file"]')
+                : null
+            );
+            if (!input || input.hasAttribute('capture')) return;
+            const accept = (input.getAttribute('accept') || '').toLowerCase();
+            if (!accept.includes('image')) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            window.__uaDimPendingPhotoInput = input;
+            UaDimMediaPicker.postMessage(JSON.stringify({
+              allowMultiple: Boolean(input.multiple),
+            }));
+          }, true);
+        })();
+      ''');
+      _setIosPhotoBridgeAvailable(true);
+    } on PlatformException catch (error) {
+      _setIosPhotoBridgeAvailable(false);
+      debugPrint('UA-Dim iOS photo bridge unavailable: ${error.message}');
+    }
+  }
+
+  void _setIosPhotoBridgeAvailable(bool available) {
+    if (_iosPhotoBridgeAvailable == available) return;
+    if (mounted) {
+      setState(() => _iosPhotoBridgeAvailable = available);
+    } else {
+      _iosPhotoBridgeAvailable = available;
+    }
+  }
+
+  Future<void> _handleIosPhotoPickerMessage(JavaScriptMessage message) async {
+    if (!_supportsIosPhotoLibrary) return;
+    try {
+      final arguments = jsonDecode(message.message) as Map<String, dynamic>;
+      await _pickIosPhotos(arguments['allowMultiple'] == true);
+    } on FormatException catch (error) {
+      debugPrint('UA-Dim invalid iOS picker request: $error');
+    }
+  }
+
+  Future<void> _pickIosPhotos(
+    bool allowMultiple, {
+    bool findImageInput = false,
+  }) async {
+    if (!mounted || !_iosPhotoPickerAvailable || !_iosPhotoBridgeAvailable) {
+      return;
+    }
+    if (_isPickingIosPhotos) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Зачекайте, попередні фото ще додаються.'),
+          ),
+        );
+      }
+      return;
+    }
+    setState(() => _isPickingIosPhotos = true);
+    try {
+      if (findImageInput) {
+        final hasImageInput = await _controller.runJavaScriptReturningResult('''
+          (() => {
+            const input = document.querySelector(
+              'input[type="file"][accept*="image"]:not([capture])'
+            );
+            window.__uaDimPendingPhotoInput = input;
+            return Boolean(input);
+          })();
+        ''');
+        if (!isJavaScriptTrue(hasImageInput)) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Спочатку відкрийте форму додавання оголошення.'),
+            ),
+          );
+          return;
+        }
+      }
+      final selectedCount =
+          await _nativeChannel.invokeMethod<int>('pickPhotos', {
+            'allowMultiple': allowMultiple,
+          }) ??
+          0;
+      if (selectedCount == 0 || !mounted) return;
+      await _controller.runJavaScript('''
+        (() => {
+          window.__uaDimPhotoTransfer = new DataTransfer();
+        })();
+      ''');
+      var rejectedCount = 0;
+      for (var index = 0; index < selectedCount; index += 1) {
+        if (!mounted) return;
+        final photo = await _nativeChannel.invokeMapMethod<Object?, Object?>(
+          'readNextPhoto',
+        );
+        if (!mounted) return;
+        final bytes = photo?['data'];
+        if (photo?['error'] != null || bytes is! Uint8List) {
+          rejectedCount += 1;
+          continue;
+        }
+        final payload = {
+          'name': photo?['name']?.toString() ?? 'ua-dim-photo.jpg',
+          'type': photo?['type']?.toString() ?? 'image/jpeg',
+          'data': base64Encode(bytes),
+        };
+        await _controller.runJavaScript('''
+          (() => {
+            const photo = ${jsonEncode(payload)};
+            const binary = atob(photo.data);
+            const bytes = new Uint8Array(binary.length);
+            for (let index = 0; index < binary.length; index += 1) {
+              bytes[index] = binary.charCodeAt(index);
+            }
+            window.__uaDimPhotoTransfer.items.add(
+              new File([bytes], photo.name, { type: photo.type })
+            );
+          })();
+        ''');
+      }
+      if (!mounted) return;
+      await _controller.runJavaScript('''
+        (() => {
+          const input = window.__uaDimPendingPhotoInput || document.querySelector(
+            'input[type="file"][accept*="image"]:not([capture])'
+          );
+          const transfer = window.__uaDimPhotoTransfer;
+          if (input && transfer && transfer.files.length > 0) {
+            input.files = transfer.files;
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          window.__uaDimPendingPhotoInput = null;
+          window.__uaDimPhotoTransfer = null;
+        })();
+      ''');
+      if (rejectedCount > 0 && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Пропущено $rejectedCount фото: перевірте формат і розмір до 10 МБ.',
+            ),
+          ),
+        );
+      }
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.message ?? 'Не вдалося відкрити фототеку'),
+        ),
+      );
+    } finally {
+      try {
+        await _nativeChannel.invokeMethod<void>('resetPhotoPicker');
+        if (mounted) {
+          await _controller.runJavaScript('''
+            (() => {
+              window.__uaDimPendingPhotoInput = null;
+              window.__uaDimPhotoTransfer = null;
+            })();
+          ''');
+        }
+      } on PlatformException catch (error) {
+        debugPrint('UA-Dim iOS photo picker cleanup failed: ${error.message}');
+      }
+      _isPickingIosPhotos = false;
+      if (mounted) setState(() {});
+    }
   }
 
   Future<void> _configureAndroidFileSelector() async {
@@ -166,9 +393,7 @@ class _UaDimScreenState extends State<UaDimScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            error.message ?? 'Не вдалося поділитися оголошенням',
-          ),
+          content: Text(error.message ?? 'Не вдалося поділитися оголошенням'),
         ),
       );
     }
@@ -298,6 +523,28 @@ class _UaDimScreenState extends State<UaDimScreen> {
                     onPressed: _shareCurrentPage,
                     tooltip: 'Поділитися оголошенням',
                     child: const Icon(Icons.share_outlined),
+                  ),
+                ),
+              if (_supportsIosPhotoLibrary &&
+                  _iosPhotoPickerAvailable &&
+                  _iosPhotoBridgeAvailable &&
+                  !_isLoading &&
+                  _loadError == null)
+                Positioned(
+                  right: 16,
+                  bottom: 16,
+                  child: FloatingActionButton.small(
+                    heroTag: 'pick-listing-photos',
+                    onPressed: _isPickingIosPhotos
+                        ? null
+                        : () => _pickIosPhotos(true, findImageInput: true),
+                    tooltip: 'Фото з фототеки',
+                    child: _isPickingIosPhotos
+                        ? const SizedBox.square(
+                            dimension: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.photo_library_outlined),
                   ),
                 ),
             ],
