@@ -918,6 +918,11 @@ def _init_postgres_db():
                 message TEXT,
                 listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL,
                 session_id TEXT,
+                requester_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                preferred_channel TEXT NOT NULL DEFAULT 'phone',
+                status TEXT NOT NULL DEFAULT 'new',
+                response_message TEXT,
+                responded_at TEXT,
                 created_at TEXT NOT NULL DEFAULT ({db_now_expr()})
             );
 
@@ -1093,6 +1098,17 @@ def _init_postgres_db():
             ALTER TABLE premium_orders ADD COLUMN IF NOT EXISTS previous_plan_expires_at TEXT;
             ALTER TABLE premium_orders ADD COLUMN IF NOT EXISTS activated_plan_expires_at TEXT;
             ALTER TABLE premium_orders ADD COLUMN IF NOT EXISTS entitlement_chain_id TEXT;
+            ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS requester_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS preferred_channel TEXT NOT NULL DEFAULT 'phone';
+            ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'new';
+            ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS response_message TEXT;
+            ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS responded_at TEXT;
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_lead_requests_listing_status
+                ON lead_requests(listing_id, status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_lead_requests_requester
+                ON lead_requests(requester_user_id, created_at DESC);
         """)
         cur.execute(
             "UPDATE premium_orders SET environment = %s"
@@ -2453,6 +2469,11 @@ def init_db():
             message TEXT,
             listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL,
             session_id TEXT,
+            requester_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            preferred_channel TEXT NOT NULL DEFAULT 'phone',
+            status TEXT NOT NULL DEFAULT 'new',
+            response_message TEXT,
+            responded_at TEXT,
             created_at TEXT NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_lead_requests_created_at ON lead_requests(created_at);
@@ -2694,6 +2715,22 @@ def init_db():
         " OR (environment = 'disabled' AND status IN ('pending', 'success', 'sandbox'))",
         (_legacy_liqpay_environment(),),
     )
+
+    lead_request_columns = {
+        row[1] for row in db.execute("PRAGMA table_info(lead_requests)").fetchall()
+    }
+    if "requester_user_id" not in lead_request_columns:
+        db.execute("ALTER TABLE lead_requests ADD COLUMN requester_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
+    if "preferred_channel" not in lead_request_columns:
+        db.execute("ALTER TABLE lead_requests ADD COLUMN preferred_channel TEXT NOT NULL DEFAULT 'phone'")
+    if "status" not in lead_request_columns:
+        db.execute("ALTER TABLE lead_requests ADD COLUMN status TEXT NOT NULL DEFAULT 'new'")
+    if "response_message" not in lead_request_columns:
+        db.execute("ALTER TABLE lead_requests ADD COLUMN response_message TEXT")
+    if "responded_at" not in lead_request_columns:
+        db.execute("ALTER TABLE lead_requests ADD COLUMN responded_at TEXT")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_lead_requests_listing_status ON lead_requests(listing_id, status, created_at DESC)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_lead_requests_requester ON lead_requests(requester_user_id, created_at DESC)")
     db.execute(
         """
         UPDATE premium_orders
@@ -3481,6 +3518,13 @@ def _row_to_listing(r, include_private: bool = False) -> dict:
         # moderation notes — those are only for the owner/admin themselves.
         d.pop("owner_email", None)
         d.pop("moderation_reason", None)
+        if not (
+            d.get("verified_phone")
+            and d.get("owner_phone_verified")
+            and d.get("owner_phone")
+        ):
+            d.pop("owner_phone", None)
+        d.pop("owner_phone_verified", None)
     d["has_photo_tour"] = bool(d.get("has_photo_tour"))
     d["has_video_tour"] = bool(d.get("has_video_tour"))
     d["verified_owner"] = bool(d.get("verified_owner"))
@@ -4859,7 +4903,8 @@ LISTING_SELECT = """
            l.listing_verification_status,
            l.published_at, l.created_at,
            COALESCE(dup.dup_count, 1) AS dup_count,
-           u.name AS owner_name, u.email AS owner_email, u.account_type AS owner_account_type,
+           u.name AS owner_name, u.email AS owner_email, u.phone AS owner_phone,
+           u.phone_verified AS owner_phone_verified, u.account_type AS owner_account_type,
            u.agency_slug AS owner_agency_slug,
            ap.name AS agency_name, ap.kind AS agency_kind, ap.is_verified AS agency_verified
     FROM   listings l
@@ -6481,22 +6526,13 @@ def dispatch_listing_alerts_health():
     )
 
 
-@app.route("/api/recommendations", methods=["GET"])
-def get_recommendations():
-    db = get_db()
-    listing_id = nonneg_int(request.args.get("listing_id"))
-    limit = nonneg_int(request.args.get("limit")) or 6
-    limit = min(max(limit, 1), 20)
-
-    if listing_id is None:
-        return jsonify(error="listing_id is required"), 422
-
+def _listing_recommendations(db, listing_id: int, limit: int = 6) -> list[dict] | None:
     source = db.execute(
         "SELECT id, city, district, property_type, rooms, price FROM listings WHERE id = ?",
         (listing_id,),
     ).fetchone()
     if not source:
-        return jsonify(error="Оголошення не знайдено"), 404
+        return None
 
     candidates = db.execute(
         LISTING_SELECT
@@ -6527,7 +6563,22 @@ def get_recommendations():
         scored.append((score, listing))
 
     scored.sort(key=lambda item: item[0], reverse=True)
-    recommendations = [item[1] for item in scored[:limit]]
+    return [item[1] for item in scored[:limit]]
+
+
+@app.route("/api/recommendations", methods=["GET"])
+def get_recommendations():
+    db = get_db()
+    listing_id = nonneg_int(request.args.get("listing_id"))
+    limit = nonneg_int(request.args.get("limit")) or 6
+    limit = min(max(limit, 1), 20)
+
+    if listing_id is None:
+        return jsonify(error="listing_id is required"), 422
+
+    recommendations = _listing_recommendations(db, listing_id, limit)
+    if recommendations is None:
+        return jsonify(error="Оголошення не знайдено"), 404
     return jsonify(recommendations=recommendations)
 
 
@@ -6913,6 +6964,207 @@ def create_lead_request():
             "district": district or None,
         },
     ), 201
+
+
+def _serialize_listing_inquiry(row) -> dict:
+    return {
+        "id": row["id"],
+        "listing_id": row["listing_id"],
+        "listing_title": row["listing_title"],
+        "name": row["name"],
+        "phone": row["phone"],
+        "email": row["email"],
+        "message": row["message"] or "",
+        "preferred_channel": row["preferred_channel"] or "phone",
+        "status": row["status"] or "new",
+        "response_message": row["response_message"] or "",
+        "responded_at": row["responded_at"],
+        "created_at": row["created_at"],
+    }
+
+
+@app.route("/api/listings/<int:listing_id>/inquiries", methods=["POST"])
+@limiter.limit("10 per minute")
+def create_listing_inquiry(listing_id: int):
+    db = get_db()
+    listing = db.execute(
+        "SELECT id, listing_type, price FROM listings WHERE id = ? AND status = 'published'",
+        (listing_id,),
+    ).fetchone()
+    if not listing:
+        return jsonify(error="Оголошення не знайдено"), 404
+
+    data = _parse_json_payload()
+    name = strip(data.get("name", ""), 120)
+    phone = re.sub(r"[\s()-]+", "", strip(data.get("phone", ""), 40))
+    email = strip(data.get("email", ""), 254).lower()
+    message = strip(data.get("message", ""), 1200)
+    preferred_channel = strip(data.get("preferred_channel", "phone"), 16).lower()
+    session_id = strip(data.get("session_id", ""), 80)
+
+    if len(name) < 2:
+        return jsonify(error="Вкажіть ім'я"), 422
+    if not phone and not email:
+        return jsonify(error="Вкажіть телефон або email"), 422
+    if phone and not re.match(r"^\+?\d{7,15}$", phone):
+        return jsonify(error="Невірний формат номера телефону"), 422
+    if email and not validate_email(email):
+        return jsonify(error="Невірний формат email"), 422
+    if preferred_channel not in {"phone", "email", "chat"}:
+        return jsonify(error="Невідомий спосіб зв'язку"), 422
+    if preferred_channel == "phone" and not phone:
+        return jsonify(error="Для дзвінка вкажіть телефон"), 422
+    if preferred_channel == "email" and not email:
+        return jsonify(error="Для email вкажіть адресу"), 422
+
+    now = datetime.datetime.utcnow().replace(microsecond=0)
+    duplicate_cutoff = (now - datetime.timedelta(minutes=2)).isoformat(sep=" ")
+    duplicate = db.execute(
+        """
+        SELECT id FROM lead_requests
+        WHERE lead_type = 'inquiry' AND listing_id = ?
+          AND COALESCE(phone, '') = ? AND COALESCE(email, '') = ?
+          AND created_at >= ?
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (listing_id, phone, email, duplicate_cutoff),
+    ).fetchone()
+    if duplicate:
+        return jsonify(ok=True, inquiry_id=duplicate["id"], duplicate=True), 200
+
+    created_at = now.isoformat(sep=" ")
+    cursor = db.execute(
+        """
+        INSERT INTO lead_requests (
+            lead_type, source, name, phone, email, message, listing_id,
+            session_id, preferred_channel, status, created_at
+        ) VALUES ('inquiry', 'listing_page', ?, ?, ?, ?, ?, ?, ?, 'new', ?)
+        """,
+        (
+            name,
+            phone or None,
+            email or None,
+            message or None,
+            listing_id,
+            session_id or None,
+            preferred_channel,
+            created_at,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO lead_funnel_events (
+            listing_id, event, intent, source, listing_type, price, session_id, created_at
+        ) VALUES (?, 'lead_submit', 'listing_inquiry', 'listing_page', ?, ?, ?, ?)
+        """,
+        (
+            listing_id,
+            listing["listing_type"] or "unknown",
+            listing["price"],
+            session_id or None,
+            created_at,
+        ),
+    )
+    _upsert_lead_funnel_summary(
+        db,
+        day=now.strftime("%Y-%m-%d"),
+        source="listing_page",
+        listing_type=listing["listing_type"] or "unknown",
+        event="lead_submit",
+        listing_id=listing_id,
+        created_at=created_at,
+        session_id=session_id or None,
+    )
+    db.commit()
+    cache_delete_prefix("admin:reports:lead-funnel:")
+    return jsonify(ok=True, inquiry_id=cursor.lastrowid, duplicate=False), 201
+
+
+@app.route("/api/inquiries", methods=["GET"])
+@require_auth
+def list_listing_inquiries():
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT lr.id, lr.listing_id, l.title AS listing_title, lr.name, lr.phone,
+               lr.email, lr.message, lr.preferred_channel, lr.status,
+               lr.response_message, lr.responded_at, lr.created_at
+        FROM lead_requests lr
+        JOIN listings l ON l.id = lr.listing_id
+        WHERE lr.lead_type = 'inquiry' AND l.user_id = ?
+        ORDER BY CASE lr.status WHEN 'new' THEN 0 WHEN 'viewed' THEN 1 ELSE 2 END,
+                 lr.created_at DESC
+        LIMIT 250
+        """,
+        (g.user_id,),
+    ).fetchall()
+    return jsonify(inquiries=[_serialize_listing_inquiry(row) for row in rows])
+
+
+@app.route("/api/inquiries/<int:inquiry_id>", methods=["PATCH"])
+@require_auth
+@limiter.limit("60 per minute")
+def update_listing_inquiry(inquiry_id: int):
+    db = get_db()
+    row = db.execute(
+        """
+        SELECT lr.id, lr.listing_id, lr.status, l.listing_type, l.price
+        FROM lead_requests lr
+        JOIN listings l ON l.id = lr.listing_id
+        WHERE lr.id = ? AND lr.lead_type = 'inquiry' AND l.user_id = ?
+        """,
+        (inquiry_id, g.user_id),
+    ).fetchone()
+    if not row:
+        return jsonify(error="Заявку не знайдено"), 404
+
+    data = _parse_json_payload()
+    status = strip(data.get("status", row["status"]), 16).lower()
+    response_message = strip(data.get("response_message", ""), 1200)
+    if status not in {"new", "viewed", "responded", "closed"}:
+        return jsonify(error="Невідомий статус заявки"), 422
+    allowed_transitions = {
+        "new": {"new", "viewed", "responded", "closed"},
+        "viewed": {"viewed", "responded", "closed"},
+        "responded": {"responded", "closed"},
+        "closed": {"closed"},
+    }
+    if status not in allowed_transitions.get(row["status"] or "new", set()):
+        return jsonify(error="Неможливо повернути заявку до попереднього статусу"), 409
+    if status == "responded" and not response_message:
+        return jsonify(error="Додайте коротку відповідь"), 422
+
+    responded_at = (
+        datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ")
+        if status == "responded"
+        else None
+    )
+    db.execute(
+        """
+        UPDATE lead_requests
+        SET status = ?, response_message = CASE WHEN ? = '' THEN response_message ELSE ? END,
+            responded_at = COALESCE(?, responded_at)
+        WHERE id = ?
+        """,
+        (status, response_message, response_message, responded_at, inquiry_id),
+    )
+    if status == "responded" and row["status"] != "responded":
+        db.execute(
+            """
+            INSERT INTO lead_funnel_events (
+                listing_id, event, intent, source, listing_type, price, created_at
+            ) VALUES (?, 'seller_response', 'listing_inquiry', 'seller_cabinet', ?, ?, ?)
+            """,
+            (
+                row["listing_id"],
+                row["listing_type"] or "unknown",
+                row["price"],
+                responded_at,
+            ),
+        )
+    db.commit()
+    cache_delete_prefix("admin:reports:lead-funnel:")
+    return jsonify(ok=True, status=status, responded_at=responded_at)
 
 
 @app.route("/api/analytics/client-telemetry", methods=["POST"])
@@ -7626,17 +7878,40 @@ def listing_page(lid: int):
     canonical = f"{base}/listing/{lid}"
     og_image = next((img for img in listing["images"] if not str(img).startswith("data:")), f"{base}/favicon.png")
     app_link = f"{public_app_url()}?listing_id={lid}"
-    contact_subject = quote(f"Запит щодо оголошення №{lid}: {listing['title']}", safe="")
-    contact_body = quote(
-        f"Доброго дня! Хочу уточнити деталі оголошення №{lid}: {canonical}",
-        safe="",
-    )
-    contact_link = f"mailto:feedback@ua-dim.com?subject={contact_subject}&body={contact_body}"
     city_link = f"{base}/seo/{quote(listing['city'])}"
     district_link = f"{base}/seo/{quote(listing['city'])}/{quote(listing['district'])}"
     listing_type_label = "Оренда" if listing.get("listing_type") == "rent" else "Продаж"
     price_label = f"${int(listing['price']):,}/міс." if listing.get("listing_type") == "rent" else f"${int(listing['price']):,}"
     per_sqm = int(listing["price"] / listing["area"]) if listing["area"] else 0
+    try:
+        usd_uah_rate = float(os.getenv("UA_HOMES_USD_UAH_RATE", "41.5"))
+    except ValueError:
+        usd_uah_rate = 41.5
+    if usd_uah_rate <= 0:
+        usd_uah_rate = 41.5
+    recommendations = _listing_recommendations(db, lid, 3) or []
+    recommendation_cards = []
+    for recommended in recommendations:
+        image = next(
+            (img for img in recommended["images"] if not str(img).startswith("data:")),
+            f"{base}/favicon.png",
+        )
+        recommendation_cards.append(
+            f'<a class="recommendation-card" href="{base}/listing/{recommended["id"]}">'
+            f'<img src="{escape(image, quote=True)}" alt="{escape(recommended["title"], quote=True)}" loading="lazy">'
+            f'<span class="recommendation-body"><strong>{escape(recommended["title"])}</strong>'
+            f'<span>{escape(recommended["city"])}, {escape(recommended["district"])}</span>'
+            f'<b class="money" data-usd="{int(recommended["price"])}" '
+            f'data-suffix="{"/міс." if recommended.get("listing_type") == "rent" else ""}">'
+            f'${int(recommended["price"]):,}{"/міс." if recommended.get("listing_type") == "rent" else ""}</b></span></a>'
+        )
+    recommendations_html = "".join(recommendation_cards) or '<p style="color:#64748b">Схожих оголошень поки немає.</p>'
+    public_phone = listing.get("owner_phone")
+    phone_action_html = (
+        f'<a href="tel:{escape(public_phone, quote=True)}" class="secondary-btn">Зателефонувати</a>'
+        if public_phone
+        else ""
+    )
     published_label = (listing.get("published_at") or listing.get("created_at") or "")[:10]
     listing_status_key = listing.get("listing_status") or "active"
     availability_url = {
@@ -8052,8 +8327,23 @@ def listing_page(lid: int):
     .verification-summary{{display:flex;flex-wrap:wrap;gap:6px 16px;margin:10px 0 14px;padding:12px 14px;border-radius:14px;background:#f0fdf4;color:#166534;font-size:13px;border:1px solid #bbf7d0}}
     .detail-grid{{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(220px,.8fr);gap:14px;margin:14px 0}}
     .related-card{{background:#fff;border:1px solid #dbeafe;border-radius:16px;padding:16px 20px}}
-    .related-links{{display:flex;flex-direction:column;gap:8px;margin-top:10px}}
-    .related-links a{{display:block;border-radius:10px;background:#eff6ff;padding:9px 11px;font-size:13px;font-weight:700}}
+    .related-links{{display:grid;gap:10px;margin-top:10px}}
+    .recommendation-card{{display:grid;grid-template-columns:92px 1fr;overflow:hidden;border:1px solid #dbeafe;border-radius:12px;background:#f8fafc;color:#0f172a}}
+    .recommendation-card:hover{{text-decoration:none;border-color:#93c5fd}}
+    .recommendation-card img{{width:92px;height:92px;object-fit:cover;background:#e2e8f0}}
+    .recommendation-body{{display:flex;min-width:0;flex-direction:column;justify-content:center;padding:8px 10px}}
+    .recommendation-body strong{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+    .recommendation-body span{{font-size:12px;color:#64748b}}
+    .recommendation-body b{{margin-top:4px;color:#1d4ed8}}
+    .contact-grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px}}
+    .contact-form label{{display:grid;gap:5px;font-size:13px;font-weight:700;color:#334155}}
+    .contact-form input,.contact-form select,.contact-form textarea{{width:100%;border:1px solid #cbd5e1;border-radius:10px;padding:10px 12px;background:#fff;color:#0f172a;font:inherit}}
+    .contact-form textarea{{min-height:96px;resize:vertical}}
+    .contact-form button{{border:0}}
+    .form-status{{min-height:24px;margin:10px 0 0;font-size:14px;font-weight:700}}
+    .currency-toggle{{display:inline-flex;margin-top:10px;border:1px solid rgba(255,255,255,.3);border-radius:10px;overflow:hidden}}
+    .currency-toggle button{{border:0;padding:6px 10px;background:transparent;color:#dbeafe;font-weight:800;cursor:pointer}}
+    .currency-toggle button[aria-pressed="true"]{{background:#fff;color:#1d4ed8}}
     .disclosure{{margin:12px 0;border:1px solid #e2e8f0;border-radius:16px;background:#fff;overflow:hidden}}
     .disclosure summary{{display:flex;min-height:54px;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;cursor:pointer;font-weight:800;list-style:none}}
     .disclosure summary::-webkit-details-marker{{display:none}}
@@ -8066,7 +8356,7 @@ def listing_page(lid: int):
     .primary-btn,.secondary-btn,.copy-btn{{display:inline-flex;min-height:44px;align-items:center;justify-content:center;border-radius:12px;font-weight:700;font-size:14px;cursor:pointer}}
     .primary-btn{{background:#2563eb;color:#fff;padding:12px 20px}}
     .secondary-btn,.copy-btn{{background:#f8fafc;color:#1e293b;padding:10px 16px;border:1px solid #e2e8f0}}
-    @media(max-width:700px){{body{{padding-right:16px;padding-left:16px}} .hero{{padding:16px}} .hero-summary{{align-items:flex-start;flex-direction:column;gap:12px}} .hero-facts{{justify-content:flex-start}} .hero-actions{{display:grid;grid-template-columns:1fr 1fr}} .primary-btn{{grid-column:1/-1}} .primary-btn,.secondary-btn,.copy-btn{{padding-right:10px;padding-left:10px;text-align:center}} .meta-grid{{grid-template-columns:repeat(2,1fr)}} .detail-grid{{grid-template-columns:1fr}}}}
+    @media(max-width:700px){{body{{padding-right:16px;padding-left:16px}} .hero{{padding:16px}} .hero-summary{{align-items:flex-start;flex-direction:column;gap:12px}} .hero-facts{{justify-content:flex-start}} .hero-actions{{display:grid;grid-template-columns:1fr 1fr}} .primary-btn{{grid-column:1/-1}} .primary-btn,.secondary-btn,.copy-btn{{padding-right:10px;padding-left:10px;text-align:center}} .meta-grid{{grid-template-columns:repeat(2,1fr)}} .detail-grid,.contact-grid{{grid-template-columns:1fr}}}}
   </style>
 </head>
 <body>
@@ -8083,13 +8373,18 @@ def listing_page(lid: int):
     <p id="listing-desc" style="margin:0;color:#cbd5e1">{escape(listing["city"])}, {escape(listing["district"])} · {listing_type_label} · {listing_status_label}</p>
     <div class="hero-summary">
       <div>
-        <div class="price" id="listing-price">{price_label}</div>
-        <div class="per-sqm">${per_sqm:,}/м² · опубліковано {escape(published_label or "—")}</div>
+        <div class="price money" id="listing-price" data-usd="{int(listing['price'])}" data-suffix="{('/міс.' if listing.get('listing_type') == 'rent' else '')}">{price_label}</div>
+        <div class="per-sqm"><span class="money" data-usd="{per_sqm}">${per_sqm:,}</span>/м² · опубліковано {escape(published_label or "—")}</div>
+        <div class="currency-toggle" aria-label="Валюта">
+          <button type="button" data-currency="USD" aria-pressed="true">$</button>
+          <button type="button" data-currency="UAH" aria-pressed="false">₴</button>
+        </div>
       </div>
       <div class="hero-facts" aria-label="Основні характеристики">{quick_facts_html}</div>
     </div>
     <div class="hero-actions">
-      <a href="{escape(contact_link, quote=True)}" class="primary-btn">Запитати про об’єкт</a>
+      <a href="#contact" class="primary-btn">Запитати про об’єкт</a>
+      {phone_action_html}
       <a href="{app_link}" class="secondary-btn">До каталогу UA-Dim</a>
       <button type="button" class="copy-btn" onclick="navigator.clipboard&&navigator.clipboard.writeText(location.href).then(()=>this.textContent='Скопійовано')">Скопіювати посилання</button>
     </div>
@@ -8118,12 +8413,32 @@ def listing_page(lid: int):
     <aside class="related-card">
       <h2 style="margin:0;font-size:1rem">Схожі об’єкти</h2>
       <div class="related-links">
-        <a href="{city_link}">{escape(listing["city"])}</a>
-        <a href="{district_link}">{escape(listing["district"])}</a>
-        <a href="{app_link}">Відкрити каталог із фільтрами</a>
+        {recommendations_html}
       </div>
     </aside>
   </div>
+
+  <section class="section" id="contact">
+    <h2 style="margin-top:0">Зв’язатися з продавцем</h2>
+    <p style="color:#475569">Залиште контакти — заявка збережеться в кабінеті продавця. Повідомлення без дзвінка не є миттєвим онлайн-чатом.</p>
+    <form class="contact-form" id="inquiry-form">
+      <div class="contact-grid">
+        <label>Ім’я<input name="name" autocomplete="name" required minlength="2" maxlength="120"></label>
+        <label>Телефон<input name="phone" autocomplete="tel" inputmode="tel" placeholder="+380..." maxlength="40"></label>
+        <label>Email<input name="email" type="email" autocomplete="email" maxlength="254"></label>
+        <label>Зручний спосіб зв’язку
+          <select name="preferred_channel">
+            <option value="phone">Телефон</option>
+            <option value="chat">Повідомлення без дзвінка</option>
+            <option value="email">Email</option>
+          </select>
+        </label>
+      </div>
+      <label style="margin-top:12px">Повідомлення<textarea name="message" maxlength="1200" placeholder="Коли можна переглянути об’єкт?"></textarea></label>
+      <button class="primary-btn" type="submit" style="margin-top:12px">Надіслати заявку</button>
+      <p class="form-status" id="inquiry-status" role="status" aria-live="polite"></p>
+    </form>
+  </section>
 
   {map_html}
 
@@ -8278,6 +8593,77 @@ def listing_page(lid: int):
         errorEl.textContent = 'Помилка мережі. Спробуйте ще раз.';
         errorEl.style.display = 'block';
         submitBtn.disabled = false;
+      }});
+    }});
+  }})();
+
+  (function() {{
+    var rate = {usd_uah_rate!r};
+    var currencyButtons = document.querySelectorAll('[data-currency]');
+    var moneyElements = document.querySelectorAll('.money[data-usd]');
+
+    function setCurrency(currency) {{
+      moneyElements.forEach(function(el) {{
+        var usd = Number(el.dataset.usd || 0);
+        var suffix = el.dataset.suffix || '';
+        el.textContent = currency === 'UAH'
+          ? Math.round(usd * rate).toLocaleString('uk-UA') + ' ₴' + suffix
+          : '$' + Math.round(usd).toLocaleString('en-US') + suffix;
+      }});
+      currencyButtons.forEach(function(button) {{
+        button.setAttribute('aria-pressed', String(button.dataset.currency === currency));
+      }});
+      try {{ window.localStorage.setItem('ua_dim_currency', currency); }} catch (e) {{}}
+    }}
+
+    currencyButtons.forEach(function(button) {{
+      button.addEventListener('click', function() {{ setCurrency(button.dataset.currency); }});
+    }});
+    var initialCurrency = 'USD';
+    try {{
+      if (window.localStorage.getItem('ua_dim_currency') === 'UAH') initialCurrency = 'UAH';
+    }} catch (e) {{}}
+    setCurrency(initialCurrency);
+
+    var inquiryForm = document.getElementById('inquiry-form');
+    var inquiryStatus = document.getElementById('inquiry-status');
+    if (!inquiryForm || !inquiryStatus) return;
+    inquiryForm.addEventListener('submit', function(event) {{
+      event.preventDefault();
+      var submitButton = inquiryForm.querySelector('button[type="submit"]');
+      var formData = new FormData(inquiryForm);
+      var payload = Object.fromEntries(formData.entries());
+      try {{
+        var sessionKey = 'ua_dim_inquiry_session';
+        payload.session_id = window.localStorage.getItem(sessionKey);
+        if (!payload.session_id) {{
+          payload.session_id = 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2);
+          window.localStorage.setItem(sessionKey, payload.session_id);
+        }}
+      }} catch (e) {{}}
+      submitButton.disabled = true;
+      inquiryStatus.style.color = '#475569';
+      inquiryStatus.textContent = 'Надсилаємо…';
+      fetch('/api/listings/{lid}/inquiries', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify(payload)
+      }}).then(function(response) {{
+        return response.json().catch(function() {{ return {{}}; }}).then(function(body) {{
+          return {{ ok: response.ok, body: body }};
+        }});
+      }}).then(function(result) {{
+        if (!result.ok) throw new Error(result.body.error || 'Не вдалося надіслати заявку.');
+        inquiryStatus.style.color = '#15803d';
+        inquiryStatus.textContent = result.body.duplicate
+          ? 'Цю заявку вже отримано.'
+          : 'Заявку надіслано продавцю.';
+        inquiryForm.reset();
+      }}).catch(function(error) {{
+        inquiryStatus.style.color = '#be123c';
+        inquiryStatus.textContent = error.message || 'Помилка мережі. Спробуйте ще раз.';
+      }}).finally(function() {{
+        submitButton.disabled = false;
       }});
     }});
   }})();

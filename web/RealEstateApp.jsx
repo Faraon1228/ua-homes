@@ -1618,6 +1618,9 @@ export default function RealEstateApp() {
   const [myListings, setMyListings] = useState([]);
   const [myListingsLoading, setMyListingsLoading] = useState(false);
   const [myListingsFilter, setMyListingsFilter] = useState("all");
+  const [inquiries, setInquiries] = useState([]);
+  const [inquiriesLoading, setInquiriesLoading] = useState(false);
+  const [inquiryMessage, setInquiryMessage] = useState("");
   const [selectedListingFiles, setSelectedListingFiles] = useState([]);
   const [selectedListingFilePreviews, setSelectedListingFilePreviews] = useState([]);
   const [selectedListingVideoFiles, setSelectedListingVideoFiles] = useState([]);
@@ -2138,6 +2141,63 @@ export default function RealEstateApp() {
     }
   };
 
+  const loadInquiries = async () => {
+    if (!authToken) {
+      setInquiries([]);
+      return;
+    }
+    setInquiriesLoading(true);
+    try {
+      const response = await fetch(getApiUrl("/inquiries"), {
+        headers: { Authorization: ["Bearer", authToken].join(" ") },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося завантажити заявки");
+      setInquiries(Array.isArray(data.inquiries) ? data.inquiries : []);
+    } catch (error) {
+      setInquiryMessage(error.message || "Не вдалося завантажити заявки");
+    } finally {
+      setInquiriesLoading(false);
+    }
+  };
+
+  const updateInquiry = async (inquiry, status) => {
+    if (!authToken) return;
+    let responseMessage = "";
+    if (status === "responded") {
+      responseMessage = window.prompt("Коротка відповідь покупцю")?.trim() || "";
+      if (!responseMessage) return;
+    }
+    setInquiryMessage("");
+    try {
+      const response = await fetch(getApiUrl(`/inquiries/${inquiry.id}`), {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: ["Bearer", authToken].join(" "),
+        },
+        body: JSON.stringify({ status, response_message: responseMessage }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося оновити заявку");
+      setInquiries((current) =>
+        current.map((item) =>
+          item.id === inquiry.id
+            ? {
+                ...item,
+                status: data.status,
+                response_message: responseMessage || item.response_message,
+                responded_at: data.responded_at || item.responded_at,
+              }
+            : item
+        )
+      );
+      setInquiryMessage(status === "responded" ? "Відповідь збережено." : "Статус заявки оновлено.");
+    } catch (error) {
+      setInquiryMessage(error.message || "Не вдалося оновити заявку");
+    }
+  };
+
   const refreshProfile = async () => {
     if (!authToken) return;
     try {
@@ -2155,9 +2215,11 @@ export default function RealEstateApp() {
   useEffect(() => {
     if (!authToken) {
       setMyListings([]);
+      setInquiries([]);
       return;
     }
     loadMyListings();
+    loadInquiries();
     refreshProfile();
   }, [authToken, currentUser?.id]);
 
@@ -3594,6 +3656,88 @@ export default function RealEstateApp() {
                       </div>
                     </div>
                   ) : null}
+
+                  <section
+                    id="inquiries"
+                    className="rounded-3xl border border-blue-100 bg-blue-50 p-3 sm:p-4"
+                    aria-labelledby="inquiries-title"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <h2 id="inquiries-title" className="text-xs font-black uppercase tracking-wide text-blue-700">
+                          Заявки покупців
+                        </h2>
+                        <p className="mt-1 text-sm text-slate-600">Контакти й відповіді щодо ваших оголошень.</p>
+                      </div>
+                      <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-blue-700">
+                        {inquiries.filter((item) => item.status === "new").length} нових
+                      </span>
+                    </div>
+                    {inquiryMessage ? (
+                      <p className="mt-3 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-slate-700" role="status">
+                        {inquiryMessage}
+                      </p>
+                    ) : null}
+                    {inquiriesLoading ? (
+                      <p className="mt-4 text-sm text-slate-600">Завантаження заявок…</p>
+                    ) : inquiries.length ? (
+                      <ul className="mt-4 grid gap-3 lg:grid-cols-2">
+                        {inquiries.map((inquiry) => (
+                          <li key={inquiry.id} className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="truncate font-black text-slate-900">{inquiry.listing_title}</p>
+                                <p className="mt-1 text-sm font-semibold text-slate-700">{inquiry.name}</p>
+                              </div>
+                              <span className={`rounded-full px-2 py-1 text-[10px] font-black uppercase ${
+                                inquiry.status === "new"
+                                  ? "bg-amber-100 text-amber-800"
+                                  : inquiry.status === "responded"
+                                    ? "bg-emerald-100 text-emerald-800"
+                                    : "bg-slate-100 text-slate-700"
+                              }`}>
+                                {inquiry.status === "new"
+                                  ? "Нова"
+                                  : inquiry.status === "viewed"
+                                    ? "Переглянута"
+                                    : inquiry.status === "responded"
+                                      ? "Відповіли"
+                                      : "Закрита"}
+                              </span>
+                            </div>
+                            <div className="mt-3 space-y-1 text-sm text-slate-700">
+                              {inquiry.phone ? <p><a href={`tel:${inquiry.phone}`} className="font-bold text-blue-700">{inquiry.phone}</a></p> : null}
+                              {inquiry.email ? <p><a href={`mailto:${inquiry.email}`} className="font-bold text-blue-700">{inquiry.email}</a></p> : null}
+                              <p>Зручний канал: {inquiry.preferred_channel === "chat" ? "повідомлення без дзвінка" : inquiry.preferred_channel}</p>
+                              {inquiry.message ? <p className="rounded-xl bg-slate-50 p-2">{inquiry.message}</p> : null}
+                              {inquiry.response_message ? <p className="rounded-xl bg-emerald-50 p-2 text-emerald-900">Ваша відповідь: {inquiry.response_message}</p> : null}
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {inquiry.status === "new" ? (
+                                <button type="button" onClick={() => updateInquiry(inquiry, "viewed")} className="min-h-11 rounded-xl border border-slate-200 px-3 text-xs font-bold text-slate-700">
+                                  Позначити переглянутою
+                                </button>
+                              ) : null}
+                              {inquiry.status !== "responded" && inquiry.status !== "closed" ? (
+                                <button type="button" onClick={() => updateInquiry(inquiry, "responded")} className="min-h-11 rounded-xl bg-blue-600 px-3 text-xs font-black text-white">
+                                  Записати відповідь
+                                </button>
+                              ) : null}
+                              {inquiry.status !== "closed" ? (
+                                <button type="button" onClick={() => updateInquiry(inquiry, "closed")} className="min-h-11 rounded-xl px-3 text-xs font-bold text-slate-500">
+                                  Закрити
+                                </button>
+                              ) : null}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-4 rounded-2xl border border-dashed border-blue-200 bg-white p-5 text-center text-sm text-slate-600">
+                        Нових заявок ще немає.
+                      </p>
+                    )}
+                  </section>
 
                   <div
                     id="my-listings"

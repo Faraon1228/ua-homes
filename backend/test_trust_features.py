@@ -39,6 +39,8 @@ class TrustFeatureTests(unittest.TestCase):
             db.execute("PRAGMA foreign_keys=ON")
             for table in (
                 "client_observability_events",
+                "lead_funnel_events",
+                "lead_requests",
                 "premium_orders",
                 "listing_reports",
                 "listing_change_history",
@@ -835,8 +837,12 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertIn('"@type": "Person"', detail_html)
         self.assertIn("UA-Dim", detail_html)
         self.assertNotIn("UA Homes", detail_html)
-        self.assertIn("mailto:feedback@ua-dim.com", detail_html)
+        self.assertNotIn("mailto:feedback@ua-dim.com", detail_html)
         self.assertIn("Запитати про об’єкт", detail_html)
+        self.assertIn('id="inquiry-form"', detail_html)
+        self.assertIn('data-currency="UAH"', detail_html)
+        self.assertIn("Realtor target", detail_html)
+        self.assertIn('class="recommendation-card"', detail_html)
         self.assertIn("До каталогу UA-Dim", detail_html)
         self.assertNotIn("Trust-flow", detail_html)
         self.assertIn('<details class="disclosure" id="verification-details">', detail_html)
@@ -848,6 +854,122 @@ class TrustFeatureTests(unittest.TestCase):
                 (developer_id,),
             ).fetchone()
         self.assertEqual(developer, ("developer", "developer_free"))
+
+    def test_listing_phone_is_public_only_after_phone_verification(self):
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE users SET phone = '+380671234567', phone_verified = 1 WHERE id = ?",
+                (self.owner_id,),
+            )
+            db.commit()
+
+        hidden = self.client.get(f"/listing/{self.target_id}").get_data(as_text=True)
+        self.assertNotIn("tel:+380671234567", hidden)
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE listings SET verified_phone = 1, phone_verification_status = 'verified' WHERE id = ?",
+                (self.target_id,),
+            )
+            db.commit()
+
+        visible = self.client.get(f"/listing/{self.target_id}").get_data(as_text=True)
+        self.assertIn('href="tel:+380671234567"', visible)
+        public_listing = self.client.get(f"/api/listings/{self.target_id}").get_json()["listing"]
+        self.assertEqual(public_listing["owner_phone"], "+380671234567")
+
+    def test_listing_inquiry_is_deduplicated_and_owner_can_respond(self):
+        payload = {
+            "name": "Покупець",
+            "phone": "+380671234567",
+            "message": "Коли можна переглянути?",
+            "preferred_channel": "phone",
+            "session_id": "inquiry-session",
+        }
+        created = self.client.post(
+            f"/api/listings/{self.target_id}/inquiries",
+            json=payload,
+        )
+        self.assertEqual(created.status_code, 201)
+        inquiry_id = created.get_json()["inquiry_id"]
+
+        duplicate = self.client.post(
+            f"/api/listings/{self.target_id}/inquiries",
+            json=payload,
+        )
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertTrue(duplicate.get_json()["duplicate"])
+        self.assertEqual(duplicate.get_json()["inquiry_id"], inquiry_id)
+
+        unauthorized = self.client.get("/api/inquiries")
+        self.assertEqual(unauthorized.status_code, 401)
+        seller_inbox = self.client.get(
+            "/api/inquiries",
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(seller_inbox.status_code, 200)
+        inquiries = seller_inbox.get_json()["inquiries"]
+        self.assertEqual(len(inquiries), 1)
+        self.assertEqual(inquiries[0]["listing_id"], self.target_id)
+        self.assertEqual(inquiries[0]["status"], "new")
+
+        forbidden = self.client.patch(
+            f"/api/inquiries/{inquiry_id}",
+            json={"status": "responded", "response_message": "Зателефоную сьогодні."},
+            headers=self._auth(self.realtor_token),
+        )
+        self.assertEqual(forbidden.status_code, 404)
+
+        responded = self.client.patch(
+            f"/api/inquiries/{inquiry_id}",
+            json={"status": "responded", "response_message": "Зателефоную сьогодні."},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(responded.status_code, 200)
+        self.assertEqual(responded.get_json()["status"], "responded")
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.row_factory = sqlite3.Row
+            inquiry = db.execute(
+                "SELECT status, response_message, responded_at FROM lead_requests WHERE id = ?",
+                (inquiry_id,),
+            ).fetchone()
+            response_event = db.execute(
+                "SELECT event FROM lead_funnel_events WHERE listing_id = ? AND event = 'seller_response'",
+                (self.target_id,),
+            ).fetchone()
+        self.assertEqual(inquiry["status"], "responded")
+        self.assertEqual(inquiry["response_message"], "Зателефоную сьогодні.")
+        self.assertIsNotNone(inquiry["responded_at"])
+        self.assertIsNotNone(response_event)
+
+        regressed = self.client.patch(
+            f"/api/inquiries/{inquiry_id}",
+            json={"status": "viewed"},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(regressed.status_code, 409)
+
+    def test_listing_inquiry_validates_contact_channel(self):
+        invalid_phone = self.client.post(
+            f"/api/listings/{self.target_id}/inquiries",
+            json={
+                "name": "Покупець",
+                "phone": "123",
+                "preferred_channel": "phone",
+            },
+        )
+        self.assertEqual(invalid_phone.status_code, 422)
+
+        missing_email = self.client.post(
+            f"/api/listings/{self.target_id}/inquiries",
+            json={
+                "name": "Покупець",
+                "phone": "+380671234567",
+                "preferred_channel": "email",
+            },
+        )
+        self.assertEqual(missing_email.status_code, 422)
 
     def test_s3_upload_confirmation_handles_client_and_missing_key_errors(self):
         owned_key = f"listings/{self.owner_id}/asset/photo.jpg"
