@@ -7,7 +7,7 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 const String uaDimProductionUrl =
     'https://ua-dim.com/real-estate-demo.html'
-    '?source=ua-dim-app&release=20260814-native-links';
+    '?source=ua-dim-app&release=20260820-photo-library';
 const MethodChannel _nativeChannel = MethodChannel('com.uadim.app/native');
 
 bool isUaDimInternalUri(Uri uri) {

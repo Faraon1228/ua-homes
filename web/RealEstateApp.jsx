@@ -4750,7 +4750,7 @@ export default function RealEstateApp() {
                   <div className="grid gap-2 sm:grid-cols-2">
                     <label className="flex min-h-14 cursor-pointer items-center justify-center gap-3 rounded-2xl bg-blue-600 px-5 text-center text-sm font-black text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 focus-within:ring-4 focus-within:ring-blue-200">
                       <span className="text-xl" aria-hidden="true">＋</span>
-                      <span>Обрати фото</span>
+                      <span>Обрати з фототеки</span>
                       <input
                         type="file"
                         multiple
@@ -4774,7 +4774,7 @@ export default function RealEstateApp() {
                     ) : null}
                   </div>
                   <p className="mt-3 text-xs leading-relaxed text-slate-600">
-                    JPG, PNG, WEBP, AVIF, HEIC/HEIF · до 10 МБ кожне.
+                    Можна вибрати до 8 фото з фототеки телефона. JPG, PNG, WEBP, AVIF, HEIC/HEIF · до 10 МБ кожне.
                   </p>
                   {selectedListingFiles.length ? (
                     <div className="mt-3 space-y-3">
