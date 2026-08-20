@@ -105,6 +105,17 @@ class TrustFeatureTests(unittest.TestCase):
             postgres_migration.normalize_value("users", "email", " Admin@Example.COM "),
             "admin@example.com",
         )
+        immutable_source = sqlite3.connect(
+            f"file:{TEST_DB}?mode=ro&immutable=1",
+            uri=True,
+        )
+        try:
+            self.assertEqual(
+                immutable_source.execute("PRAGMA integrity_check").fetchone()[0],
+                "ok",
+            )
+        finally:
+            immutable_source.close()
 
     @staticmethod
     def _insert_user(db, name, email, account_type, role="user"):

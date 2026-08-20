@@ -206,7 +206,7 @@ def main() -> int:
         preflight.close()
 
     initialize_target(args.target)
-    source = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
+    source = sqlite3.connect(f"file:{source_path}?mode=ro&immutable=1", uri=True)
     source.row_factory = sqlite3.Row
     target = psycopg2.connect(args.target)
     try:
@@ -222,21 +222,27 @@ def main() -> int:
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             )
         }
+        present_tables = [table for table in TABLE_ORDER if table in source_tables]
         missing_source = [table for table in TABLE_ORDER if table not in source_tables]
-        if missing_source:
-            raise RuntimeError(f"SQLite source is missing tables: {', '.join(missing_source)}")
-
-        counts = {table: row_count(source, table, postgres=False) for table in TABLE_ORDER}
+        counts = {
+            table: row_count(source, table, postgres=False) if table in source_tables else 0
+            for table in TABLE_ORDER
+        }
         print("Validated empty PostgreSQL target and SQLite source:")
         for table, count in counts.items():
             print(f"  {table}: {count}")
+        if missing_source:
+            print(
+                "  Newer target-only tables will remain empty: "
+                + ", ".join(missing_source),
+            )
         if not args.execute:
             print("Dry run complete. Re-run with --execute to copy data.")
             target.rollback()
             return 0
 
         copied = {}
-        for table in TABLE_ORDER:
+        for table in present_tables:
             copied[table] = migrate_table(source, target, table)
             synchronize_identity(target, table)
 
