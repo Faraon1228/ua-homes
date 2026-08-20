@@ -58,6 +58,11 @@ os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
 # PostgreSQL DSN — if set, the app uses psycopg2 instead of SQLite.
 DATABASE_URL: str | None = os.environ.get("DATABASE_URL", "").strip() or None
+MAINTENANCE_MODE = os.environ.get("UA_HOMES_MAINTENANCE_MODE", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 if (
     os.environ.get("UA_HOMES_REQUIRE_POSTGRES", "").strip().lower() in {"1", "true", "yes"}
     and not DATABASE_URL
@@ -1342,6 +1347,23 @@ def assign_request_id():
         g.request_id = incoming_request_id
     else:
         g.request_id = secrets.token_hex(12)
+
+
+@app.before_request
+def enforce_maintenance_mode():
+    if (
+        MAINTENANCE_MODE
+        and request.method not in {"GET", "HEAD", "OPTIONS"}
+        and request.path != "/api/operations/backup"
+    ):
+        response = jsonify(
+            error="Сервіс тимчасово оновлюється. Спробуйте ще раз за хвилину.",
+            code="maintenance",
+        )
+        response.status_code = 503
+        response.headers["Retry-After"] = "60"
+        return response
+    return None
 
 
 # Rate-limiter storage: Redis when available (multi-worker safe), else in-memory.
@@ -9516,6 +9538,7 @@ def health():
         ),
         distributed_rate_limits=bool(REDIS_URL),
         error_monitoring=bool(SENTRY_DSN),
+        maintenance_mode=MAINTENANCE_MODE,
     )
 
 
