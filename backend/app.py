@@ -58,9 +58,14 @@ os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
 # PostgreSQL DSN — if set, the app uses psycopg2 instead of SQLite.
 DATABASE_URL: str | None = os.environ.get("DATABASE_URL", "").strip() or None
+if (
+    os.environ.get("UA_HOMES_REQUIRE_POSTGRES", "").strip().lower() in {"1", "true", "yes"}
+    and not DATABASE_URL
+):
+    raise RuntimeError("DATABASE_URL must be set when UA_HOMES_REQUIRE_POSTGRES is enabled.")
 PUBLIC_SITE_URL = os.environ.get("UA_HOMES_PUBLIC_URL", "").strip().rstrip("/")
 API_ORIGIN = os.environ.get("UA_HOMES_API", "").strip().rstrip("/")
-BOOTSTRAP_ADMIN_EMAIL = os.environ.get("UA_HOMES_BOOTSTRAP_ADMIN_EMAIL", "").strip()
+BOOTSTRAP_ADMIN_EMAIL = os.environ.get("UA_HOMES_BOOTSTRAP_ADMIN_EMAIL", "").strip().lower()
 BOOTSTRAP_ADMIN_PASSWORD = os.environ.get("UA_HOMES_BOOTSTRAP_ADMIN_PASSWORD", "").strip()
 BOOTSTRAP_ADMIN_NAME = os.environ.get("UA_HOMES_BOOTSTRAP_ADMIN_NAME", "Admin").strip() or "Admin"
 
@@ -1179,7 +1184,10 @@ def _init_postgres_db():
             " WHERE listing_verification_status IS NULL"
             " OR listing_verification_status NOT IN ('unverified', 'pending', 'verified', 'rejected')"
         )
-        _seed_postgres(cur)
+        if os.environ.get("UA_HOMES_SEED_DEMO_DATA", "").strip().lower() in {"1", "true", "yes"}:
+            _seed_postgres(cur)
+        else:
+            _bootstrap_postgres_admin(cur)
         db.commit()
     finally:
         db.close()
@@ -1259,8 +1267,11 @@ def _seed_postgres(cur):
         ("demo@ua-dim.com",),
     )
 
-    # Bootstrap admin separately so a fresh production database can be
-    # initialized with a real admin account when the env vars are present.
+    _bootstrap_postgres_admin(cur)
+
+
+def _bootstrap_postgres_admin(cur):
+    """Create or refresh the configured production administrator."""
     if BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD:
         password_hash = bcrypt.hashpw(
             BOOTSTRAP_ADMIN_PASSWORD.encode("utf-8"),
@@ -1295,10 +1306,43 @@ def _seed_postgres(cur):
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": _cors_origins()}}, supports_credentials=True, vary_header=True)
 
+SENTRY_DSN = os.environ.get("SENTRY_DSN", "").strip()
+if SENTRY_DSN:
+    import sentry_sdk
+
+    try:
+        traces_sample_rate = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1"))
+    except ValueError as exc:
+        raise RuntimeError("SENTRY_TRACES_SAMPLE_RATE must be a number between 0 and 1") from exc
+    if not 0 <= traces_sample_rate <= 1:
+        raise RuntimeError("SENTRY_TRACES_SAMPLE_RATE must be between 0 and 1")
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment=(
+            os.environ.get("RAILWAY_ENVIRONMENT_NAME")
+            or os.environ.get("ENVIRONMENT")
+            or "development"
+        ),
+        release=os.environ.get("RAILWAY_GIT_COMMIT_SHA") or None,
+        send_default_pii=False,
+        traces_sample_rate=traces_sample_rate,
+    )
+
 # Configure Cloudinary early so api_sign_request has credentials
 if CLOUDINARY_URL:
     import cloudinary
     cloudinary.config(secure=True)  # Auto-loads from CLOUDINARY_URL environment variable
+
+
+@app.before_request
+def assign_request_id():
+    g.request_started_at = time.perf_counter()
+    incoming_request_id = request.headers.get("X-Request-ID", "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", incoming_request_id):
+        g.request_id = incoming_request_id
+    else:
+        g.request_id = secrets.token_hex(12)
+
 
 # Rate-limiter storage: Redis when available (multi-worker safe), else in-memory.
 _limiter_storage = f"redis://{REDIS_URL.replace('redis://','')}" if REDIS_URL else "memory://"
@@ -1317,16 +1361,6 @@ limiter = Limiter(
 ALERTS_DISPATCH_KEY = os.environ.get("UA_HOMES_ALERTS_DISPATCH_KEY", "").strip()
 ALERTS_PUSH_WEBHOOK_URL = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_URL", "").strip()
 ALERTS_PUSH_WEBHOOK_BEARER = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_BEARER", "").strip()
-
-
-@app.before_request
-def assign_request_id():
-    incoming_request_id = request.headers.get("X-Request-ID", "").strip()
-    if re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", incoming_request_id):
-        g.request_id = incoming_request_id
-    else:
-        g.request_id = secrets.token_hex(12)
-
 
 def _cache_control_for_request() -> str | None:
     if request.method != "GET":
@@ -1376,7 +1410,14 @@ def _allow_cors_for_request(response: Response) -> Response:
 
 @app.after_request
 def apply_security_headers(response):
+    request_started_at = getattr(g, "request_started_at", None)
+    duration_ms = round(
+        (time.perf_counter() - request_started_at) * 1000 if request_started_at is not None else 0,
+        2,
+    )
     response.headers.setdefault("X-Request-ID", getattr(g, "request_id", secrets.token_hex(12)))
+    response.headers.setdefault("Server-Timing", f"app;dur={duration_ms}")
+    response.headers.setdefault("X-Response-Time-Ms", str(duration_ms))
     for header, value in SECURITY_HEADERS.items():
         response.headers.setdefault(header, value)
 
@@ -1392,7 +1433,31 @@ def apply_security_headers(response):
         if request.headers.get("Authorization"):
             response.headers.setdefault("Vary", "Authorization")
 
-    return _allow_cors_for_request(response)
+    response = _allow_cors_for_request(response)
+
+    endpoint = request.endpoint or "unmatched"
+    event_type = "api_request"
+    if endpoint in {"get_presigned_upload_url", "confirm_uploaded_media", "abort_multipart_upload", "optimize_image"}:
+        event_type = "media_upload"
+    elif endpoint in {"create_lead_request", "create_listing_inquiry"} or endpoint.startswith("lead_"):
+        event_type = "lead_request"
+    log_payload = {
+        "event": event_type,
+        "request_id": getattr(g, "request_id", "unknown"),
+        "method": request.method,
+        "route": request.url_rule.rule if request.url_rule else request.path,
+        "endpoint": endpoint,
+        "status": response.status_code,
+        "duration_ms": duration_ms,
+        "database_engine": "postgresql" if _is_postgres() else "sqlite",
+    }
+    log_line = json.dumps(log_payload, ensure_ascii=False, separators=(",", ":"))
+    if response.status_code >= 500:
+        app.logger.error(log_line)
+    elif event_type != "api_request" or duration_ms >= 1000:
+        app.logger.info(log_line)
+
+    return response
 
 
 @app.get("/")
@@ -9426,6 +9491,7 @@ def seo_audit():
 
 @app.route("/api/health")
 def health():
+    engine = "postgresql" if _is_postgres() else "sqlite"
     try:
         database = get_db()
         database.execute("SELECT 1 AS ready").fetchone()
@@ -9434,8 +9500,23 @@ def health():
             "Database readiness check failed request_id=%s",
             getattr(g, "request_id", "unknown"),
         )
-        return jsonify(status="error", service="UA Homes API v2", database="unavailable"), 503
-    return jsonify(status="ok", service="UA Homes API v2", database="ok")
+        return jsonify(
+            status="error",
+            service="UA Homes API v2",
+            database="unavailable",
+            database_engine=engine,
+        ), 503
+    return jsonify(
+        status="ok",
+        service="UA Homes API v2",
+        database="ok",
+        database_engine=engine,
+        media_storage=(
+            "s3" if S3_BUCKET else "cloudinary" if CLOUDINARY_URL else "unconfigured"
+        ),
+        distributed_rate_limits=bool(REDIS_URL),
+        error_monitoring=bool(SENTRY_DSN),
+    )
 
 
 def _backup_request_authorized() -> tuple[bool, int]:

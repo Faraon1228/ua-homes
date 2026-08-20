@@ -25,6 +25,7 @@ os.environ.pop("DATABASE_URL", None)
 app_module = importlib.import_module("app")
 media_migration = importlib.import_module("migrate_legacy_listing_media")
 operations_backup = importlib.import_module("operations_backup")
+postgres_migration = importlib.import_module("migrate_sqlite_to_postgres")
 
 
 class TrustFeatureTests(unittest.TestCase):
@@ -84,10 +85,26 @@ class TrustFeatureTests(unittest.TestCase):
                 status="draft",
             )
             db.commit()
-
         self.owner_token = app_module.make_token(self.owner_id, "owner@example.test")
         self.realtor_token = app_module.make_token(self.realtor_id, "realtor@example.test")
         self.admin_token = app_module.make_token(self.admin_id, "admin@example.test")
+
+    def test_postgres_migration_covers_all_application_tables(self):
+        with sqlite3.connect(TEST_DB) as database:
+            application_tables = {
+                row[0]
+                for row in database.execute(
+                    "SELECT name FROM sqlite_master"
+                    " WHERE type = 'table'"
+                    " AND name NOT LIKE 'sqlite_%'"
+                    " AND name NOT LIKE 'listings_fts%'"
+                )
+            }
+        self.assertEqual(set(postgres_migration.TABLE_ORDER), application_tables)
+        self.assertEqual(
+            postgres_migration.normalize_value("users", "email", " Admin@Example.COM "),
+            "admin@example.com",
+        )
 
     @staticmethod
     def _insert_user(db, name, email, account_type, role="user"):
@@ -145,16 +162,32 @@ class TrustFeatureTests(unittest.TestCase):
         return {"Authorization": f"Bearer {token}"}
 
     def test_health_checks_database_and_correlates_requests(self):
+        hook_names = [
+            hook.__name__
+            for hook in app_module.app.before_request_funcs.get(None, [])
+        ]
+        self.assertLess(
+            hook_names.index("assign_request_id"),
+            hook_names.index("_check_request_limit"),
+        )
+
         request_id = "operations-test-request-123"
         response = self.client.get("/api/health", headers={"X-Request-ID": request_id})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()["database"], "ok")
+        payload = response.get_json()
+        self.assertEqual(payload["database"], "ok")
+        self.assertEqual(payload["database_engine"], "sqlite")
+        self.assertIn("media_storage", payload)
+        self.assertIn("error_monitoring", payload)
         self.assertEqual(response.headers["X-Request-ID"], request_id)
+        self.assertRegex(response.headers["Server-Timing"], r"^app;dur=\d+(?:\.\d+)?$")
+        self.assertGreaterEqual(float(response.headers["X-Response-Time-Ms"]), 0)
 
         with mock.patch.object(app_module, "get_db", side_effect=sqlite3.OperationalError("offline")):
             unavailable = self.client.get("/api/health")
         self.assertEqual(unavailable.status_code, 503)
         self.assertEqual(unavailable.get_json()["database"], "unavailable")
+        self.assertEqual(unavailable.get_json()["database_engine"], "sqlite")
         self.assertRegex(unavailable.headers["X-Request-ID"], r"^[a-f0-9]{24}$")
 
     def test_authenticated_backup_export_and_restore_drill(self):
@@ -889,11 +922,13 @@ class TrustFeatureTests(unittest.TestCase):
             "preferred_channel": "phone",
             "session_id": "inquiry-session",
         }
-        created = self.client.post(
-            f"/api/listings/{self.target_id}/inquiries",
-            json=payload,
-        )
+        with self.assertLogs(app_module.app.logger, level="INFO") as logs:
+            created = self.client.post(
+                f"/api/listings/{self.target_id}/inquiries",
+                json=payload,
+            )
         self.assertEqual(created.status_code, 201)
+        self.assertIn('"event":"lead_request"', "\n".join(logs.output))
         inquiry_id = created.get_json()["inquiry_id"]
 
         duplicate = self.client.post(

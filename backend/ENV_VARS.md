@@ -15,6 +15,30 @@
 |---|---|---|
 | `DATABASE_URL` | PostgreSQL DSN | SQLite (local dev) |
 | `UA_HOMES_DB_PATH` | Persistent SQLite path used when `DATABASE_URL` is absent | `backend/ua_homes.db` |
+| `UA_HOMES_SEED_DEMO_DATA` | Seed demo users/listings into a fresh PostgreSQL database | `false` |
+| `UA_HOMES_REQUIRE_POSTGRES` | Fail startup rather than silently use SQLite | `false` |
+
+Production must use PostgreSQL. Keep SQLite only for local development and as the
+source of the one-time migration:
+
+```bash
+# 1. Validate source integrity, target schema, and that PostgreSQL is empty.
+python3 backend/migrate_sqlite_to_postgres.py \
+  --source /path/to/production.sqlite3 \
+  --target "$DATABASE_URL"
+
+# 2. Stop backend writes, take a final SQLite snapshot, then copy and verify rows.
+python3 backend/migrate_sqlite_to_postgres.py \
+  --source /path/to/final-production.sqlite3 \
+  --target "$DATABASE_URL" \
+  --execute
+```
+
+The migration is transactional, preserves IDs, resets PostgreSQL identity
+sequences, refuses non-empty targets, and verifies every table count before
+commit. After cutover, set Railway `UA_HOMES_REQUIRE_POSTGRES=true` and the repository variable
+`UA_HOMES_DATABASE_ENGINE=postgresql` so the production health workflow enforces
+the database engine.
 
 ## Backups and production monitoring
 
@@ -23,10 +47,11 @@
 | `UA_HOMES_BACKUP_TOKEN` | Railway + GitHub Actions | Random bearer token protecting `POST /api/operations/backup` |
 | `UA_HOMES_BACKUP_ENCRYPTION_KEY` | GitHub Actions + secure offline copy | Passphrase used to encrypt database backup artifacts |
 
-`Backup production database` runs daily and can be started manually. It downloads
-a consistent SQLite snapshot over HTTPS, checks the server checksum, runs
-`PRAGMA integrity_check`, performs a temporary restore drill, encrypts the archive
-with AES-256-CBC/PBKDF2, and retains only the encrypted GitHub artifact for 30 days.
+`Backup production database` runs daily and can be started manually. With the
+`UA_HOMES_DATABASE_URL` GitHub secret it creates a PostgreSQL custom-format dump
+and restores it into a temporary PostgreSQL service. Until cutover it keeps the
+existing SQLite snapshot and integrity-check path. Both paths encrypt the archive
+with AES-256-CBC/PBKDF2 and retain only the encrypted artifact for 30 days.
 
 To validate a decrypted snapshot locally:
 
@@ -40,8 +65,22 @@ python3 backend/operations_backup.py restore-drill --database backup.sqlite3
 ```
 
 `Monitor production health` runs every 15 minutes against backend readiness,
-the public listings API, and the seller frontend. It opens a single GitHub issue
-when checks fail and closes that issue after recovery.
+the public listings API, and the seller frontend. It checks three-second API
+latency thresholds and optionally enforces `UA_HOMES_DATABASE_ENGINE`. It opens a
+single GitHub issue when checks fail and closes that issue after recovery.
+
+## Backend observability
+
+| Variable | Description | Default |
+|---|---|---|
+| `SENTRY_DSN` | Backend Sentry project DSN; enables Flask errors and traces | disabled |
+| `SENTRY_TRACES_SAMPLE_RATE` | Fraction of backend requests recorded as performance traces (`0..1`) | `0.1` |
+
+Every media upload and lead request emits a structured JSON log with request ID,
+route, status, database engine, and API duration. All 5xx responses and requests
+slower than one second are logged as well. Responses expose `Server-Timing` and
+`X-Response-Time-Ms`; `/api/health` reports database engine, storage, distributed
+rate-limit, and error-monitoring readiness without exposing credentials.
 
 ## Rate limiting
 
