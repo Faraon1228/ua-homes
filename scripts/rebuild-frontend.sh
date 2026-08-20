@@ -127,7 +127,11 @@ BUILD_ID=$(
       "$WEB_DIR/privacy-consent.css" "$WEB_DIR/privacy-consent.js" \
       "$WEB_DIR/vendor/react.production.min.js" \
       "$WEB_DIR/vendor/react-dom.production.min.js"
-    find "$WEB_DIR/chunks" -type f -name '*.js' -exec cat {} \;
+    find "$WEB_DIR/chunks" -type f -name '*.js' -print |
+      sort |
+      while IFS= read -r chunk; do
+        cat "$chunk"
+      done
   } | shasum -a 256 | cut -c1-12
 )
 {
