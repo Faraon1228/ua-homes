@@ -7,6 +7,32 @@ import {
   resolveSortByForEOselya,
 } from "./realEstateFilters";
 
+const LazyListingsMapView = React.lazy(() =>
+  import("./features/ListingsMapView.jsx")
+);
+const LazyTrustDialog = React.lazy(() => import("./features/TrustDialog.jsx"));
+
+class LazyFeatureBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidUpdate(previousProps) {
+    if (this.state.failed && previousProps.resetKey !== this.props.resetKey) {
+      this.setState({ failed: false });
+    }
+  }
+
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+
 const MOCK_PROPERTIES = [
   {
     id: 1,
@@ -1372,28 +1398,27 @@ function PhotoGallery({ images, title, href, priority = false }) {
     setIndex((current) => (current + 1) % items.length);
   };
 
-  // Generate WebP/AVIF variants from original URL
+  // Generate the WebP variant created for every optimized S3 upload.
   // If S3 upload was optimized, URL format: https://bucket/listings/123/abc/photo-medium.webp
   // Fallback to original if optimization not available
   const getImageVariants = (url) => {
-    if (!url) return { original: url, webp: null, avif: null };
+    if (!url) return { original: url, webp: null };
     
-    // If already optimized (S3 URL with size suffix), extract base and create variants
     const urlObj = new URL(url, window.location.origin);
     const pathname = urlObj.pathname;
     
     // Check if it's an S3 URL with optimization
     if (pathname.includes('listings/') && (pathname.includes('-medium') || pathname.includes('-large') || pathname.includes('-thumbnail'))) {
-      // Already optimized, just return the WebP version
+      const sizedVariantPattern = /-(thumbnail|medium|large)\.(?:jpe?g|png|webp|avif)$/i;
+      const baseUrl = url.replace(sizedVariantPattern, "");
       return {
         original: url,
-        webp: url.endsWith('.webp') ? url : url.replace(/\.(jpg|png)$/, '-medium.webp'),
-        avif: url.endsWith('.avif') ? url : url.replace(/\.(jpg|png)$/, '-medium.avif')
+        webp: `${baseUrl}-medium.webp`
       };
     }
     
     // Original image (fallback if optimization not available)
-    return { original: url, webp: null, avif: null };
+    return { original: url, webp: null };
   };
 
   const currentImage = items[index] || FALLBACK_IMAGE;
@@ -1408,9 +1433,6 @@ function PhotoGallery({ images, title, href, priority = false }) {
   const optimizedOriginal = getCloudinaryImageUrl(currentImage, 1200) || variants.original;
   const picture = (
     <picture className="block h-full w-full">
-      {variants.avif && (
-        <source srcSet={variants.avif} type="image/avif" />
-      )}
       {variants.webp && (
         <source srcSet={variants.webp} type="image/webp" />
       )}
@@ -1595,10 +1617,7 @@ function ListingCard({ property, favorite, onToggleFavorite, onOpenTrust, priori
 }
 
 export default function RealEstateApp() {
-  const sellerCabinetMode =
-    typeof window !== "undefined" &&
-    (/^\/seller\/?$/.test(window.location.pathname) ||
-      new URLSearchParams(window.location.search).get("seller") === "1");
+  const sellerCabinetMode = __UA_SELLER_BUILD__ === true;
   const keywordInputRef = useRef(null);
   const mobileFiltersTriggerRef = useRef(null);
   const mobileFiltersDrawerRef = useRef(null);
@@ -1724,7 +1743,21 @@ export default function RealEstateApp() {
   const closeTrustDialog = () => setTrustListing(null);
   const openTrustDialog = (property) => setTrustListing(property);
   const trustDialog = trustListing ? (
-    <TrustDialog property={trustListing} authToken={authToken} onClose={closeTrustDialog} />
+    <LazyFeatureBoundary
+      resetKey={trustListing.id}
+      fallback={(
+        <div role="alert" className="fixed inset-x-4 bottom-4 z-[120] rounded-2xl bg-white p-4 text-center font-bold shadow-xl">
+          Не вдалося відкрити дані довіри.
+          <button type="button" onClick={closeTrustDialog} className="ml-3 underline">Закрити</button>
+        </div>
+      )}
+    >
+      <React.Suspense
+        fallback={<p role="status" className="fixed inset-x-4 bottom-4 z-[120] rounded-2xl bg-white p-4 text-center font-bold shadow-xl">Завантажуємо дані довіри…</p>}
+      >
+        <LazyTrustDialog property={trustListing} authToken={authToken} onClose={closeTrustDialog} />
+      </React.Suspense>
+    </LazyFeatureBoundary>
   ) : null;
 
   const closeMobileFilters = (restoreFocus = true) => {
@@ -4915,7 +4948,21 @@ export default function RealEstateApp() {
             ) : null}
 
             {resultsView === "map" ? (
-              <ListingsMapView properties={visibleProperties} onShowList={() => setResultsView("list")} />
+              <LazyFeatureBoundary
+                resetKey={resultsView}
+                fallback={(
+                  <div role="alert" className="rounded-[28px] border border-slate-200 bg-white px-5 py-20 text-center font-bold text-slate-600">
+                    Не вдалося завантажити карту.
+                    <button type="button" onClick={() => setResultsView("list")} className="ml-3 underline">Показати список</button>
+                  </div>
+                )}
+              >
+                <React.Suspense
+                  fallback={<p role="status" className="rounded-[28px] border border-slate-200 bg-white px-5 py-20 text-center font-bold text-slate-600">Готуємо карту…</p>}
+                >
+                  <LazyListingsMapView properties={visibleProperties} onShowList={() => setResultsView("list")} />
+                </React.Suspense>
+              </LazyFeatureBoundary>
             ) : null}
 
             <div
@@ -5363,7 +5410,14 @@ export default function RealEstateApp() {
                         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                           {selectedListingFilePreviews.map((preview, previewIndex) => (
                             <div key={preview.id} className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-                              <img src={preview.src} alt={preview.name} className="h-28 w-full object-cover" />
+                              <img
+                                src={preview.src}
+                                alt={preview.name}
+                                width="320"
+                                height="224"
+                                decoding="async"
+                                className="h-28 w-full object-cover"
+                              />
                               <span className="absolute left-2 top-2 rounded-full bg-emerald-700 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white shadow">
                                 Готово
                               </span>
