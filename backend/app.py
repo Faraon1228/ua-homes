@@ -842,7 +842,15 @@ def _init_postgres_db():
                 filters      TEXT    NOT NULL,
                 is_active    INTEGER NOT NULL DEFAULT 1,
                 last_sent_at TEXT,
+                last_sent_listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL,
                 created_at   TEXT    NOT NULL DEFAULT ({db_now_expr()})
+            );
+
+            CREATE TABLE IF NOT EXISTS user_favorites (
+                user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL DEFAULT ({db_now_expr()}),
+                PRIMARY KEY (user_id, listing_id)
             );
 
             CREATE TABLE IF NOT EXISTS alert_dispatch_runs (
@@ -1035,6 +1043,8 @@ def _init_postgres_db():
             CREATE INDEX IF NOT EXISTS idx_listing_alerts_user ON listing_alerts(user_id);
             CREATE INDEX IF NOT EXISTS idx_listing_alerts_email ON listing_alerts(email);
             CREATE INDEX IF NOT EXISTS idx_listing_alerts_last_sent ON listing_alerts(last_sent_at);
+            CREATE INDEX IF NOT EXISTS idx_user_favorites_listing ON user_favorites(listing_id);
+            CREATE INDEX IF NOT EXISTS idx_user_favorites_created ON user_favorites(user_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_alert_dispatch_runs_started_at ON alert_dispatch_runs(started_at);
             CREATE INDEX IF NOT EXISTS idx_alert_dispatch_runs_success ON alert_dispatch_runs(success);
             CREATE INDEX IF NOT EXISTS idx_lead_funnel_created ON lead_funnel_events(created_at);
@@ -1103,6 +1113,7 @@ def _init_postgres_db():
             ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'new';
             ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS response_message TEXT;
             ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS responded_at TEXT;
+            ALTER TABLE listing_alerts ADD COLUMN IF NOT EXISTS last_sent_listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL;
         """)
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_lead_requests_listing_status
@@ -2375,11 +2386,21 @@ def init_db():
             filters      TEXT    NOT NULL,
             is_active    INTEGER NOT NULL DEFAULT 1,
             last_sent_at TEXT,
+            last_sent_listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL,
             created_at   TEXT    NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_listing_alerts_user ON listing_alerts(user_id);
         CREATE INDEX IF NOT EXISTS idx_listing_alerts_email ON listing_alerts(email);
         CREATE INDEX IF NOT EXISTS idx_listing_alerts_last_sent ON listing_alerts(last_sent_at);
+
+        CREATE TABLE IF NOT EXISTS user_favorites (
+            user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (db_now_expr()),
+            PRIMARY KEY (user_id, listing_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_favorites_listing ON user_favorites(listing_id);
+        CREATE INDEX IF NOT EXISTS idx_user_favorites_created ON user_favorites(user_id, created_at DESC);
 
         CREATE TABLE IF NOT EXISTS alert_dispatch_runs (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2715,6 +2736,15 @@ def init_db():
         " OR (environment = 'disabled' AND status IN ('pending', 'success', 'sandbox'))",
         (_legacy_liqpay_environment(),),
     )
+
+    listing_alert_columns = {
+        row[1] for row in db.execute("PRAGMA table_info(listing_alerts)").fetchall()
+    }
+    if "last_sent_listing_id" not in listing_alert_columns:
+        db.execute(
+            "ALTER TABLE listing_alerts ADD COLUMN last_sent_listing_id INTEGER"
+            " REFERENCES listings(id) ON DELETE SET NULL"
+        )
 
     lead_request_columns = {
         row[1] for row in db.execute("PRAGMA table_info(lead_requests)").fetchall()
@@ -3103,17 +3133,42 @@ def send_sms_verify(phone: str, code: str):
     return None  # No provider configured
 
 
-def send_alert_listing_email(to_email: str, alert_name: str, listing: dict) -> bool:
+def send_alert_listing_email(
+    to_email: str,
+    alert_name: str,
+    listing: dict,
+    *,
+    event_type: str = "new_listing",
+    previous_price: int | None = None,
+) -> bool:
     listing_url = f"{PUBLIC_SITE_URL or 'http://localhost:8080'}/listing/{listing['id']}"
-    subject = f"Новий об'єкт за алертом «{alert_name}» — UA-Dim"
+    is_price_change = event_type == "price_change"
+    subject = (
+        f"Зміна ціни за алертом «{alert_name}» — UA-Dim"
+        if is_price_change
+        else f"Новий об'єкт за алертом «{alert_name}» — UA-Dim"
+    )
+    intro = "Ціна релевантного об'єкта змінилася" if is_price_change else "Знайдено новий релевантний об'єкт"
+    price_change_text = (
+        f"Попередня ціна: ${int(previous_price):,}\n"
+        if is_price_change and previous_price is not None
+        else ""
+    )
     body_text = (
-        f"Знайдено новий релевантний об'єкт:\n"
+        f"{intro}:\n"
         f"{listing.get('title', 'Оголошення')} — ${int(listing.get('price') or 0):,}\n"
+        f"{price_change_text}"
         f"{listing.get('city', '')}, {listing.get('district', '')}\n"
         f"Переглянути: {listing_url}"
     )
-    body_html = f"""<p>Знайдено новий релевантний об'єкт за вашим алертом <b>{escape(alert_name)}</b>.</p>
+    price_change_html = (
+        f'<p>Попередня ціна: <s>${int(previous_price):,}</s></p>'
+        if is_price_change and previous_price is not None
+        else ""
+    )
+    body_html = f"""<p>{intro} за вашим алертом <b>{escape(alert_name)}</b>.</p>
 <p><a href="{listing_url}">{escape(listing.get("title", "Оголошення"))}</a></p>
+{price_change_html}
 <p><b>${int(listing.get("price") or 0):,}</b> · {escape(listing.get("city", ""))}, {escape(listing.get("district", ""))}</p>
 <p>Швидкі сигнали: оновлено {listing.get("freshness_hours_ago") if listing.get("freshness_hours_ago") is not None else "—"} год тому, ризик дубля — {escape(listing.get("duplicate_risk", "low"))}.</p>"""
 
@@ -3196,6 +3251,9 @@ def _listing_matches_alert_filters(listing: dict, filters: dict) -> bool:
     max_price = pos_int(filters.get("maxPrice"))
     min_rooms = nonneg_int(filters.get("minRooms"))
     max_rooms = nonneg_int(filters.get("maxRooms"))
+    min_area = nonneg_int(filters.get("minArea"))
+    max_area = nonneg_int(filters.get("maxArea"))
+    keyword = strip(filters.get("keywordSearch"), 120).lower()
     e_oselya = bool(filters.get("eOselya"))
 
     if city and listing.get("city") != city:
@@ -3208,6 +3266,7 @@ def _listing_matches_alert_filters(listing: dict, filters: dict) -> bool:
         return False
     price = int(listing.get("price") or 0)
     rooms = int(listing.get("rooms") or 0)
+    area = int(float(listing.get("area") or 0))
     if min_price is not None and price < min_price:
         return False
     if max_price is not None and price > max_price:
@@ -3216,15 +3275,33 @@ def _listing_matches_alert_filters(listing: dict, filters: dict) -> bool:
         return False
     if max_rooms is not None and rooms > max_rooms:
         return False
+    if min_area is not None and area < min_area:
+        return False
+    if max_area is not None and area > max_area:
+        return False
+    if keyword:
+        searchable = " ".join(
+            str(listing.get(field) or "")
+            for field in ("title", "description", "city", "district", "property_type")
+        ).lower()
+        if keyword not in searchable:
+            return False
     if e_oselya and not bool(listing.get("e_oselya")):
         return False
     return True
 
 
-def dispatch_saved_alerts(db, listing_id: int | None = None, dry_run: bool = False) -> dict:
+def dispatch_saved_alerts(
+    db,
+    listing_id: int | None = None,
+    dry_run: bool = False,
+    *,
+    event_type: str = "new_listing",
+    previous_price: int | None = None,
+) -> dict:
     alerts = db.execute(
         """
-        SELECT id, email, name, filters, last_sent_at
+        SELECT id, email, name, filters, last_sent_at, last_sent_listing_id
         FROM listing_alerts
         WHERE is_active = 1
         ORDER BY id DESC
@@ -3273,11 +3350,21 @@ def dispatch_saved_alerts(db, listing_id: int | None = None, dry_run: bool = Fal
                 LISTING_SELECT
                 + """
                     WHERE l.status = 'published'
-                      AND l.created_at > COALESCE(?, '1970-01-01 00:00:00')
-                    ORDER BY l.created_at DESC
+                      AND (
+                        l.created_at > COALESCE(?, '1970-01-01 00:00:00')
+                        OR (
+                          l.created_at = COALESCE(?, '1970-01-01 00:00:00')
+                          AND l.id > COALESCE(?, 0)
+                        )
+                      )
+                    ORDER BY l.created_at ASC, l.id ASC
                     LIMIT 80
                 """,
-                (alert["last_sent_at"],),
+                (
+                    alert["last_sent_at"],
+                    alert["last_sent_at"],
+                    alert["last_sent_listing_id"],
+                ),
             ).fetchall()
             for row in rows:
                 listing = _row_to_listing(row)
@@ -3295,6 +3382,8 @@ def dispatch_saved_alerts(db, listing_id: int | None = None, dry_run: bool = Fal
                 alert["email"],
                 alert["name"] or "Listing alert",
                 candidate_listing,
+                event_type=event_type,
+                previous_price=previous_price,
             )
             if email_ok:
                 email_sent += 1
@@ -3303,7 +3392,7 @@ def dispatch_saved_alerts(db, listing_id: int | None = None, dry_run: bool = Fal
         if "push" in channels:
             push_ok = True if dry_run else send_alert_push_payload(
                 {
-                    "event": "saved_alert_match",
+                    "event": "saved_alert_price_change" if event_type == "price_change" else "saved_alert_match",
                     "alert_id": alert["id"],
                     "email": alert["email"],
                     "name": alert["name"] or "Listing alert",
@@ -3311,6 +3400,7 @@ def dispatch_saved_alerts(db, listing_id: int | None = None, dry_run: bool = Fal
                         "id": candidate_listing["id"],
                         "title": candidate_listing.get("title"),
                         "price": candidate_listing.get("price"),
+                        "previous_price": previous_price,
                         "city": candidate_listing.get("city"),
                         "district": candidate_listing.get("district"),
                         "url": f"{PUBLIC_SITE_URL or 'http://localhost:8080'}/listing/{candidate_listing['id']}",
@@ -3323,8 +3413,13 @@ def dispatch_saved_alerts(db, listing_id: int | None = None, dry_run: bool = Fal
 
         if sent_any and not dry_run:
             db.execute(
-                f"UPDATE listing_alerts SET last_sent_at = {db_now_expr()} WHERE id = ?",
-                (alert["id"],),
+                "UPDATE listing_alerts SET last_sent_at = ?, last_sent_listing_id = ? WHERE id = ?",
+                (
+                    candidate_listing.get("created_at")
+                    or datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" "),
+                    candidate_listing["id"],
+                    alert["id"],
+                ),
             )
 
     if not dry_run:
@@ -3392,13 +3487,21 @@ def run_dispatch_with_logging(
     listing_id: int | None = None,
     dry_run: bool = False,
     raise_errors: bool = False,
+    event_type: str = "new_listing",
+    previous_price: int | None = None,
 ) -> dict:
     started_at = datetime.datetime.utcnow()
     stats: dict = {"checked": 0, "matched": 0, "email_sent": 0, "push_sent": 0}
     success = False
     error_text = None
     try:
-        stats = dispatch_saved_alerts(db, listing_id=listing_id, dry_run=dry_run)
+        stats = dispatch_saved_alerts(
+            db,
+            listing_id=listing_id,
+            dry_run=dry_run,
+            event_type=event_type,
+            previous_price=previous_price,
+        )
         success = True
         return stats
     except Exception as e:
@@ -6138,6 +6241,19 @@ def update_listing(listing_id: int):
             dry_run=False,
             raise_errors=False,
         )
+    elif (
+        next_status == "published"
+        and int(listing["price"] or 0) != int(listing_payload["price"] or 0)
+    ):
+        run_dispatch_with_logging(
+            db,
+            trigger_type="listing_price_change",
+            listing_id=listing_id,
+            dry_run=False,
+            raise_errors=False,
+            event_type="price_change",
+            previous_price=int(listing["price"] or 0),
+        )
 
     _refresh_listing_city_summary(db)
     db.commit()
@@ -6336,6 +6452,159 @@ def update_listing_verification(listing_id: int):
     return jsonify(listing=_row_to_listing(row, include_private=True))
 
 
+@app.route("/api/favorites", methods=["GET"])
+@require_auth
+def list_user_favorites():
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT uf.listing_id
+        FROM user_favorites uf
+        JOIN listings l ON l.id = uf.listing_id
+        WHERE uf.user_id = ? AND l.status = 'published'
+        ORDER BY uf.created_at DESC
+        """,
+        (g.user_id,),
+    ).fetchall()
+    return jsonify(listing_ids=[row["listing_id"] for row in rows])
+
+
+@app.route("/api/favorites/<int:listing_id>", methods=["PUT", "DELETE"])
+@require_auth
+@limiter.limit("120 per minute")
+def update_user_favorite(listing_id: int):
+    db = get_db()
+    if request.method == "DELETE":
+        db.execute(
+            "DELETE FROM user_favorites WHERE user_id = ? AND listing_id = ?",
+            (g.user_id, listing_id),
+        )
+        db.commit()
+        return jsonify(ok=True, favorite=False)
+
+    listing = db.execute(
+        "SELECT id FROM listings WHERE id = ? AND status = 'published'",
+        (listing_id,),
+    ).fetchone()
+    if not listing:
+        return jsonify(error="Оголошення не знайдено"), 404
+    db.execute(
+        """
+        INSERT INTO user_favorites (user_id, listing_id)
+        VALUES (?, ?)
+        ON CONFLICT (user_id, listing_id) DO NOTHING
+        """,
+        (g.user_id, listing_id),
+    )
+    db.commit()
+    return jsonify(ok=True, favorite=True)
+
+
+@app.route("/api/favorites/sync", methods=["POST"])
+@require_auth
+@limiter.limit("20 per minute")
+def sync_user_favorites():
+    db = get_db()
+    data = _parse_json_payload()
+    raw_ids = data.get("listing_ids")
+    if not isinstance(raw_ids, list):
+        return jsonify(error="listing_ids must be an array"), 422
+    listing_ids = []
+    for raw_id in raw_ids[:250]:
+        listing_id = nonneg_int(raw_id)
+        if listing_id and listing_id not in listing_ids:
+            listing_ids.append(listing_id)
+
+    if listing_ids:
+        placeholders = ",".join("?" for _ in listing_ids)
+        valid_rows = db.execute(
+            f"SELECT id FROM listings WHERE status = 'published' AND id IN ({placeholders})",
+            tuple(listing_ids),
+        ).fetchall()
+        for row in valid_rows:
+            db.execute(
+                """
+                INSERT INTO user_favorites (user_id, listing_id)
+                VALUES (?, ?)
+                ON CONFLICT (user_id, listing_id) DO NOTHING
+                """,
+                (g.user_id, row["id"]),
+            )
+    rows = db.execute(
+        """
+        SELECT uf.listing_id
+        FROM user_favorites uf
+        JOIN listings l ON l.id = uf.listing_id
+        WHERE uf.user_id = ? AND l.status = 'published'
+        ORDER BY uf.created_at DESC
+        """,
+        (g.user_id,),
+    ).fetchall()
+    db.commit()
+    return jsonify(ok=True, listing_ids=[row["listing_id"] for row in rows])
+
+
+def _serialize_listing_alert(row) -> dict:
+    try:
+        filters = json.loads(row["filters"] or "{}")
+    except (TypeError, ValueError):
+        filters = {}
+    if not isinstance(filters, dict):
+        filters = {}
+    return {
+        "id": row["id"],
+        "name": row["name"] or "Збережений пошук",
+        "filters": filters,
+        "is_active": bool(row["is_active"]),
+        "last_sent_at": row["last_sent_at"],
+        "created_at": row["created_at"],
+    }
+
+
+@app.route("/api/alerts", methods=["GET"])
+@require_auth
+def list_listing_alerts():
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT id, name, filters, is_active, last_sent_at, created_at
+        FROM listing_alerts
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT 100
+        """,
+        (g.user_id,),
+    ).fetchall()
+    return jsonify(alerts=[_serialize_listing_alert(row) for row in rows])
+
+
+@app.route("/api/alerts/<int:alert_id>", methods=["PATCH", "DELETE"])
+@require_auth
+@limiter.limit("60 per minute")
+def update_listing_alert(alert_id: int):
+    db = get_db()
+    row = db.execute(
+        "SELECT id FROM listing_alerts WHERE id = ? AND user_id = ?",
+        (alert_id, g.user_id),
+    ).fetchone()
+    if not row:
+        return jsonify(error="Збережений пошук не знайдено"), 404
+    if request.method == "DELETE":
+        db.execute("DELETE FROM listing_alerts WHERE id = ?", (alert_id,))
+        db.commit()
+        return jsonify(ok=True)
+
+    data = _parse_json_payload()
+    if "is_active" not in data:
+        return jsonify(error="is_active is required"), 422
+    db.execute(
+        "UPDATE listing_alerts SET is_active = ? WHERE id = ?",
+        (int(bool(data["is_active"])), alert_id),
+    )
+    db.commit()
+    return jsonify(ok=True, is_active=bool(data["is_active"]))
+
+
 @app.route("/api/alerts", methods=["POST"])
 def create_listing_alert():
     db = get_db()
@@ -6348,37 +6617,34 @@ def create_listing_alert():
     max_price = pos_int(data.get("maxPrice"))
     min_rooms = nonneg_int(data.get("minRooms"))
     max_rooms = nonneg_int(data.get("maxRooms"))
+    min_area = nonneg_int(data.get("minArea"))
+    max_area = nonneg_int(data.get("maxArea"))
+    keyword = strip(data.get("keywordSearch"), 120)
+    sort_by = strip(data.get("sortBy"), 30)
     e_oselya = bool(data.get("eOselya"))
     listing_type = strip(data.get("listingType"), 10).lower()
+    requested_channels = data.get("channels")
     email_channel = data.get("email")
     push_channel = data.get("push")
 
-    user_id = None
+    user_id, _ = get_optional_actor(db)
     email = strip(data.get("email"), 254).lower()
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        try:
-            payload = decode_token(auth[7:])
-            user_id = int(payload["sub"])
-            row = db.execute(
-                "SELECT email, auth_token_version FROM users WHERE id = ?",
-                (user_id,),
-            ).fetchone()
-            if row and token_matches_user_version(payload, row):
-                email = row["email"]
-            else:
-                user_id = None
-        except jwt.PyJWTError:
-            user_id = None
+    if user_id:
+        row = db.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
+        email = row["email"] if row else email
 
     if not email or not validate_email(email):
         return jsonify(error="Потрібен валідний email для алерта"), 422
 
     channels: list[str] = []
-    if email_channel is None or bool(email_channel):
-        channels.append("email")
-    if bool(push_channel):
-        channels.append("push")
+    if isinstance(requested_channels, list):
+        channels = [strip(channel, 20).lower() for channel in requested_channels]
+        channels = [channel for channel in channels if channel in {"email", "push"}]
+    else:
+        if email_channel is None or bool(email_channel):
+            channels.append("email")
+        if bool(push_channel):
+            channels.append("push")
     if not channels:
         channels = ["email"]
 
@@ -6391,18 +6657,36 @@ def create_listing_alert():
         "maxPrice": max_price,
         "minRooms": min_rooms,
         "maxRooms": max_rooms,
+        "minArea": min_area,
+        "maxArea": max_area,
+        "keywordSearch": keyword or None,
+        "sortBy": sort_by or "newest",
         "eOselya": e_oselya,
         "channels": channels,
     }
+    serialized_filters = json.dumps(filters, ensure_ascii=False, sort_keys=True)
+    if user_id:
+        existing = db.execute(
+            """
+            SELECT id FROM listing_alerts
+            WHERE user_id = ? AND name = ? AND filters = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (user_id, name or "Listing alert", serialized_filters),
+        ).fetchone()
+        if existing:
+            db.execute("UPDATE listing_alerts SET is_active = 1 WHERE id = ?", (existing["id"],))
+            db.commit()
+            return jsonify(ok=True, id=existing["id"], duplicate=True), 200
     cur = db.execute(
         """
         INSERT INTO listing_alerts (user_id, email, name, filters)
         VALUES (?, ?, ?, ?)
         """,
-        (user_id, email, name or "Listing alert", json.dumps(filters, ensure_ascii=False)),
+        (user_id, email, name or "Listing alert", serialized_filters),
     )
     db.commit()
-    return jsonify(ok=True, id=cur.lastrowid)
+    return jsonify(ok=True, id=cur.lastrowid, duplicate=False), 201
 
 
 @app.route("/api/alerts/dispatch", methods=["GET", "POST"])

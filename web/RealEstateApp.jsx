@@ -113,6 +113,49 @@ const KEYWORD_SUGGESTIONS = [
 const SMART_SEARCH_PATH = "smart-search.html";
 const SELLER_CABINET_PATH = "/seller";
 
+function searchFiltersToAlertPayload(name, filters) {
+  return {
+    name,
+    city: filters.cityFilter && filters.cityFilter !== "Всі" ? filters.cityFilter : null,
+    type: filters.propertyType && filters.propertyType !== "Всі" ? filters.propertyType : null,
+    eOselya: Boolean(filters.onlyEOselya),
+    minPrice: filters.minPrice || null,
+    maxPrice: filters.maxPrice || null,
+    minRooms: filters.minRooms || null,
+    maxRooms: filters.maxRooms || null,
+    minArea: filters.minArea || null,
+    maxArea: filters.maxArea || null,
+    keywordSearch: filters.keywordSearch || null,
+    sortBy: filters.sortBy || DEFAULT_SORT,
+    channels: ["email"],
+  };
+}
+
+function alertToSavedSearch(alert) {
+  const filters = alert?.filters || {};
+  return {
+    id: `alert_${alert.id}`,
+    serverId: alert.id,
+    name: alert.name || "Збережений пошук",
+    filters: {
+      cityFilter: filters.city || "Всі",
+      propertyType: filters.type || "Всі",
+      onlyEOselya: Boolean(filters.eOselya),
+      minPrice: filters.minPrice == null ? "" : String(filters.minPrice),
+      maxPrice: filters.maxPrice == null ? "" : String(filters.maxPrice),
+      minRooms: filters.minRooms == null ? "" : String(filters.minRooms),
+      maxRooms: filters.maxRooms == null ? "" : String(filters.maxRooms),
+      minArea: filters.minArea == null ? "" : String(filters.minArea),
+      maxArea: filters.maxArea == null ? "" : String(filters.maxArea),
+      sortBy: filters.sortBy || DEFAULT_SORT,
+      keywordSearch: filters.keywordSearch || "",
+    },
+    isActive: Boolean(alert.is_active),
+    lastSentAt: alert.last_sent_at || null,
+    createdAt: alert.created_at ? Date.parse(alert.created_at) : Date.now(),
+  };
+}
+
 function isLocalPreview() {
   return typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname);
 }
@@ -1621,6 +1664,7 @@ export default function RealEstateApp() {
   const [inquiries, setInquiries] = useState([]);
   const [inquiriesLoading, setInquiriesLoading] = useState(false);
   const [inquiryMessage, setInquiryMessage] = useState("");
+  const [accountSyncMessage, setAccountSyncMessage] = useState("");
   const [selectedListingFiles, setSelectedListingFiles] = useState([]);
   const [selectedListingFilePreviews, setSelectedListingFilePreviews] = useState([]);
   const [selectedListingVideoFiles, setSelectedListingVideoFiles] = useState([]);
@@ -2161,6 +2205,52 @@ export default function RealEstateApp() {
     }
   };
 
+  const syncAccountData = async () => {
+    if (!authToken) return;
+    setAccountSyncMessage("Синхронізуємо обране та пошуки…");
+    const authHeaders = { Authorization: ["Bearer", authToken].join(" ") };
+    try {
+      const localFavoriteIds = favoriteIds.filter((id) => Number.isInteger(Number(id)));
+      const localSearches = savedSearches.filter((entry) => !entry.serverId).slice(0, MAX_SAVED_SEARCHES);
+
+      const favoriteSyncResponse = await fetch(getApiUrl("/favorites/sync"), {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ listing_ids: localFavoriteIds }),
+      });
+      const favoriteSyncData = await favoriteSyncResponse.json();
+      if (!favoriteSyncResponse.ok) {
+        throw new Error(favoriteSyncData.error || "Не вдалося синхронізувати обране");
+      }
+
+      for (const entry of localSearches) {
+        const response = await fetch(getApiUrl("/alerts"), {
+          method: "POST",
+          headers: { ...authHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify(searchFiltersToAlertPayload(entry.name, entry.filters || {})),
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || "Не вдалося синхронізувати збережені пошуки");
+        }
+      }
+
+      const alertsResponse = await fetch(getApiUrl("/alerts"), { headers: authHeaders });
+      const alertsData = await alertsResponse.json();
+      if (!alertsResponse.ok) throw new Error(alertsData.error || "Не вдалося завантажити пошуки");
+
+      setFavoriteIds(Array.isArray(favoriteSyncData.listing_ids) ? favoriteSyncData.listing_ids : []);
+      setSavedSearches(
+        (Array.isArray(alertsData.alerts) ? alertsData.alerts : [])
+          .map(alertToSavedSearch)
+          .slice(0, MAX_SAVED_SEARCHES)
+      );
+      setAccountSyncMessage("Обране, пошуки та email-сповіщення синхронізовано.");
+    } catch (error) {
+      setAccountSyncMessage(error.message || "Не вдалося синхронізувати дані акаунта");
+    }
+  };
+
   const updateInquiry = async (inquiry, status) => {
     if (!authToken) return;
     let responseMessage = "";
@@ -2220,6 +2310,7 @@ export default function RealEstateApp() {
     }
     loadMyListings();
     loadInquiries();
+    syncAccountData();
     refreshProfile();
   }, [authToken, currentUser?.id]);
 
@@ -2330,12 +2421,28 @@ export default function RealEstateApp() {
     return items;
   }, [cityFilter, propertyTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, keywordSearch]);
 
-  const toggleFavorite = (property) => {
+  const toggleFavorite = async (property) => {
+    const wasFavorite = favoriteIds.includes(property.id);
     setFavoriteIds((current) =>
-      current.includes(property.id)
-        ? current.filter((id) => id !== property.id)
-        : [...current, property.id]
+      wasFavorite ? current.filter((id) => id !== property.id) : [...current, property.id]
     );
+    if (!authToken) return;
+    try {
+      const response = await fetch(getApiUrl(`/favorites/${property.id}`), {
+        method: wasFavorite ? "DELETE" : "PUT",
+        headers: { Authorization: ["Bearer", authToken].join(" ") },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося оновити обране");
+      setAccountSyncMessage("Обране синхронізовано з акаунтом.");
+    } catch (error) {
+      setFavoriteIds((current) =>
+        wasFavorite
+          ? current.includes(property.id) ? current : [...current, property.id]
+          : current.filter((id) => id !== property.id)
+      );
+      setAccountSyncMessage(error.message || "Не вдалося оновити обране");
+    }
   };
 
   const resetFilters = () => {
@@ -2398,7 +2505,7 @@ export default function RealEstateApp() {
     activatePanel("search");
   };
 
-  const saveCurrentSearch = () => {
+  const saveCurrentSearch = async () => {
     const defaultName = `${cityFilter || "Всі"} · ${onlyEOselya ? "єОселя" : "всі"} · ${
       new Date().toLocaleDateString("uk-UA")
     }`;
@@ -2408,9 +2515,85 @@ export default function RealEstateApp() {
       id: `search_${Date.now()}`,
       name,
       filters: { ...searchFilters },
+      isActive: Boolean(authToken),
       createdAt: Date.now(),
     };
     setSavedSearches((current) => [entry, ...current].slice(0, MAX_SAVED_SEARCHES));
+    if (!authToken) {
+      setAccountSyncMessage("Пошук збережено на цьому пристрої. Увійдіть, щоб синхронізувати його.");
+      return;
+    }
+    try {
+      const response = await fetch(getApiUrl("/alerts"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: ["Bearer", authToken].join(" "),
+        },
+        body: JSON.stringify(searchFiltersToAlertPayload(name, searchFilters)),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося зберегти пошук");
+      setSavedSearches((current) =>
+        current
+          .filter((item) => item.id === entry.id || item.serverId !== data.id)
+          .map((item) =>
+            item.id === entry.id
+              ? { ...item, id: `alert_${data.id}`, serverId: data.id, isActive: true }
+              : item
+          )
+      );
+      setAccountSyncMessage("Пошук збережено. Email-сповіщення активні.");
+    } catch (error) {
+      setAccountSyncMessage(error.message || "Пошук збережено лише на цьому пристрої");
+    }
+  };
+
+  const deleteSavedSearch = async (entry) => {
+    const previous = savedSearches;
+    setSavedSearches((current) => current.filter((item) => item.id !== entry.id));
+    if (!authToken || !entry.serverId) return;
+    try {
+      const response = await fetch(getApiUrl(`/alerts/${entry.serverId}`), {
+        method: "DELETE",
+        headers: { Authorization: ["Bearer", authToken].join(" ") },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося видалити пошук");
+      setAccountSyncMessage("Збережений пошук видалено.");
+    } catch (error) {
+      setSavedSearches(previous);
+      setAccountSyncMessage(error.message || "Не вдалося видалити пошук");
+    }
+  };
+
+  const toggleSavedSearchAlert = async (entry) => {
+    if (!authToken || !entry.serverId) {
+      setAccountSyncMessage("Увійдіть, щоб керувати сповіщеннями.");
+      return;
+    }
+    const nextActive = !entry.isActive;
+    setSavedSearches((current) =>
+      current.map((item) => item.id === entry.id ? { ...item, isActive: nextActive } : item)
+    );
+    try {
+      const response = await fetch(getApiUrl(`/alerts/${entry.serverId}`), {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: ["Bearer", authToken].join(" "),
+        },
+        body: JSON.stringify({ is_active: nextActive }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося змінити сповіщення");
+      setAccountSyncMessage(nextActive ? "Email-сповіщення увімкнено." : "Email-сповіщення призупинено.");
+    } catch (error) {
+      setSavedSearches((current) =>
+        current.map((item) => item.id === entry.id ? { ...item, isActive: entry.isActive } : item)
+      );
+      setAccountSyncMessage(error.message || "Не вдалося змінити сповіщення");
+    }
   };
 
   const applyKeywordSearch = () => {
@@ -2437,7 +2620,7 @@ export default function RealEstateApp() {
   const openSavedSearch = (entry) => {
     const next = entry.filters || {};
     if ("cityFilter" in next) setCityFilter(next.cityFilter);
-    if ("propertyTypeFilter" in next) setPropertyTypeFilter(next.propertyTypeFilter);
+    if ("propertyType" in next) setPropertyTypeFilter(next.propertyType);
     if ("onlyEOselya" in next) setOnlyEOselya(next.onlyEOselya);
     if ("minPrice" in next) setMinPrice(next.minPrice);
     if ("maxPrice" in next) setMaxPrice(next.maxPrice);
@@ -2577,7 +2760,12 @@ export default function RealEstateApp() {
   const logoutProfile = () => {
     setAuthToken("");
     setCurrentUser(null);
+    setFavoriteIds([]);
+    setSavedSearches([]);
+    window.localStorage.removeItem("re.favoriteIds");
+    window.localStorage.removeItem(SAVED_SEARCHES_KEY);
     setAuthSuccess("Ви вийшли з профілю");
+    setAccountSyncMessage("");
     setMyListings([]);
     setListingMessage("");
     setEditingListingId(null);
@@ -3996,9 +4184,14 @@ export default function RealEstateApp() {
                     onClick={saveCurrentSearch}
                     className="text-sm font-semibold text-blue-600 underline transition hover:text-blue-700"
                   >
-                    Зберегти запит
+                    {authToken ? "Зберегти й сповіщати" : "Зберегти запит"}
                   </button>
                 </div>
+                {accountSyncMessage ? (
+                  <p className="mb-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800" role="status" aria-live="polite">
+                    {accountSyncMessage}
+                  </p>
+                ) : null}
                 <div className="flex flex-wrap gap-2">
                   {QUICK_SCENARIOS.map((scenario) => {
                     const isActive = propertyTypeFilter === scenario.value;
@@ -4026,13 +4219,23 @@ export default function RealEstateApp() {
                         className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
                       >
                         <button type="button" onClick={() => openSavedSearch(entry)} className="inline-flex min-h-[44px] items-center hover:text-blue-700">
+                          {entry.isActive ? "🔔 " : entry.serverId ? "🔕 " : ""}
                           {entry.name}
                         </button>
+                        {entry.serverId ? (
+                          <button
+                            type="button"
+                            onClick={() => toggleSavedSearchAlert(entry)}
+                            className="inline-flex h-11 items-center px-1 text-blue-700 hover:text-blue-900"
+                            aria-label={entry.isActive ? `Призупинити сповіщення ${entry.name}` : `Увімкнути сповіщення ${entry.name}`}
+                            title={entry.isActive ? "Призупинити email-сповіщення" : "Увімкнути email-сповіщення"}
+                          >
+                            {entry.isActive ? "Пауза" : "Увімкнути"}
+                          </button>
+                        ) : null}
                         <button
                           type="button"
-                          onClick={() =>
-                            setSavedSearches((current) => current.filter((item) => item.id !== entry.id))
-                          }
+                          onClick={() => deleteSavedSearch(entry)}
                           className="inline-flex h-11 w-11 items-center justify-center text-rose-700 hover:text-rose-900"
                           aria-label={`Видалити пошук ${entry.name}`}
                         >

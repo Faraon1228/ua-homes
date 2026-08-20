@@ -41,6 +41,8 @@ class TrustFeatureTests(unittest.TestCase):
                 "client_observability_events",
                 "lead_funnel_events",
                 "lead_requests",
+                "user_favorites",
+                "listing_alerts",
                 "premium_orders",
                 "listing_reports",
                 "listing_change_history",
@@ -970,6 +972,148 @@ class TrustFeatureTests(unittest.TestCase):
             },
         )
         self.assertEqual(missing_email.status_code, 422)
+
+    def test_account_favorites_sync_and_remain_private(self):
+        synced = self.client.post(
+            "/api/favorites/sync",
+            json={"listing_ids": [self.target_id, self.realtor_listing_id, self.draft_id, 999999]},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(synced.status_code, 200)
+        self.assertEqual(
+            set(synced.get_json()["listing_ids"]),
+            {self.target_id, self.realtor_listing_id},
+        )
+
+        owner_favorites = self.client.get(
+            "/api/favorites",
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(owner_favorites.status_code, 200)
+        self.assertEqual(
+            set(owner_favorites.get_json()["listing_ids"]),
+            {self.target_id, self.realtor_listing_id},
+        )
+        realtor_favorites = self.client.get(
+            "/api/favorites",
+            headers=self._auth(self.realtor_token),
+        )
+        self.assertEqual(realtor_favorites.get_json()["listing_ids"], [])
+
+        removed = self.client.delete(
+            f"/api/favorites/{self.target_id}",
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(removed.status_code, 200)
+        remaining = self.client.get(
+            "/api/favorites",
+            headers=self._auth(self.owner_token),
+        ).get_json()["listing_ids"]
+        self.assertEqual(remaining, [self.realtor_listing_id])
+
+    def test_saved_searches_are_account_backed_and_manage_real_alerts(self):
+        payload = {
+            "name": "Київ до 150k",
+            "city": "Київ",
+            "maxPrice": 150_000,
+            "minArea": 45,
+            "keywordSearch": "target",
+            "sortBy": "price_asc",
+            "channels": ["email"],
+        }
+        created = self.client.post(
+            "/api/alerts",
+            json=payload,
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(created.status_code, 201)
+        alert_id = created.get_json()["id"]
+
+        duplicate = self.client.post(
+            "/api/alerts",
+            json=payload,
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertTrue(duplicate.get_json()["duplicate"])
+        self.assertEqual(duplicate.get_json()["id"], alert_id)
+
+        listed = self.client.get(
+            "/api/alerts",
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(listed.status_code, 200)
+        alerts = listed.get_json()["alerts"]
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["filters"]["minArea"], 45)
+        self.assertEqual(alerts[0]["filters"]["keywordSearch"], "target")
+        self.assertEqual(alerts[0]["filters"]["sortBy"], "price_asc")
+        self.assertTrue(alerts[0]["is_active"])
+
+        paused = self.client.patch(
+            f"/api/alerts/{alert_id}",
+            json={"is_active": False},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(paused.status_code, 200)
+        self.assertFalse(paused.get_json()["is_active"])
+        forbidden = self.client.delete(
+            f"/api/alerts/{alert_id}",
+            headers=self._auth(self.realtor_token),
+        )
+        self.assertEqual(forbidden.status_code, 404)
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.row_factory = sqlite3.Row
+            listing = dict(
+                db.execute("SELECT * FROM listings WHERE id = ?", (self.target_id,)).fetchone()
+            )
+        self.assertTrue(
+            app_module._listing_matches_alert_filters(
+                listing,
+                {"city": "Київ", "minArea": 45, "keywordSearch": "target"},
+            )
+        )
+        self.assertFalse(
+            app_module._listing_matches_alert_filters(
+                listing,
+                {"minArea": 60},
+            )
+        )
+
+    def test_alert_dispatch_advances_same_timestamp_matches_and_marks_price_changes(self):
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                """
+                INSERT INTO listing_alerts (user_id, email, name, filters)
+                VALUES (?, 'owner@example.test', 'Київ', ?)
+                """,
+                (
+                    self.owner_id,
+                    json.dumps({"city": "Київ", "channels": ["email"]}),
+                ),
+            )
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with mock.patch.object(app_module, "send_alert_listing_email", return_value=True) as send_email:
+                first = app_module.dispatch_saved_alerts(db)
+                second = app_module.dispatch_saved_alerts(db)
+                price_change = app_module.dispatch_saved_alerts(
+                    db,
+                    listing_id=self.target_id,
+                    event_type="price_change",
+                    previous_price=110_000,
+                )
+
+        self.assertEqual(first["email_sent"], 1)
+        self.assertEqual(second["email_sent"], 1)
+        self.assertEqual(price_change["email_sent"], 1)
+        first_listing = send_email.call_args_list[0].args[2]
+        second_listing = send_email.call_args_list[1].args[2]
+        self.assertEqual(first_listing["id"], self.target_id)
+        self.assertEqual(second_listing["id"], self.realtor_listing_id)
+        self.assertEqual(send_email.call_args_list[2].kwargs["event_type"], "price_change")
+        self.assertEqual(send_email.call_args_list[2].kwargs["previous_price"], 110_000)
 
     def test_s3_upload_confirmation_handles_client_and_missing_key_errors(self):
         owned_key = f"listings/{self.owner_id}/asset/photo.jpg"
