@@ -295,6 +295,11 @@ function mapListingToProperty(listing) {
     listingVerificationStatus:
       listing?.listing_verification_status || listing?.listingVerificationStatus || "unverified",
     verifiedListing: Boolean(listing?.verified_listing ?? listing?.verifiedListing),
+    lastConfirmedAt: listing?.last_confirmed_at || listing?.lastConfirmedAt || null,
+    freshnessDaysAgo: listing?.freshness_days_ago ?? listing?.freshnessDaysAgo ?? null,
+    needsFreshnessConfirmation: Boolean(
+      listing?.needs_freshness_confirmation ?? listing?.needsFreshnessConfirmation
+    ),
     sellerType: listing?.seller_type || listing?.sellerType || "unknown",
   };
 }
@@ -1665,6 +1670,10 @@ export default function RealEstateApp() {
   const [inquiriesLoading, setInquiriesLoading] = useState(false);
   const [inquiryMessage, setInquiryMessage] = useState("");
   const [accountSyncMessage, setAccountSyncMessage] = useState("");
+  const [verificationPhone, setVerificationPhone] = useState(() => getStoredJSON("uaDim.currentUser", null)?.phone || "");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [verificationMessage, setVerificationMessage] = useState("");
+  const [phoneCodeSent, setPhoneCodeSent] = useState(false);
   const [selectedListingFiles, setSelectedListingFiles] = useState([]);
   const [selectedListingFilePreviews, setSelectedListingFilePreviews] = useState([]);
   const [selectedListingVideoFiles, setSelectedListingVideoFiles] = useState([]);
@@ -2299,6 +2308,107 @@ export default function RealEstateApp() {
       if (data.user) setCurrentUser(data.user);
     } catch (_error) {
       // Профіль лишається з локального кешу — не блокуємо кабінет.
+    }
+  };
+
+  const sendPhoneVerificationCode = async () => {
+    if (!authToken) return;
+    setVerificationMessage("");
+    try {
+      const response = await fetch(getApiUrl("/auth/send-phone-code"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: ["Bearer", authToken].join(" "),
+        },
+        body: JSON.stringify({ phone: verificationPhone.trim() }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося надіслати код");
+      setPhoneCodeSent(true);
+      if (data.dev_code) setVerificationCode(data.dev_code);
+      setVerificationMessage("Код підтвердження надіслано.");
+    } catch (error) {
+      setVerificationMessage(error.message || "Не вдалося надіслати код");
+    }
+  };
+
+  const verifyProfilePhone = async () => {
+    if (!authToken) return;
+    setVerificationMessage("");
+    try {
+      const response = await fetch(getApiUrl("/auth/verify-phone"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: ["Bearer", authToken].join(" "),
+        },
+        body: JSON.stringify({ code: verificationCode.trim() }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося підтвердити телефон");
+      setCurrentUser((current) =>
+        current ? { ...current, phone: verificationPhone.trim(), phone_verified: true } : current
+      );
+      setPhoneCodeSent(false);
+      setVerificationCode("");
+      setVerificationMessage("Телефон підтверджено.");
+    } catch (error) {
+      setVerificationMessage(error.message || "Не вдалося підтвердити телефон");
+    }
+  };
+
+  const requestListingVerification = async (listing, kind) => {
+    if (!authToken) return;
+    const payload = kind === "owner"
+      ? { owner_verification_status: "pending" }
+      : { listing_verification_status: "pending" };
+    setVerificationMessage("");
+    try {
+      const response = await fetch(getApiUrl(`/listings/${listing.id}/verification`), {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: ["Bearer", authToken].join(" "),
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося подати заявку на перевірку");
+      setMyListings((current) =>
+        current.map((item) => item.id === listing.id ? data.listing : item)
+      );
+      setVerificationMessage("Заявку на перевірку подано.");
+    } catch (error) {
+      setVerificationMessage(error.message || "Не вдалося подати заявку на перевірку");
+    }
+  };
+
+  const confirmListingFreshness = async (listing) => {
+    if (!authToken) return;
+    setVerificationMessage("");
+    try {
+      const response = await fetch(getApiUrl(`/listings/${listing.id}/confirm-active`), {
+        method: "POST",
+        headers: { Authorization: ["Bearer", authToken].join(" ") },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося підтвердити актуальність");
+      setMyListings((current) =>
+        current.map((item) =>
+          item.id === listing.id
+            ? {
+                ...item,
+                last_confirmed_at: data.last_confirmed_at,
+                freshness_days_ago: 0,
+                needs_freshness_confirmation: false,
+              }
+            : item
+        )
+      );
+      setVerificationMessage("Актуальність оголошення підтверджено.");
+    } catch (error) {
+      setVerificationMessage(error.message || "Не вдалося підтвердити актуальність");
     }
   };
 
@@ -3794,6 +3904,73 @@ export default function RealEstateApp() {
                       </div>
                     </div>
                   </details>
+
+                  <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-4" aria-labelledby="verification-onboarding-title">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-wide text-emerald-700">Довіра до профілю</p>
+                        <h2 id="verification-onboarding-title" className="mt-1 text-lg font-black text-slate-900">
+                          Підтвердження продавця
+                        </h2>
+                        <p className="mt-1 text-sm text-slate-600">Телефон → власник → документи та оголошення.</p>
+                      </div>
+                      <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-emerald-800">
+                        {currentUser.phone_verified ? "Телефон підтверджено" : "Потрібне підтвердження"}
+                      </span>
+                    </div>
+                    {!currentUser.phone_verified ? (
+                      <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto]">
+                        <input
+                          type="tel"
+                          value={verificationPhone}
+                          onChange={(event) => setVerificationPhone(event.target.value)}
+                          placeholder="+380..."
+                          aria-label="Номер телефону для підтвердження"
+                          className="min-h-11 rounded-xl border border-emerald-200 bg-white px-3 text-sm"
+                        />
+                        <button
+                          type="button"
+                          onClick={sendPhoneVerificationCode}
+                          className="min-h-11 rounded-xl bg-emerald-700 px-4 text-sm font-black text-white"
+                        >
+                          Надіслати код
+                        </button>
+                        {phoneCodeSent ? (
+                          <>
+                            <input
+                              value={verificationCode}
+                              onChange={(event) => setVerificationCode(event.target.value)}
+                              inputMode="numeric"
+                              maxLength={6}
+                              placeholder="6-значний код"
+                              aria-label="Код підтвердження телефону"
+                              className="min-h-11 rounded-xl border border-emerald-200 bg-white px-3 text-sm"
+                            />
+                            <button
+                              type="button"
+                              onClick={verifyProfilePhone}
+                              className="min-h-11 rounded-xl border border-emerald-300 bg-white px-4 text-sm font-black text-emerald-800"
+                            >
+                              Підтвердити
+                            </button>
+                          </>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <p className="mt-3 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-emerald-800">
+                        Номер {currentUser.phone || verificationPhone} підтверджено.
+                      </p>
+                    )}
+                    {verificationMessage ? (
+                      <p className="mt-3 text-sm font-semibold text-slate-700" role="status" aria-live="polite">
+                        {verificationMessage}
+                      </p>
+                    ) : null}
+                    <p className="mt-3 text-xs text-slate-600">
+                      Заявки на перевірку власника й документів подаються окремо для кожного оголошення нижче.
+                    </p>
+                  </section>
+
                   {publishSuccess ? (
                     <div
                       id="publish-success"
@@ -4013,6 +4190,36 @@ export default function RealEstateApp() {
                                 </div>
                                 <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100" aria-hidden="true">
                                   <span className="block h-full rounded-full bg-emerald-500" style={{ width: `${completeness}%` }} />
+                                </div>
+                                <div className="mt-3 rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-xs text-slate-700">
+                                  <div className="flex flex-wrap gap-2">
+                                    <span className="rounded-full bg-white px-2 py-1 font-bold">
+                                      Власник: {item.owner_verification_status === "verified" ? "підтверджено" : item.owner_verification_status === "pending" ? "на перевірці" : "не підтверджено"}
+                                    </span>
+                                    <span className="rounded-full bg-white px-2 py-1 font-bold">
+                                      Оголошення: {item.listing_verification_status === "verified" ? "підтверджено" : item.listing_verification_status === "pending" ? "на перевірці" : "не підтверджено"}
+                                    </span>
+                                    <span className={`rounded-full px-2 py-1 font-bold ${item.needs_freshness_confirmation ? "bg-amber-100 text-amber-900" : "bg-white"}`}>
+                                      {item.needs_freshness_confirmation ? "Потрібно підтвердити актуальність" : "Актуальність підтверджена"}
+                                    </span>
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {!["pending", "verified"].includes(item.owner_verification_status) ? (
+                                      <button type="button" onClick={() => requestListingVerification(item, "owner")} className="min-h-11 rounded-lg border border-emerald-200 bg-white px-3 font-black text-emerald-800">
+                                        Перевірити власника
+                                      </button>
+                                    ) : null}
+                                    {!["pending", "verified"].includes(item.listing_verification_status) ? (
+                                      <button type="button" onClick={() => requestListingVerification(item, "listing")} className="min-h-11 rounded-lg border border-emerald-200 bg-white px-3 font-black text-emerald-800">
+                                        Перевірити документи
+                                      </button>
+                                    ) : null}
+                                    {item.status === "published" && item.listing_status === "active" ? (
+                                      <button type="button" onClick={() => confirmListingFreshness(item)} className="min-h-11 rounded-lg bg-emerald-700 px-3 font-black text-white">
+                                        Підтвердити актуальність
+                                      </button>
+                                    ) : null}
+                                  </div>
                                 </div>
                                 <div className="mt-4 flex flex-wrap gap-2">
                                   {item.status === "published" ? (

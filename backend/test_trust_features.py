@@ -1115,6 +1115,110 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(send_email.call_args_list[2].kwargs["event_type"], "price_change")
         self.assertEqual(send_email.call_args_list[2].kwargs["previous_price"], 110_000)
 
+    def test_owner_confirms_listing_freshness_and_reminders_are_throttled(self):
+        stale_at = "2026-01-01 00:00:00"
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE listings SET published_at = ?, last_confirmed_at = NULL WHERE id = ?",
+                (stale_at, self.target_id),
+            )
+            db.commit()
+
+        stale_listing = self.client.get(
+            f"/api/listings/{self.target_id}"
+        ).get_json()["listing"]
+        self.assertTrue(stale_listing["needs_freshness_confirmation"])
+        self.assertNotIn("freshness_reminder_sent_at", stale_listing)
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.row_factory = sqlite3.Row
+            db.execute(
+                "UPDATE listings SET created_at = ? WHERE id = ?",
+                (stale_at, self.draft_id),
+            )
+            db.commit()
+            stale_draft_row = db.execute(
+                app_module.LISTING_SELECT + " WHERE l.id = ?",
+                (self.draft_id,),
+            ).fetchone()
+        stale_draft = app_module._row_to_listing(stale_draft_row)
+        self.assertFalse(stale_draft["needs_freshness_confirmation"])
+
+        forbidden = self.client.post(
+            f"/api/listings/{self.target_id}/confirm-active",
+            headers=self._auth(self.realtor_token),
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        with mock.patch.object(app_module, "_send_email", return_value=True) as send_email:
+            reminded = self.client.post(
+                "/api/listings/freshness/remind",
+                headers=self._auth(self.admin_token),
+            )
+            repeated = self.client.post(
+                "/api/listings/freshness/remind",
+                headers=self._auth(self.admin_token),
+            )
+        self.assertEqual(reminded.status_code, 200)
+        self.assertEqual(reminded.get_json()["sent"], 1)
+        self.assertEqual(repeated.get_json()["sent"], 0)
+        self.assertEqual(send_email.call_count, 1)
+
+        confirmed = self.client.post(
+            f"/api/listings/{self.target_id}/confirm-active",
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(confirmed.status_code, 200)
+        refreshed = self.client.get(
+            f"/api/listings/{self.target_id}"
+        ).get_json()["listing"]
+        self.assertFalse(refreshed["needs_freshness_confirmation"])
+        self.assertEqual(refreshed["freshness_days_ago"], 0)
+
+    def test_admin_archives_obvious_test_listings_with_dry_run(self):
+        with sqlite3.connect(TEST_DB) as db:
+            test_listing_id = self._insert_listing(
+                db,
+                self.owner_id,
+                title="Тестове оголошення для live",
+                price=50_000,
+                area=40,
+                status="published",
+            )
+            db.commit()
+
+        forbidden = self.client.post(
+            "/api/admin/test-listings/cleanup",
+            json={"apply": True},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        preview = self.client.post(
+            "/api/admin/test-listings/cleanup",
+            json={"apply": False},
+            headers=self._auth(self.admin_token),
+        )
+        self.assertEqual(preview.status_code, 200)
+        self.assertTrue(preview.get_json()["dry_run"])
+        self.assertIn(test_listing_id, [item["id"] for item in preview.get_json()["candidates"]])
+        self.assertEqual(
+            self.client.get(f"/listing/{test_listing_id}").status_code,
+            200,
+        )
+
+        applied = self.client.post(
+            "/api/admin/test-listings/cleanup",
+            json={"apply": True},
+            headers=self._auth(self.admin_token),
+        )
+        self.assertEqual(applied.status_code, 200)
+        self.assertGreaterEqual(applied.get_json()["archived_count"], 1)
+        self.assertEqual(
+            self.client.get(f"/listing/{test_listing_id}").status_code,
+            404,
+        )
+
     def test_s3_upload_confirmation_handles_client_and_missing_key_errors(self):
         owned_key = f"listings/{self.owner_id}/asset/photo.jpg"
         boto3_module = mock.Mock()

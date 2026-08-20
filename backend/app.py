@@ -800,7 +800,9 @@ def _init_postgres_db():
                 moderation_reason TEXT,
                 moderation_updated_at TEXT,
                 listing_verification_status TEXT NOT NULL DEFAULT 'unverified',
-                published_at   TEXT,
+                last_confirmed_at TEXT,
+                freshness_reminder_sent_at TEXT,
+                published_at  TEXT,
                 latitude       REAL,
                 longitude      REAL,
                 description    TEXT    NOT NULL DEFAULT '',
@@ -1086,6 +1088,8 @@ def _init_postgres_db():
             ALTER TABLE users ADD COLUMN IF NOT EXISTS agency_slug     TEXT;
             ALTER TABLE listings ADD COLUMN IF NOT EXISTS listing_verification_status TEXT NOT NULL DEFAULT 'unverified';
             ALTER TABLE listings ADD COLUMN IF NOT EXISTS videos TEXT NOT NULL DEFAULT '[]';
+            ALTER TABLE listings ADD COLUMN IF NOT EXISTS last_confirmed_at TEXT;
+            ALTER TABLE listings ADD COLUMN IF NOT EXISTS freshness_reminder_sent_at TEXT;
         """)
         # Email / phone verification columns and password-reset columns (stage-2 auth hardening).
         cur.execute("""
@@ -2325,7 +2329,9 @@ def init_db():
             moderation_reason TEXT,
             moderation_updated_at TEXT,
             listing_verification_status TEXT NOT NULL DEFAULT 'unverified',
-            published_at   TEXT,
+            last_confirmed_at TEXT,
+            freshness_reminder_sent_at TEXT,
+            published_at  TEXT,
             latitude       REAL,
             longitude      REAL,
             description    TEXT    NOT NULL DEFAULT '',
@@ -2637,6 +2643,10 @@ def init_db():
         db.execute("ALTER TABLE listings ADD COLUMN moderation_updated_at TEXT")
     if "listing_verification_status" not in listing_columns:
         db.execute("ALTER TABLE listings ADD COLUMN listing_verification_status TEXT NOT NULL DEFAULT 'unverified'")
+    if "last_confirmed_at" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN last_confirmed_at TEXT")
+    if "freshness_reminder_sent_at" not in listing_columns:
+        db.execute("ALTER TABLE listings ADD COLUMN freshness_reminder_sent_at TEXT")
     if "videos" not in listing_columns:
         db.execute("ALTER TABLE listings ADD COLUMN videos TEXT NOT NULL DEFAULT '[]'")
     if "published_at" not in listing_columns:
@@ -3621,6 +3631,7 @@ def _row_to_listing(r, include_private: bool = False) -> dict:
         # moderation notes — those are only for the owner/admin themselves.
         d.pop("owner_email", None)
         d.pop("moderation_reason", None)
+        d.pop("freshness_reminder_sent_at", None)
         if not (
             d.get("verified_phone")
             and d.get("owner_phone_verified")
@@ -3641,7 +3652,15 @@ def _row_to_listing(r, include_private: bool = False) -> dict:
     d["trust_score"] = trust_score
     d["agency_verified"] = bool(d.get("agency_verified"))
     d["trust_verified_at"] = d.get("moderation_updated_at") or d.get("published_at") or d.get("created_at")
-    d["freshness_hours_ago"] = _hours_since(d.get("published_at") or d.get("created_at"))
+    freshness_reference = d.get("last_confirmed_at") or d.get("published_at") or d.get("created_at")
+    d["freshness_hours_ago"] = _hours_since(freshness_reference)
+    d["freshness_days_ago"] = _days_since(freshness_reference)
+    d["needs_freshness_confirmation"] = (
+        d.get("status") == "published"
+        and d["listing_status"] == "active"
+        and d["freshness_days_ago"] is not None
+        and d["freshness_days_ago"] >= 30
+    )
     d["verified_days_ago"] = _days_since(d.get("trust_verified_at"))
     verification_proofs: list[dict] = []
 
@@ -5004,6 +5023,7 @@ LISTING_SELECT = """
            l.owner_verification_status, l.phone_verification_status,
            l.moderation_status, l.moderation_reason, l.moderation_updated_at,
            l.listing_verification_status,
+           l.last_confirmed_at, l.freshness_reminder_sent_at,
            l.published_at, l.created_at,
            COALESCE(dup.dup_count, 1) AS dup_count,
            u.name AS owner_name, u.email AS owner_email, u.phone AS owner_phone,
@@ -6263,6 +6283,149 @@ def update_listing(listing_id: int):
     return jsonify(
         listing=_row_to_listing(row, include_private=True),
         media_cleanup_pending=len(media_cleanup_failures),
+    )
+
+
+@app.route("/api/listings/<int:listing_id>/confirm-active", methods=["POST"])
+@require_auth
+@limiter.limit("30 per hour")
+def confirm_listing_active(listing_id: int):
+    db = get_db()
+    listing = db.execute(
+        "SELECT id, user_id, status, listing_status FROM listings WHERE id = ?",
+        (listing_id,),
+    ).fetchone()
+    if not listing:
+        return jsonify(error="Оголошення не знайдено"), 404
+    if listing["user_id"] != g.user_id:
+        return jsonify(error="Недостатньо прав"), 403
+    if listing["status"] != "published" or listing["listing_status"] != "active":
+        return jsonify(error="Підтвердити можна лише активне опубліковане оголошення"), 409
+
+    confirmed_at = datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ")
+    db.execute(
+        """
+        UPDATE listings
+        SET last_confirmed_at = ?, freshness_reminder_sent_at = NULL
+        WHERE id = ?
+        """,
+        (confirmed_at, listing_id),
+    )
+    log_listing_event(db, listing_id, "listing_freshness_confirmed", "Продавець підтвердив актуальність оголошення.")
+    db.commit()
+    cache_delete_prefix("public:listings:")
+    return jsonify(ok=True, last_confirmed_at=confirmed_at, needs_freshness_confirmation=False)
+
+
+@app.route("/api/listings/freshness/remind", methods=["POST"])
+def remind_stale_listings():
+    db = get_db()
+    allowed, trigger_auth = alerts_dispatch_authorized(db)
+    if not allowed:
+        return jsonify(error="Недостатньо прав для нагадувань"), 403
+
+    now = datetime.datetime.utcnow().replace(microsecond=0)
+    stale_before = (now - datetime.timedelta(days=30)).isoformat(sep=" ")
+    reminder_before = (now - datetime.timedelta(days=7)).isoformat(sep=" ")
+    rows = db.execute(
+        """
+        SELECT l.id, l.title, u.email, u.name
+        FROM listings l
+        JOIN users u ON u.id = l.user_id
+        WHERE l.status = 'published'
+          AND l.listing_status = 'active'
+          AND COALESCE(l.last_confirmed_at, l.published_at, l.created_at) <= ?
+          AND (
+            l.freshness_reminder_sent_at IS NULL
+            OR l.freshness_reminder_sent_at <= ?
+          )
+        ORDER BY COALESCE(l.last_confirmed_at, l.published_at, l.created_at) ASC
+        LIMIT 250
+        """,
+        (stale_before, reminder_before),
+    ).fetchall()
+
+    sent = 0
+    for row in rows:
+        listing_url = f"{PUBLIC_SITE_URL or 'http://localhost:8080'}/listing/{row['id']}"
+        confirmed = _send_email(
+            row["email"],
+            f"Підтвердіть актуальність оголошення №{row['id']} — UA-Dim",
+            (
+                f"{row['name'] or 'Вітаємо'}, підтвердіть, що оголошення «{row['title']}» ще актуальне.\n"
+                f"Відкрийте кабінет продавця: {public_seller_url()}"
+            ),
+            (
+                f"<p>{escape(row['name'] or 'Вітаємо')}, підтвердіть, що оголошення "
+                f"<a href=\"{listing_url}\">«{escape(row['title'])}»</a> ще актуальне.</p>"
+                f"<p><a href=\"{public_seller_url()}\">Відкрити кабінет продавця</a></p>"
+            ),
+        )
+        if confirmed:
+            db.execute(
+                "UPDATE listings SET freshness_reminder_sent_at = ? WHERE id = ?",
+                (now.isoformat(sep=" "), row["id"]),
+            )
+            sent += 1
+    db.commit()
+    return jsonify(ok=True, trigger_auth=trigger_auth, checked=len(rows), sent=sent)
+
+
+@app.route("/api/admin/test-listings/cleanup", methods=["POST"])
+@require_auth
+@limiter.limit("10 per hour")
+def cleanup_test_listings():
+    db = get_db()
+    actor = db.execute("SELECT role FROM users WHERE id = ?", (g.user_id,)).fetchone()
+    if not actor or actor["role"] != "admin":
+        return jsonify(error="Недостатньо прав"), 403
+    data = _parse_json_payload()
+    apply_cleanup = bool(data.get("apply"))
+    candidates = db.execute(
+        """
+        SELECT l.id, l.title, l.status, l.source, u.email AS owner_email
+        FROM listings l
+        JOIN users u ON u.id = l.user_id
+        WHERE l.status IN ('published', 'pending', 'draft')
+          AND (
+            l.source = 'seed'
+            OR l.title LIKE 'Тестове оголошення%'
+            OR l.title LIKE 'тестове оголошення%'
+            OR LOWER(u.email) = 'demo@ua-dim.com'
+          )
+        ORDER BY l.id
+        LIMIT 500
+        """
+    ).fetchall()
+    candidate_list = [dict(row) for row in candidates]
+    if apply_cleanup and candidate_list:
+        ids = [row["id"] for row in candidate_list]
+        placeholders = ",".join("?" for _ in ids)
+        db.execute(
+            f"""
+            UPDATE listings
+            SET status = 'archived', listing_status = 'removed'
+            WHERE id IN ({placeholders})
+            """,
+            tuple(ids),
+        )
+        for listing_id in ids:
+            log_listing_event(
+                db,
+                listing_id,
+                "test_listing_archived",
+                "Тестове оголошення прибрано з публічного каталогу.",
+                admin_id=g.user_id,
+            )
+        _refresh_listing_city_summary(db)
+        db.commit()
+        cache_delete_prefix("public:listings:")
+    return jsonify(
+        ok=True,
+        dry_run=not apply_cleanup,
+        candidate_count=len(candidate_list),
+        archived_count=len(candidate_list) if apply_cleanup else 0,
+        candidates=candidate_list,
     )
 
 
