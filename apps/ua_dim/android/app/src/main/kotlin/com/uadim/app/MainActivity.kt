@@ -76,15 +76,14 @@ class MainActivity : FlutterActivity() {
                 putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes.toTypedArray())
             }
         }
-        val cameraIntent = if (acceptsImages) createCameraIntent() else null
+        val cameraIntent = if (acceptsImages && capture) createCameraIntent() else null
         val pickerIntent = if (capture && cameraIntent != null) {
             cameraIntent
         } else {
-            Intent.createChooser(galleryIntent, "Додати фото або відео").apply {
-                if (cameraIntent != null) {
-                    putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
-                }
-            }
+            Intent.createChooser(
+                galleryIntent,
+                if (acceptsImages) "Обрати фото з фототеки" else "Обрати медіафайл",
+            )
         }
 
         pendingFileResult = result
@@ -99,6 +98,7 @@ class MainActivity : FlutterActivity() {
 
     private fun createCameraIntent(): Intent? {
         val cameraIntent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+        if (cameraIntent.resolveActivity(packageManager) == null) return null
 
         val cameraFile: File
         val cameraUri: Uri

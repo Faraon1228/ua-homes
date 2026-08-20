@@ -1,9 +1,21 @@
 import 'package:flutter/material.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 
 import 'screens/ua_dim_screen.dart';
 
-void main() {
-  runApp(const UaDimApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  const dsn = String.fromEnvironment('UA_DIM_SENTRY_DSN');
+  if (dsn.isEmpty) {
+    runApp(const UaDimApp());
+    return;
+  }
+  await SentryFlutter.init((options) {
+    options
+      ..dsn = dsn
+      ..tracesSampleRate = 0.1
+      ..sendDefaultPii = false;
+  }, appRunner: () => runApp(SentryWidget(child: const UaDimApp())));
 }
 
 class UaDimApp extends StatelessWidget {

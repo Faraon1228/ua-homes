@@ -199,10 +199,15 @@ for = "/terms.html"
 [[headers]]
   for = "/*.js"
   [headers.values]
-    Cache-Control = "public, max-age=31536000, immutable"
+    Cache-Control = "no-cache"
 
 [[headers]]
   for = "/*.css"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/chunks/*"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
 

@@ -25,6 +25,7 @@ os.environ.pop("DATABASE_URL", None)
 app_module = importlib.import_module("app")
 media_migration = importlib.import_module("migrate_legacy_listing_media")
 operations_backup = importlib.import_module("operations_backup")
+postgres_migration = importlib.import_module("migrate_sqlite_to_postgres")
 
 
 class TrustFeatureTests(unittest.TestCase):
@@ -39,6 +40,11 @@ class TrustFeatureTests(unittest.TestCase):
             db.execute("PRAGMA foreign_keys=ON")
             for table in (
                 "client_observability_events",
+                "lead_funnel_events",
+                "lead_requests",
+                "push_devices",
+                "user_favorites",
+                "listing_alerts",
                 "premium_orders",
                 "listing_reports",
                 "listing_change_history",
@@ -79,10 +85,37 @@ class TrustFeatureTests(unittest.TestCase):
                 status="draft",
             )
             db.commit()
-
         self.owner_token = app_module.make_token(self.owner_id, "owner@example.test")
         self.realtor_token = app_module.make_token(self.realtor_id, "realtor@example.test")
         self.admin_token = app_module.make_token(self.admin_id, "admin@example.test")
+
+    def test_postgres_migration_covers_all_application_tables(self):
+        with sqlite3.connect(TEST_DB) as database:
+            application_tables = {
+                row[0]
+                for row in database.execute(
+                    "SELECT name FROM sqlite_master"
+                    " WHERE type = 'table'"
+                    " AND name NOT LIKE 'sqlite_%'"
+                    " AND name NOT LIKE 'listings_fts%'"
+                )
+            }
+        self.assertEqual(set(postgres_migration.TABLE_ORDER), application_tables)
+        self.assertEqual(
+            postgres_migration.normalize_value("users", "email", " Admin@Example.COM "),
+            "admin@example.com",
+        )
+        immutable_source = sqlite3.connect(
+            f"file:{TEST_DB}?mode=ro&immutable=1",
+            uri=True,
+        )
+        try:
+            self.assertEqual(
+                immutable_source.execute("PRAGMA integrity_check").fetchone()[0],
+                "ok",
+            )
+        finally:
+            immutable_source.close()
 
     @staticmethod
     def _insert_user(db, name, email, account_type, role="user"):
@@ -140,16 +173,32 @@ class TrustFeatureTests(unittest.TestCase):
         return {"Authorization": f"Bearer {token}"}
 
     def test_health_checks_database_and_correlates_requests(self):
+        hook_names = [
+            hook.__name__
+            for hook in app_module.app.before_request_funcs.get(None, [])
+        ]
+        self.assertLess(
+            hook_names.index("assign_request_id"),
+            hook_names.index("_check_request_limit"),
+        )
+
         request_id = "operations-test-request-123"
         response = self.client.get("/api/health", headers={"X-Request-ID": request_id})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()["database"], "ok")
+        payload = response.get_json()
+        self.assertEqual(payload["database"], "ok")
+        self.assertEqual(payload["database_engine"], "sqlite")
+        self.assertIn("media_storage", payload)
+        self.assertIn("error_monitoring", payload)
         self.assertEqual(response.headers["X-Request-ID"], request_id)
+        self.assertRegex(response.headers["Server-Timing"], r"^app;dur=\d+(?:\.\d+)?$")
+        self.assertGreaterEqual(float(response.headers["X-Response-Time-Ms"]), 0)
 
         with mock.patch.object(app_module, "get_db", side_effect=sqlite3.OperationalError("offline")):
             unavailable = self.client.get("/api/health")
         self.assertEqual(unavailable.status_code, 503)
         self.assertEqual(unavailable.get_json()["database"], "unavailable")
+        self.assertEqual(unavailable.get_json()["database_engine"], "sqlite")
         self.assertRegex(unavailable.headers["X-Request-ID"], r"^[a-f0-9]{24}$")
 
     def test_authenticated_backup_export_and_restore_drill(self):
@@ -291,6 +340,178 @@ class TrustFeatureTests(unittest.TestCase):
                 {item["id"] for item in relevance_second["listings"]}
             )
         )
+
+    def test_map_only_returns_active_published_listings(self):
+        with sqlite3.connect(TEST_DB) as database:
+            pending_id = self._insert_listing(
+                database,
+                self.owner_id,
+                title="Pending map listing",
+                price=90_000,
+                area=45,
+                status="pending",
+            )
+            sold_id = self._insert_listing(
+                database,
+                self.owner_id,
+                title="Sold map listing",
+                price=110_000,
+                area=55,
+                listing_status="sold",
+            )
+            map_ids = (self.target_id, self.draft_id, pending_id, sold_id)
+            database.executemany(
+                "UPDATE listings SET latitude = ?, longitude = ? WHERE id = ?",
+                [(50.45, 30.52, listing_id) for listing_id in map_ids],
+            )
+            database.commit()
+
+        response = self.client.get("/api/map/listings")
+        self.assertEqual(response.status_code, 200)
+        returned_ids = {listing["id"] for listing in response.get_json()["listings"]}
+        self.assertIn(self.target_id, returned_ids)
+        self.assertNotIn(self.draft_id, returned_ids)
+        self.assertNotIn(pending_id, returned_ids)
+        self.assertNotIn(sold_id, returned_ids)
+
+    def test_admin_can_create_listing_with_complete_insert_contract(self):
+        response = self.client.post(
+            "/api/admin/listings",
+            headers=self._auth(self.admin_token),
+            json={
+                "title": "Admin-created listing",
+                "city": "Львів",
+                "district": "Галицький",
+                "price": 125_000,
+                "rooms": 3,
+                "area": 72.5,
+                "status": "draft",
+                "latitude": 49.84,
+                "longitude": 24.03,
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.get_json())
+        listing_id = response.get_json()["id"]
+        with sqlite3.connect(TEST_DB) as database:
+            row = database.execute(
+                "SELECT title, user_id, status, latitude, longitude FROM listings WHERE id = ?",
+                (listing_id,),
+            ).fetchone()
+        self.assertEqual(
+            row,
+            ("Admin-created listing", self.admin_id, "draft", 49.84, 24.03),
+        )
+
+    def test_suspended_users_and_admins_cannot_authenticate(self):
+        with sqlite3.connect(TEST_DB) as database:
+            database.execute(
+                "UPDATE users SET status = 'suspended' WHERE id = ?",
+                (self.owner_id,),
+            )
+            database.execute(
+                "UPDATE users SET status = 'suspended' WHERE id = ?",
+                (self.admin_id,),
+            )
+            database.commit()
+
+        login = self.client.post(
+            "/api/auth/login",
+            json={"email": "owner@example.test", "password": "hash"},
+        )
+        self.assertEqual(login.status_code, 401)
+        self.assertEqual(
+            self.client.get("/api/auth/me", headers=self._auth(self.owner_token)).status_code,
+            401,
+        )
+        self.assertEqual(
+            self.client.get("/api/listings?mine=1", headers=self._auth(self.owner_token)).status_code,
+            401,
+        )
+        self.assertEqual(
+            self.client.get(
+                "/api/admin/dashboard/stats",
+                headers=self._auth(self.admin_token),
+            ).status_code,
+            401,
+        )
+        admin_login = self.client.post(
+            "/api/admin/auth/login",
+            json={"email": "admin@example.test", "password": "hash"},
+        )
+        self.assertEqual(admin_login.status_code, 401)
+
+    def test_duplicate_registration_rolls_back_failed_transaction(self):
+        class DuplicateRegistrationDatabase:
+            def __init__(self):
+                self.rolled_back = False
+
+            def execute(self, _query, _params=None):
+                raise sqlite3.IntegrityError("duplicate email")
+
+            def rollback(self):
+                self.rolled_back = True
+
+        database = DuplicateRegistrationDatabase()
+        with mock.patch.object(app_module, "get_db", return_value=database):
+            response = self.client.post(
+                "/api/auth/register",
+                json={
+                    "name": "Duplicate",
+                    "email": "owner@example.test",
+                    "password": "password123",
+                },
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(database.rolled_back)
+
+    def test_admin_user_updates_validate_values_and_revoke_tokens(self):
+        invalid_role = self.client.put(
+            f"/api/admin/users/{self.owner_id}",
+            headers=self._auth(self.admin_token),
+            json={"role": "superuser"},
+        )
+        invalid_status = self.client.put(
+            f"/api/admin/users/{self.owner_id}",
+            headers=self._auth(self.admin_token),
+            json={"status": "deleted"},
+        )
+        self.assertEqual(invalid_role.status_code, 400)
+        self.assertEqual(invalid_status.status_code, 400)
+
+        suspended = self.client.put(
+            f"/api/admin/users/{self.owner_id}",
+            headers=self._auth(self.admin_token),
+            json={"status": "suspended"},
+        )
+        self.assertEqual(suspended.status_code, 200)
+        self.assertEqual(
+            self.client.get("/api/auth/me", headers=self._auth(self.owner_token)).status_code,
+            401,
+        )
+
+        role_changed = self.client.put(
+            f"/api/admin/users/{self.realtor_id}",
+            headers=self._auth(self.admin_token),
+            json={"role": "agent"},
+        )
+        self.assertEqual(role_changed.status_code, 200)
+        self.assertEqual(
+            self.client.get("/api/auth/me", headers=self._auth(self.realtor_token)).status_code,
+            401,
+        )
+
+        with sqlite3.connect(TEST_DB) as database:
+            owner = database.execute(
+                "SELECT role, status, auth_token_version FROM users WHERE id = ?",
+                (self.owner_id,),
+            ).fetchone()
+            realtor = database.execute(
+                "SELECT role, status, auth_token_version FROM users WHERE id = ?",
+                (self.realtor_id,),
+            ).fetchone()
+        self.assertEqual(owner, ("user", "suspended", 1))
+        self.assertEqual(realtor, ("agent", "active", 1))
 
     def test_admin_bootstrap_hashes_password_and_login_page_has_no_credentials(self):
         email = "secure-admin@example.test"
@@ -663,8 +884,12 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertIn('"@type": "Person"', detail_html)
         self.assertIn("UA-Dim", detail_html)
         self.assertNotIn("UA Homes", detail_html)
-        self.assertIn("mailto:feedback@ua-dim.com", detail_html)
+        self.assertNotIn("mailto:feedback@ua-dim.com", detail_html)
         self.assertIn("Запитати про об’єкт", detail_html)
+        self.assertIn('id="inquiry-form"', detail_html)
+        self.assertIn('data-currency="UAH"', detail_html)
+        self.assertIn("Realtor target", detail_html)
+        self.assertIn('class="recommendation-card"', detail_html)
         self.assertIn("До каталогу UA-Dim", detail_html)
         self.assertNotIn("Trust-flow", detail_html)
         self.assertIn('<details class="disclosure" id="verification-details">', detail_html)
@@ -676,6 +901,435 @@ class TrustFeatureTests(unittest.TestCase):
                 (developer_id,),
             ).fetchone()
         self.assertEqual(developer, ("developer", "developer_free"))
+
+    def test_listing_phone_is_public_only_after_phone_verification(self):
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE users SET phone = '+380671234567', phone_verified = 1 WHERE id = ?",
+                (self.owner_id,),
+            )
+            db.commit()
+
+        hidden = self.client.get(f"/listing/{self.target_id}").get_data(as_text=True)
+        self.assertNotIn("tel:+380671234567", hidden)
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE listings SET verified_phone = 1, phone_verification_status = 'verified' WHERE id = ?",
+                (self.target_id,),
+            )
+            db.commit()
+
+        visible = self.client.get(f"/listing/{self.target_id}").get_data(as_text=True)
+        self.assertIn('href="tel:+380671234567"', visible)
+        public_listing = self.client.get(f"/api/listings/{self.target_id}").get_json()["listing"]
+        self.assertEqual(public_listing["owner_phone"], "+380671234567")
+
+    def test_listing_inquiry_is_deduplicated_and_owner_can_respond(self):
+        payload = {
+            "name": "Покупець",
+            "phone": "+380671234567",
+            "message": "Коли можна переглянути?",
+            "preferred_channel": "phone",
+            "session_id": "inquiry-session",
+        }
+        with self.assertLogs(app_module.app.logger, level="INFO") as logs:
+            created = self.client.post(
+                f"/api/listings/{self.target_id}/inquiries",
+                json=payload,
+            )
+        self.assertEqual(created.status_code, 201)
+        self.assertIn('"event":"lead_request"', "\n".join(logs.output))
+        inquiry_id = created.get_json()["inquiry_id"]
+
+        duplicate = self.client.post(
+            f"/api/listings/{self.target_id}/inquiries",
+            json=payload,
+        )
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertTrue(duplicate.get_json()["duplicate"])
+        self.assertEqual(duplicate.get_json()["inquiry_id"], inquiry_id)
+
+        unauthorized = self.client.get("/api/inquiries")
+        self.assertEqual(unauthorized.status_code, 401)
+        seller_inbox = self.client.get(
+            "/api/inquiries",
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(seller_inbox.status_code, 200)
+        inquiries = seller_inbox.get_json()["inquiries"]
+        self.assertEqual(len(inquiries), 1)
+        self.assertEqual(inquiries[0]["listing_id"], self.target_id)
+        self.assertEqual(inquiries[0]["status"], "new")
+
+        forbidden = self.client.patch(
+            f"/api/inquiries/{inquiry_id}",
+            json={"status": "responded", "response_message": "Зателефоную сьогодні."},
+            headers=self._auth(self.realtor_token),
+        )
+        self.assertEqual(forbidden.status_code, 404)
+
+        responded = self.client.patch(
+            f"/api/inquiries/{inquiry_id}",
+            json={"status": "responded", "response_message": "Зателефоную сьогодні."},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(responded.status_code, 200)
+        self.assertEqual(responded.get_json()["status"], "responded")
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.row_factory = sqlite3.Row
+            inquiry = db.execute(
+                "SELECT status, response_message, responded_at FROM lead_requests WHERE id = ?",
+                (inquiry_id,),
+            ).fetchone()
+            response_event = db.execute(
+                "SELECT event FROM lead_funnel_events WHERE listing_id = ? AND event = 'seller_response'",
+                (self.target_id,),
+            ).fetchone()
+        self.assertEqual(inquiry["status"], "responded")
+        self.assertEqual(inquiry["response_message"], "Зателефоную сьогодні.")
+        self.assertIsNotNone(inquiry["responded_at"])
+        self.assertIsNotNone(response_event)
+
+        regressed = self.client.patch(
+            f"/api/inquiries/{inquiry_id}",
+            json={"status": "viewed"},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(regressed.status_code, 409)
+
+    def test_listing_inquiry_validates_contact_channel(self):
+        invalid_phone = self.client.post(
+            f"/api/listings/{self.target_id}/inquiries",
+            json={
+                "name": "Покупець",
+                "phone": "123",
+                "preferred_channel": "phone",
+            },
+        )
+        self.assertEqual(invalid_phone.status_code, 422)
+
+        missing_email = self.client.post(
+            f"/api/listings/{self.target_id}/inquiries",
+            json={
+                "name": "Покупець",
+                "phone": "+380671234567",
+                "preferred_channel": "email",
+            },
+        )
+        self.assertEqual(missing_email.status_code, 422)
+
+    def test_account_favorites_sync_and_remain_private(self):
+        synced = self.client.post(
+            "/api/favorites/sync",
+            json={"listing_ids": [self.target_id, self.realtor_listing_id, self.draft_id, 999999]},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(synced.status_code, 200)
+        self.assertEqual(
+            set(synced.get_json()["listing_ids"]),
+            {self.target_id, self.realtor_listing_id},
+        )
+
+        owner_favorites = self.client.get(
+            "/api/favorites",
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(owner_favorites.status_code, 200)
+        self.assertEqual(
+            set(owner_favorites.get_json()["listing_ids"]),
+            {self.target_id, self.realtor_listing_id},
+        )
+        realtor_favorites = self.client.get(
+            "/api/favorites",
+            headers=self._auth(self.realtor_token),
+        )
+        self.assertEqual(realtor_favorites.get_json()["listing_ids"], [])
+
+        removed = self.client.delete(
+            f"/api/favorites/{self.target_id}",
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(removed.status_code, 200)
+        remaining = self.client.get(
+            "/api/favorites",
+            headers=self._auth(self.owner_token),
+        ).get_json()["listing_ids"]
+        self.assertEqual(remaining, [self.realtor_listing_id])
+
+    def test_saved_searches_are_account_backed_and_manage_real_alerts(self):
+        payload = {
+            "name": "Київ до 150k",
+            "city": "Київ",
+            "maxPrice": 150_000,
+            "minArea": 45,
+            "keywordSearch": "target",
+            "sortBy": "price_asc",
+            "channels": ["email"],
+        }
+        created = self.client.post(
+            "/api/alerts",
+            json=payload,
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(created.status_code, 201)
+        alert_id = created.get_json()["id"]
+
+        duplicate = self.client.post(
+            "/api/alerts",
+            json=payload,
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertTrue(duplicate.get_json()["duplicate"])
+        self.assertEqual(duplicate.get_json()["id"], alert_id)
+
+        listed = self.client.get(
+            "/api/alerts",
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(listed.status_code, 200)
+        alerts = listed.get_json()["alerts"]
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["filters"]["minArea"], 45)
+        self.assertEqual(alerts[0]["filters"]["keywordSearch"], "target")
+        self.assertEqual(alerts[0]["filters"]["sortBy"], "price_asc")
+        self.assertTrue(alerts[0]["is_active"])
+
+        paused = self.client.patch(
+            f"/api/alerts/{alert_id}",
+            json={"is_active": False},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(paused.status_code, 200)
+        self.assertFalse(paused.get_json()["is_active"])
+        forbidden = self.client.delete(
+            f"/api/alerts/{alert_id}",
+            headers=self._auth(self.realtor_token),
+        )
+        self.assertEqual(forbidden.status_code, 404)
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.row_factory = sqlite3.Row
+            listing = dict(
+                db.execute("SELECT * FROM listings WHERE id = ?", (self.target_id,)).fetchone()
+            )
+        self.assertTrue(
+            app_module._listing_matches_alert_filters(
+                listing,
+                {"city": "Київ", "minArea": 45, "keywordSearch": "target"},
+            )
+        )
+        self.assertFalse(
+            app_module._listing_matches_alert_filters(
+                listing,
+                {"minArea": 60},
+            )
+        )
+
+    def test_mobile_push_devices_follow_the_authenticated_account(self):
+        missing_auth = self.client.post(
+            "/api/push/devices",
+            json={"token": "device-token", "platform": "ios"},
+        )
+        self.assertEqual(missing_auth.status_code, 401)
+
+        registered = self.client.post(
+            "/api/push/devices",
+            json={"token": "device-token", "platform": "ios"},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(registered.status_code, 200)
+
+        moved_to_realtor = self.client.post(
+            "/api/push/devices",
+            json={"token": "device-token", "platform": "android"},
+            headers=self._auth(self.realtor_token),
+        )
+        self.assertEqual(moved_to_realtor.status_code, 200)
+        with sqlite3.connect(TEST_DB) as db:
+            device = db.execute(
+                "SELECT user_id, platform, is_active FROM push_devices WHERE token = ?",
+                ("device-token",),
+            ).fetchone()
+        self.assertEqual(device, (self.realtor_id, "android", 1))
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                """
+                INSERT INTO listing_alerts (user_id, email, name, filters)
+                VALUES (?, 'realtor@example.test', 'Push search', ?)
+                """,
+                (
+                    self.realtor_id,
+                    json.dumps({"city": "Київ", "channels": ["push"]}),
+                ),
+            )
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with mock.patch.object(
+                app_module,
+                "send_alert_push_payload",
+                return_value=True,
+            ) as send_push:
+                stats = app_module.dispatch_saved_alerts(
+                    db,
+                    listing_id=self.target_id,
+                )
+        self.assertEqual(stats["push_sent"], 1)
+        self.assertEqual(send_push.call_args.args[0]["device_tokens"], ["device-token"])
+
+        removed = self.client.delete(
+            "/api/push/devices",
+            json={"token": "device-token"},
+            headers=self._auth(self.realtor_token),
+        )
+        self.assertEqual(removed.status_code, 200)
+        with sqlite3.connect(TEST_DB) as db:
+            active = db.execute(
+                "SELECT is_active FROM push_devices WHERE token = ?",
+                ("device-token",),
+            ).fetchone()[0]
+        self.assertEqual(active, 0)
+
+    def test_alert_dispatch_advances_same_timestamp_matches_and_marks_price_changes(self):
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                """
+                INSERT INTO listing_alerts (user_id, email, name, filters)
+                VALUES (?, 'owner@example.test', 'Київ', ?)
+                """,
+                (
+                    self.owner_id,
+                    json.dumps({"city": "Київ", "channels": ["email"]}),
+                ),
+            )
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with mock.patch.object(app_module, "send_alert_listing_email", return_value=True) as send_email:
+                first = app_module.dispatch_saved_alerts(db)
+                second = app_module.dispatch_saved_alerts(db)
+                price_change = app_module.dispatch_saved_alerts(
+                    db,
+                    listing_id=self.target_id,
+                    event_type="price_change",
+                    previous_price=110_000,
+                )
+
+        self.assertEqual(first["email_sent"], 1)
+        self.assertEqual(second["email_sent"], 1)
+        self.assertEqual(price_change["email_sent"], 1)
+        first_listing = send_email.call_args_list[0].args[2]
+        second_listing = send_email.call_args_list[1].args[2]
+        self.assertEqual(first_listing["id"], self.target_id)
+        self.assertEqual(second_listing["id"], self.realtor_listing_id)
+        self.assertEqual(send_email.call_args_list[2].kwargs["event_type"], "price_change")
+        self.assertEqual(send_email.call_args_list[2].kwargs["previous_price"], 110_000)
+
+    def test_owner_confirms_listing_freshness_and_reminders_are_throttled(self):
+        stale_at = "2026-01-01 00:00:00"
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE listings SET published_at = ?, last_confirmed_at = NULL WHERE id = ?",
+                (stale_at, self.target_id),
+            )
+            db.commit()
+
+        stale_listing = self.client.get(
+            f"/api/listings/{self.target_id}"
+        ).get_json()["listing"]
+        self.assertTrue(stale_listing["needs_freshness_confirmation"])
+        self.assertNotIn("freshness_reminder_sent_at", stale_listing)
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.row_factory = sqlite3.Row
+            db.execute(
+                "UPDATE listings SET created_at = ? WHERE id = ?",
+                (stale_at, self.draft_id),
+            )
+            db.commit()
+            stale_draft_row = db.execute(
+                app_module.LISTING_SELECT + " WHERE l.id = ?",
+                (self.draft_id,),
+            ).fetchone()
+        stale_draft = app_module._row_to_listing(stale_draft_row)
+        self.assertFalse(stale_draft["needs_freshness_confirmation"])
+
+        forbidden = self.client.post(
+            f"/api/listings/{self.target_id}/confirm-active",
+            headers=self._auth(self.realtor_token),
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        with mock.patch.object(app_module, "_send_email", return_value=True) as send_email:
+            reminded = self.client.post(
+                "/api/listings/freshness/remind",
+                headers=self._auth(self.admin_token),
+            )
+            repeated = self.client.post(
+                "/api/listings/freshness/remind",
+                headers=self._auth(self.admin_token),
+            )
+        self.assertEqual(reminded.status_code, 200)
+        self.assertEqual(reminded.get_json()["sent"], 1)
+        self.assertEqual(repeated.get_json()["sent"], 0)
+        self.assertEqual(send_email.call_count, 1)
+
+        confirmed = self.client.post(
+            f"/api/listings/{self.target_id}/confirm-active",
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(confirmed.status_code, 200)
+        refreshed = self.client.get(
+            f"/api/listings/{self.target_id}"
+        ).get_json()["listing"]
+        self.assertFalse(refreshed["needs_freshness_confirmation"])
+        self.assertEqual(refreshed["freshness_days_ago"], 0)
+
+    def test_admin_archives_obvious_test_listings_with_dry_run(self):
+        with sqlite3.connect(TEST_DB) as db:
+            test_listing_id = self._insert_listing(
+                db,
+                self.owner_id,
+                title="Тестове оголошення для live",
+                price=50_000,
+                area=40,
+                status="published",
+            )
+            db.commit()
+
+        forbidden = self.client.post(
+            "/api/admin/test-listings/cleanup",
+            json={"apply": True},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        preview = self.client.post(
+            "/api/admin/test-listings/cleanup",
+            json={"apply": False},
+            headers=self._auth(self.admin_token),
+        )
+        self.assertEqual(preview.status_code, 200)
+        self.assertTrue(preview.get_json()["dry_run"])
+        self.assertIn(test_listing_id, [item["id"] for item in preview.get_json()["candidates"]])
+        self.assertEqual(
+            self.client.get(f"/listing/{test_listing_id}").status_code,
+            200,
+        )
+
+        applied = self.client.post(
+            "/api/admin/test-listings/cleanup",
+            json={"apply": True},
+            headers=self._auth(self.admin_token),
+        )
+        self.assertEqual(applied.status_code, 200)
+        self.assertGreaterEqual(applied.get_json()["archived_count"], 1)
+        self.assertEqual(
+            self.client.get(f"/listing/{test_listing_id}").status_code,
+            404,
+        )
 
     def test_s3_upload_confirmation_handles_client_and_missing_key_errors(self):
         owned_key = f"listings/{self.owner_id}/asset/photo.jpg"
@@ -959,22 +1613,135 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(price_rows[0]["new_value"], "105000")
         self.assertEqual(price_rows[0]["actor_type"], "owner")
 
-    def test_postgres_cursor_exposes_captured_lastval(self):
+    def test_postgres_cursor_uses_dict_rows_with_numeric_and_named_access(self):
+        import psycopg2.extras
+
+        class FakeConnection:
+            def __init__(self):
+                self.cursor_factory = None
+
+            def cursor(self, *, cursor_factory):
+                self.cursor_factory = cursor_factory
+                return object()
+
+        connection = FakeConnection()
+        app_module._DbConnectionProxy(connection, is_postgres=True).cursor()
+        self.assertIs(connection.cursor_factory, psycopg2.extras.DictCursor)
+
+        class FakeDictCursor:
+            index = {"id": 0, "title": 1}
+            description = (None, None)
+
+        row = psycopg2.extras.DictRow(FakeDictCursor())
+        row[:] = [42, "Test listing"]
+        self.assertEqual(row[0], 42)
+        self.assertEqual(row["id"], 42)
+        self.assertEqual(dict(row), {"id": 42, "title": "Test listing"})
+
+    def test_postgres_cursor_exposes_captured_lastval_with_savepoint(self):
         class FakeCursor:
             lastrowid = None
 
             def __init__(self):
                 self.query = ""
+                self.queries = []
 
             def execute(self, query, params=None):
                 self.query = query
+                self.queries.append((query, params))
 
             def fetchone(self):
                 return {"lastrowid": 42} if self.query.startswith("SELECT LASTVAL()") else None
 
-        proxy = app_module._DbCursorProxy(None, FakeCursor(), is_postgres=True)
+        cursor = FakeCursor()
+        proxy = app_module._DbCursorProxy(None, cursor, is_postgres=True)
         proxy.execute("INSERT INTO listing_reports (listing_id) VALUES (?)", (1,))
         self.assertEqual(proxy.lastrowid, 42)
+        self.assertEqual(
+            [query for query, _params in cursor.queries],
+            [
+                "INSERT INTO listing_reports (listing_id) VALUES (%s)",
+                "SAVEPOINT ua_dim_lastval",
+                "SELECT LASTVAL() AS lastrowid",
+                "RELEASE SAVEPOINT ua_dim_lastval",
+            ],
+        )
+
+    def test_postgres_cursor_rolls_back_only_failed_lastval_lookup(self):
+        class FakeCursor:
+            def __init__(self):
+                self.queries = []
+
+            def execute(self, query, params=None):
+                self.queries.append((query, params))
+                if query.startswith("SELECT LASTVAL()"):
+                    raise RuntimeError("lastval is not yet defined")
+
+        cursor = FakeCursor()
+        proxy = app_module._DbCursorProxy(None, cursor, is_postgres=True)
+        proxy.execute("INSERT INTO listing_city_summary (city) VALUES (?)", ("Київ",))
+
+        self.assertIsNone(proxy.lastrowid)
+        self.assertEqual(
+            [query for query, _params in cursor.queries],
+            [
+                "INSERT INTO listing_city_summary (city) VALUES (%s)",
+                "SAVEPOINT ua_dim_lastval",
+                "SELECT LASTVAL() AS lastrowid",
+                "ROLLBACK TO SAVEPOINT ua_dim_lastval",
+                "RELEASE SAVEPOINT ua_dim_lastval",
+            ],
+        )
+
+    def test_postgres_listing_search_uses_like_without_querying_fts(self):
+        class NoQueryDatabase:
+            def execute(self, query, params=None):
+                raise AssertionError(f"PostgreSQL search unexpectedly executed: {query}")
+
+        with mock.patch.object(app_module, "_is_postgres", return_value=True):
+            clause, params, ranked_ids = app_module._listing_search_filter(
+                NoQueryDatabase(),
+                "Печерськ",
+            )
+
+        self.assertNotIn("listings_fts", clause)
+        self.assertIn("l.title LIKE ?", clause)
+        self.assertEqual(params, ["%Печерськ%"] * 4)
+        self.assertEqual(ranked_ids, [])
+
+    def test_database_teardown_commits_success_and_rolls_back_exception(self):
+        class FakeDatabase:
+            def __init__(self):
+                self.calls = []
+
+            def commit(self):
+                self.calls.append("commit")
+
+            def rollback(self):
+                self.calls.append("rollback")
+
+            def close(self):
+                self.calls.append("close")
+
+        successful = FakeDatabase()
+        with mock.patch.object(app_module, "_is_postgres", return_value=True):
+            with app_module.app.app_context():
+                app_module.g.db = successful
+                app_module.close_db()
+        self.assertEqual(successful.calls, ["commit", "close"])
+
+        failed = FakeDatabase()
+        with mock.patch.object(app_module, "_is_postgres", return_value=True):
+            with app_module.app.app_context():
+                app_module.g.db = failed
+                app_module.close_db(RuntimeError("request failed"))
+        self.assertEqual(failed.calls, ["rollback", "close"])
+
+    def test_image_optimization_metadata_is_built_without_self_reference(self):
+        metadata = app_module._image_optimization_metadata(300, 450)
+        self.assertEqual(metadata["compression_ratio"], 50)
+        self.assertEqual(metadata["optimized_total"], 450)
+        self.assertIn("Compression: 50%", metadata["message"])
 
     # ─── Stage-2 auth hardening tests ─────────────────────────────────────────
 

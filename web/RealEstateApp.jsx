@@ -7,6 +7,32 @@ import {
   resolveSortByForEOselya,
 } from "./realEstateFilters";
 
+const LazyListingsMapView = React.lazy(() =>
+  import("./features/ListingsMapView.jsx")
+);
+const LazyTrustDialog = React.lazy(() => import("./features/TrustDialog.jsx"));
+
+class LazyFeatureBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidUpdate(previousProps) {
+    if (this.state.failed && previousProps.resetKey !== this.props.resetKey) {
+      this.setState({ failed: false });
+    }
+  }
+
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+
 const MOCK_PROPERTIES = [
   {
     id: 1,
@@ -112,6 +138,49 @@ const KEYWORD_SUGGESTIONS = [
 
 const SMART_SEARCH_PATH = "smart-search.html";
 const SELLER_CABINET_PATH = "/seller";
+
+function searchFiltersToAlertPayload(name, filters) {
+  return {
+    name,
+    city: filters.cityFilter && filters.cityFilter !== "Всі" ? filters.cityFilter : null,
+    type: filters.propertyType && filters.propertyType !== "Всі" ? filters.propertyType : null,
+    eOselya: Boolean(filters.onlyEOselya),
+    minPrice: filters.minPrice || null,
+    maxPrice: filters.maxPrice || null,
+    minRooms: filters.minRooms || null,
+    maxRooms: filters.maxRooms || null,
+    minArea: filters.minArea || null,
+    maxArea: filters.maxArea || null,
+    keywordSearch: filters.keywordSearch || null,
+    sortBy: filters.sortBy || DEFAULT_SORT,
+    channels: ["email"],
+  };
+}
+
+function alertToSavedSearch(alert) {
+  const filters = alert?.filters || {};
+  return {
+    id: `alert_${alert.id}`,
+    serverId: alert.id,
+    name: alert.name || "Збережений пошук",
+    filters: {
+      cityFilter: filters.city || "Всі",
+      propertyType: filters.type || "Всі",
+      onlyEOselya: Boolean(filters.eOselya),
+      minPrice: filters.minPrice == null ? "" : String(filters.minPrice),
+      maxPrice: filters.maxPrice == null ? "" : String(filters.maxPrice),
+      minRooms: filters.minRooms == null ? "" : String(filters.minRooms),
+      maxRooms: filters.maxRooms == null ? "" : String(filters.maxRooms),
+      minArea: filters.minArea == null ? "" : String(filters.minArea),
+      maxArea: filters.maxArea == null ? "" : String(filters.maxArea),
+      sortBy: filters.sortBy || DEFAULT_SORT,
+      keywordSearch: filters.keywordSearch || "",
+    },
+    isActive: Boolean(alert.is_active),
+    lastSentAt: alert.last_sent_at || null,
+    createdAt: alert.created_at ? Date.parse(alert.created_at) : Date.now(),
+  };
+}
 
 function isLocalPreview() {
   return typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname);
@@ -252,6 +321,11 @@ function mapListingToProperty(listing) {
     listingVerificationStatus:
       listing?.listing_verification_status || listing?.listingVerificationStatus || "unverified",
     verifiedListing: Boolean(listing?.verified_listing ?? listing?.verifiedListing),
+    lastConfirmedAt: listing?.last_confirmed_at || listing?.lastConfirmedAt || null,
+    freshnessDaysAgo: listing?.freshness_days_ago ?? listing?.freshnessDaysAgo ?? null,
+    needsFreshnessConfirmation: Boolean(
+      listing?.needs_freshness_confirmation ?? listing?.needsFreshnessConfirmation
+    ),
     sellerType: listing?.seller_type || listing?.sellerType || "unknown",
   };
 }
@@ -1000,6 +1074,9 @@ function getListingPipeline(listing) {
 
 function getStored(key, fallback) {
   if (typeof window === "undefined") return fallback;
+  if (key === "uaDim.authToken" && window.UaDimAuth?.postMessage) {
+    return window.sessionStorage.getItem(key) ?? window.localStorage.getItem(key) ?? fallback;
+  }
   const value = window.localStorage.getItem(key);
   return value ?? fallback;
 }
@@ -1321,28 +1398,27 @@ function PhotoGallery({ images, title, href, priority = false }) {
     setIndex((current) => (current + 1) % items.length);
   };
 
-  // Generate WebP/AVIF variants from original URL
+  // Generate the WebP variant created for every optimized S3 upload.
   // If S3 upload was optimized, URL format: https://bucket/listings/123/abc/photo-medium.webp
   // Fallback to original if optimization not available
   const getImageVariants = (url) => {
-    if (!url) return { original: url, webp: null, avif: null };
+    if (!url) return { original: url, webp: null };
     
-    // If already optimized (S3 URL with size suffix), extract base and create variants
     const urlObj = new URL(url, window.location.origin);
     const pathname = urlObj.pathname;
     
     // Check if it's an S3 URL with optimization
     if (pathname.includes('listings/') && (pathname.includes('-medium') || pathname.includes('-large') || pathname.includes('-thumbnail'))) {
-      // Already optimized, just return the WebP version
+      const sizedVariantPattern = /-(thumbnail|medium|large)\.(?:jpe?g|png|webp|avif)$/i;
+      const baseUrl = url.replace(sizedVariantPattern, "");
       return {
         original: url,
-        webp: url.endsWith('.webp') ? url : url.replace(/\.(jpg|png)$/, '-medium.webp'),
-        avif: url.endsWith('.avif') ? url : url.replace(/\.(jpg|png)$/, '-medium.avif')
+        webp: `${baseUrl}-medium.webp`
       };
     }
     
     // Original image (fallback if optimization not available)
-    return { original: url, webp: null, avif: null };
+    return { original: url, webp: null };
   };
 
   const currentImage = items[index] || FALLBACK_IMAGE;
@@ -1357,9 +1433,6 @@ function PhotoGallery({ images, title, href, priority = false }) {
   const optimizedOriginal = getCloudinaryImageUrl(currentImage, 1200) || variants.original;
   const picture = (
     <picture className="block h-full w-full">
-      {variants.avif && (
-        <source srcSet={variants.avif} type="image/avif" />
-      )}
       {variants.webp && (
         <source srcSet={variants.webp} type="image/webp" />
       )}
@@ -1544,10 +1617,7 @@ function ListingCard({ property, favorite, onToggleFavorite, onOpenTrust, priori
 }
 
 export default function RealEstateApp() {
-  const sellerCabinetMode =
-    typeof window !== "undefined" &&
-    (/^\/seller\/?$/.test(window.location.pathname) ||
-      new URLSearchParams(window.location.search).get("seller") === "1");
+  const sellerCabinetMode = __UA_SELLER_BUILD__ === true;
   const keywordInputRef = useRef(null);
   const mobileFiltersTriggerRef = useRef(null);
   const mobileFiltersDrawerRef = useRef(null);
@@ -1618,6 +1688,14 @@ export default function RealEstateApp() {
   const [myListings, setMyListings] = useState([]);
   const [myListingsLoading, setMyListingsLoading] = useState(false);
   const [myListingsFilter, setMyListingsFilter] = useState("all");
+  const [inquiries, setInquiries] = useState([]);
+  const [inquiriesLoading, setInquiriesLoading] = useState(false);
+  const [inquiryMessage, setInquiryMessage] = useState("");
+  const [accountSyncMessage, setAccountSyncMessage] = useState("");
+  const [verificationPhone, setVerificationPhone] = useState(() => getStoredJSON("uaDim.currentUser", null)?.phone || "");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [verificationMessage, setVerificationMessage] = useState("");
+  const [phoneCodeSent, setPhoneCodeSent] = useState(false);
   const [selectedListingFiles, setSelectedListingFiles] = useState([]);
   const [selectedListingFilePreviews, setSelectedListingFilePreviews] = useState([]);
   const [selectedListingVideoFiles, setSelectedListingVideoFiles] = useState([]);
@@ -1665,7 +1743,21 @@ export default function RealEstateApp() {
   const closeTrustDialog = () => setTrustListing(null);
   const openTrustDialog = (property) => setTrustListing(property);
   const trustDialog = trustListing ? (
-    <TrustDialog property={trustListing} authToken={authToken} onClose={closeTrustDialog} />
+    <LazyFeatureBoundary
+      resetKey={trustListing.id}
+      fallback={(
+        <div role="alert" className="fixed inset-x-4 bottom-4 z-[120] rounded-2xl bg-white p-4 text-center font-bold shadow-xl">
+          Не вдалося відкрити дані довіри.
+          <button type="button" onClick={closeTrustDialog} className="ml-3 underline">Закрити</button>
+        </div>
+      )}
+    >
+      <React.Suspense
+        fallback={<p role="status" className="fixed inset-x-4 bottom-4 z-[120] rounded-2xl bg-white p-4 text-center font-bold shadow-xl">Завантажуємо дані довіри…</p>}
+      >
+        <LazyTrustDialog property={trustListing} authToken={authToken} onClose={closeTrustDialog} />
+      </React.Suspense>
+    </LazyFeatureBoundary>
   ) : null;
 
   const closeMobileFilters = (restoreFocus = true) => {
@@ -2048,7 +2140,15 @@ export default function RealEstateApp() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (authToken) {
+    if (window.UaDimAuth?.postMessage) {
+      if (authToken) {
+        window.sessionStorage.setItem("uaDim.authToken", authToken);
+      } else {
+        window.sessionStorage.removeItem("uaDim.authToken");
+      }
+      window.localStorage.removeItem("uaDim.authToken");
+      window.UaDimAuth.postMessage(authToken || "");
+    } else if (authToken) {
       window.localStorage.setItem("uaDim.authToken", authToken);
     } else {
       window.localStorage.removeItem("uaDim.authToken");
@@ -2138,6 +2238,109 @@ export default function RealEstateApp() {
     }
   };
 
+  const loadInquiries = async () => {
+    if (!authToken) {
+      setInquiries([]);
+      return;
+    }
+    setInquiriesLoading(true);
+    try {
+      const response = await fetch(getApiUrl("/inquiries"), {
+        headers: { Authorization: ["Bearer", authToken].join(" ") },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося завантажити заявки");
+      setInquiries(Array.isArray(data.inquiries) ? data.inquiries : []);
+    } catch (error) {
+      setInquiryMessage(error.message || "Не вдалося завантажити заявки");
+    } finally {
+      setInquiriesLoading(false);
+    }
+  };
+
+  const syncAccountData = async () => {
+    if (!authToken) return;
+    setAccountSyncMessage("Синхронізуємо обране та пошуки…");
+    const authHeaders = { Authorization: ["Bearer", authToken].join(" ") };
+    try {
+      const localFavoriteIds = favoriteIds.filter((id) => Number.isInteger(Number(id)));
+      const localSearches = savedSearches.filter((entry) => !entry.serverId).slice(0, MAX_SAVED_SEARCHES);
+
+      const favoriteSyncResponse = await fetch(getApiUrl("/favorites/sync"), {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ listing_ids: localFavoriteIds }),
+      });
+      const favoriteSyncData = await favoriteSyncResponse.json();
+      if (!favoriteSyncResponse.ok) {
+        throw new Error(favoriteSyncData.error || "Не вдалося синхронізувати обране");
+      }
+
+      for (const entry of localSearches) {
+        const response = await fetch(getApiUrl("/alerts"), {
+          method: "POST",
+          headers: { ...authHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify(searchFiltersToAlertPayload(entry.name, entry.filters || {})),
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || "Не вдалося синхронізувати збережені пошуки");
+        }
+      }
+
+      const alertsResponse = await fetch(getApiUrl("/alerts"), { headers: authHeaders });
+      const alertsData = await alertsResponse.json();
+      if (!alertsResponse.ok) throw new Error(alertsData.error || "Не вдалося завантажити пошуки");
+
+      setFavoriteIds(Array.isArray(favoriteSyncData.listing_ids) ? favoriteSyncData.listing_ids : []);
+      setSavedSearches(
+        (Array.isArray(alertsData.alerts) ? alertsData.alerts : [])
+          .map(alertToSavedSearch)
+          .slice(0, MAX_SAVED_SEARCHES)
+      );
+      setAccountSyncMessage("Обране, пошуки та email-сповіщення синхронізовано.");
+    } catch (error) {
+      setAccountSyncMessage(error.message || "Не вдалося синхронізувати дані акаунта");
+    }
+  };
+
+  const updateInquiry = async (inquiry, status) => {
+    if (!authToken) return;
+    let responseMessage = "";
+    if (status === "responded") {
+      responseMessage = window.prompt("Коротка відповідь покупцю")?.trim() || "";
+      if (!responseMessage) return;
+    }
+    setInquiryMessage("");
+    try {
+      const response = await fetch(getApiUrl(`/inquiries/${inquiry.id}`), {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: ["Bearer", authToken].join(" "),
+        },
+        body: JSON.stringify({ status, response_message: responseMessage }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося оновити заявку");
+      setInquiries((current) =>
+        current.map((item) =>
+          item.id === inquiry.id
+            ? {
+                ...item,
+                status: data.status,
+                response_message: responseMessage || item.response_message,
+                responded_at: data.responded_at || item.responded_at,
+              }
+            : item
+        )
+      );
+      setInquiryMessage(status === "responded" ? "Відповідь збережено." : "Статус заявки оновлено.");
+    } catch (error) {
+      setInquiryMessage(error.message || "Не вдалося оновити заявку");
+    }
+  };
+
   const refreshProfile = async () => {
     if (!authToken) return;
     try {
@@ -2152,12 +2355,116 @@ export default function RealEstateApp() {
     }
   };
 
+  const sendPhoneVerificationCode = async () => {
+    if (!authToken) return;
+    setVerificationMessage("");
+    try {
+      const response = await fetch(getApiUrl("/auth/send-phone-code"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: ["Bearer", authToken].join(" "),
+        },
+        body: JSON.stringify({ phone: verificationPhone.trim() }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося надіслати код");
+      setPhoneCodeSent(true);
+      if (data.dev_code) setVerificationCode(data.dev_code);
+      setVerificationMessage("Код підтвердження надіслано.");
+    } catch (error) {
+      setVerificationMessage(error.message || "Не вдалося надіслати код");
+    }
+  };
+
+  const verifyProfilePhone = async () => {
+    if (!authToken) return;
+    setVerificationMessage("");
+    try {
+      const response = await fetch(getApiUrl("/auth/verify-phone"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: ["Bearer", authToken].join(" "),
+        },
+        body: JSON.stringify({ code: verificationCode.trim() }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося підтвердити телефон");
+      setCurrentUser((current) =>
+        current ? { ...current, phone: verificationPhone.trim(), phone_verified: true } : current
+      );
+      setPhoneCodeSent(false);
+      setVerificationCode("");
+      setVerificationMessage("Телефон підтверджено.");
+    } catch (error) {
+      setVerificationMessage(error.message || "Не вдалося підтвердити телефон");
+    }
+  };
+
+  const requestListingVerification = async (listing, kind) => {
+    if (!authToken) return;
+    const payload = kind === "owner"
+      ? { owner_verification_status: "pending" }
+      : { listing_verification_status: "pending" };
+    setVerificationMessage("");
+    try {
+      const response = await fetch(getApiUrl(`/listings/${listing.id}/verification`), {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: ["Bearer", authToken].join(" "),
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося подати заявку на перевірку");
+      setMyListings((current) =>
+        current.map((item) => item.id === listing.id ? data.listing : item)
+      );
+      setVerificationMessage("Заявку на перевірку подано.");
+    } catch (error) {
+      setVerificationMessage(error.message || "Не вдалося подати заявку на перевірку");
+    }
+  };
+
+  const confirmListingFreshness = async (listing) => {
+    if (!authToken) return;
+    setVerificationMessage("");
+    try {
+      const response = await fetch(getApiUrl(`/listings/${listing.id}/confirm-active`), {
+        method: "POST",
+        headers: { Authorization: ["Bearer", authToken].join(" ") },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося підтвердити актуальність");
+      setMyListings((current) =>
+        current.map((item) =>
+          item.id === listing.id
+            ? {
+                ...item,
+                last_confirmed_at: data.last_confirmed_at,
+                freshness_days_ago: 0,
+                needs_freshness_confirmation: false,
+              }
+            : item
+        )
+      );
+      setVerificationMessage("Актуальність оголошення підтверджено.");
+    } catch (error) {
+      setVerificationMessage(error.message || "Не вдалося підтвердити актуальність");
+    }
+  };
+
   useEffect(() => {
     if (!authToken) {
       setMyListings([]);
+      setInquiries([]);
       return;
     }
     loadMyListings();
+    loadInquiries();
+    syncAccountData();
     refreshProfile();
   }, [authToken, currentUser?.id]);
 
@@ -2268,12 +2575,28 @@ export default function RealEstateApp() {
     return items;
   }, [cityFilter, propertyTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, keywordSearch]);
 
-  const toggleFavorite = (property) => {
+  const toggleFavorite = async (property) => {
+    const wasFavorite = favoriteIds.includes(property.id);
     setFavoriteIds((current) =>
-      current.includes(property.id)
-        ? current.filter((id) => id !== property.id)
-        : [...current, property.id]
+      wasFavorite ? current.filter((id) => id !== property.id) : [...current, property.id]
     );
+    if (!authToken) return;
+    try {
+      const response = await fetch(getApiUrl(`/favorites/${property.id}`), {
+        method: wasFavorite ? "DELETE" : "PUT",
+        headers: { Authorization: ["Bearer", authToken].join(" ") },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося оновити обране");
+      setAccountSyncMessage("Обране синхронізовано з акаунтом.");
+    } catch (error) {
+      setFavoriteIds((current) =>
+        wasFavorite
+          ? current.includes(property.id) ? current : [...current, property.id]
+          : current.filter((id) => id !== property.id)
+      );
+      setAccountSyncMessage(error.message || "Не вдалося оновити обране");
+    }
   };
 
   const resetFilters = () => {
@@ -2336,7 +2659,7 @@ export default function RealEstateApp() {
     activatePanel("search");
   };
 
-  const saveCurrentSearch = () => {
+  const saveCurrentSearch = async () => {
     const defaultName = `${cityFilter || "Всі"} · ${onlyEOselya ? "єОселя" : "всі"} · ${
       new Date().toLocaleDateString("uk-UA")
     }`;
@@ -2346,9 +2669,85 @@ export default function RealEstateApp() {
       id: `search_${Date.now()}`,
       name,
       filters: { ...searchFilters },
+      isActive: Boolean(authToken),
       createdAt: Date.now(),
     };
     setSavedSearches((current) => [entry, ...current].slice(0, MAX_SAVED_SEARCHES));
+    if (!authToken) {
+      setAccountSyncMessage("Пошук збережено на цьому пристрої. Увійдіть, щоб синхронізувати його.");
+      return;
+    }
+    try {
+      const response = await fetch(getApiUrl("/alerts"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: ["Bearer", authToken].join(" "),
+        },
+        body: JSON.stringify(searchFiltersToAlertPayload(name, searchFilters)),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося зберегти пошук");
+      setSavedSearches((current) =>
+        current
+          .filter((item) => item.id === entry.id || item.serverId !== data.id)
+          .map((item) =>
+            item.id === entry.id
+              ? { ...item, id: `alert_${data.id}`, serverId: data.id, isActive: true }
+              : item
+          )
+      );
+      setAccountSyncMessage("Пошук збережено. Email-сповіщення активні.");
+    } catch (error) {
+      setAccountSyncMessage(error.message || "Пошук збережено лише на цьому пристрої");
+    }
+  };
+
+  const deleteSavedSearch = async (entry) => {
+    const previous = savedSearches;
+    setSavedSearches((current) => current.filter((item) => item.id !== entry.id));
+    if (!authToken || !entry.serverId) return;
+    try {
+      const response = await fetch(getApiUrl(`/alerts/${entry.serverId}`), {
+        method: "DELETE",
+        headers: { Authorization: ["Bearer", authToken].join(" ") },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося видалити пошук");
+      setAccountSyncMessage("Збережений пошук видалено.");
+    } catch (error) {
+      setSavedSearches(previous);
+      setAccountSyncMessage(error.message || "Не вдалося видалити пошук");
+    }
+  };
+
+  const toggleSavedSearchAlert = async (entry) => {
+    if (!authToken || !entry.serverId) {
+      setAccountSyncMessage("Увійдіть, щоб керувати сповіщеннями.");
+      return;
+    }
+    const nextActive = !entry.isActive;
+    setSavedSearches((current) =>
+      current.map((item) => item.id === entry.id ? { ...item, isActive: nextActive } : item)
+    );
+    try {
+      const response = await fetch(getApiUrl(`/alerts/${entry.serverId}`), {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: ["Bearer", authToken].join(" "),
+        },
+        body: JSON.stringify({ is_active: nextActive }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Не вдалося змінити сповіщення");
+      setAccountSyncMessage(nextActive ? "Email-сповіщення увімкнено." : "Email-сповіщення призупинено.");
+    } catch (error) {
+      setSavedSearches((current) =>
+        current.map((item) => item.id === entry.id ? { ...item, isActive: entry.isActive } : item)
+      );
+      setAccountSyncMessage(error.message || "Не вдалося змінити сповіщення");
+    }
   };
 
   const applyKeywordSearch = () => {
@@ -2375,7 +2774,7 @@ export default function RealEstateApp() {
   const openSavedSearch = (entry) => {
     const next = entry.filters || {};
     if ("cityFilter" in next) setCityFilter(next.cityFilter);
-    if ("propertyTypeFilter" in next) setPropertyTypeFilter(next.propertyTypeFilter);
+    if ("propertyType" in next) setPropertyTypeFilter(next.propertyType);
     if ("onlyEOselya" in next) setOnlyEOselya(next.onlyEOselya);
     if ("minPrice" in next) setMinPrice(next.minPrice);
     if ("maxPrice" in next) setMaxPrice(next.maxPrice);
@@ -2515,7 +2914,12 @@ export default function RealEstateApp() {
   const logoutProfile = () => {
     setAuthToken("");
     setCurrentUser(null);
+    setFavoriteIds([]);
+    setSavedSearches([]);
+    window.localStorage.removeItem("re.favoriteIds");
+    window.localStorage.removeItem(SAVED_SEARCHES_KEY);
     setAuthSuccess("Ви вийшли з профілю");
+    setAccountSyncMessage("");
     setMyListings([]);
     setListingMessage("");
     setEditingListingId(null);
@@ -3544,6 +3948,73 @@ export default function RealEstateApp() {
                       </div>
                     </div>
                   </details>
+
+                  <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-4" aria-labelledby="verification-onboarding-title">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-wide text-emerald-700">Довіра до профілю</p>
+                        <h2 id="verification-onboarding-title" className="mt-1 text-lg font-black text-slate-900">
+                          Підтвердження продавця
+                        </h2>
+                        <p className="mt-1 text-sm text-slate-600">Телефон → власник → документи та оголошення.</p>
+                      </div>
+                      <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-emerald-800">
+                        {currentUser.phone_verified ? "Телефон підтверджено" : "Потрібне підтвердження"}
+                      </span>
+                    </div>
+                    {!currentUser.phone_verified ? (
+                      <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto]">
+                        <input
+                          type="tel"
+                          value={verificationPhone}
+                          onChange={(event) => setVerificationPhone(event.target.value)}
+                          placeholder="+380..."
+                          aria-label="Номер телефону для підтвердження"
+                          className="min-h-11 rounded-xl border border-emerald-200 bg-white px-3 text-sm"
+                        />
+                        <button
+                          type="button"
+                          onClick={sendPhoneVerificationCode}
+                          className="min-h-11 rounded-xl bg-emerald-700 px-4 text-sm font-black text-white"
+                        >
+                          Надіслати код
+                        </button>
+                        {phoneCodeSent ? (
+                          <>
+                            <input
+                              value={verificationCode}
+                              onChange={(event) => setVerificationCode(event.target.value)}
+                              inputMode="numeric"
+                              maxLength={6}
+                              placeholder="6-значний код"
+                              aria-label="Код підтвердження телефону"
+                              className="min-h-11 rounded-xl border border-emerald-200 bg-white px-3 text-sm"
+                            />
+                            <button
+                              type="button"
+                              onClick={verifyProfilePhone}
+                              className="min-h-11 rounded-xl border border-emerald-300 bg-white px-4 text-sm font-black text-emerald-800"
+                            >
+                              Підтвердити
+                            </button>
+                          </>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <p className="mt-3 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-emerald-800">
+                        Номер {currentUser.phone || verificationPhone} підтверджено.
+                      </p>
+                    )}
+                    {verificationMessage ? (
+                      <p className="mt-3 text-sm font-semibold text-slate-700" role="status" aria-live="polite">
+                        {verificationMessage}
+                      </p>
+                    ) : null}
+                    <p className="mt-3 text-xs text-slate-600">
+                      Заявки на перевірку власника й документів подаються окремо для кожного оголошення нижче.
+                    </p>
+                  </section>
+
                   {publishSuccess ? (
                     <div
                       id="publish-success"
@@ -3594,6 +4065,88 @@ export default function RealEstateApp() {
                       </div>
                     </div>
                   ) : null}
+
+                  <section
+                    id="inquiries"
+                    className="rounded-3xl border border-blue-100 bg-blue-50 p-3 sm:p-4"
+                    aria-labelledby="inquiries-title"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <h2 id="inquiries-title" className="text-xs font-black uppercase tracking-wide text-blue-700">
+                          Заявки покупців
+                        </h2>
+                        <p className="mt-1 text-sm text-slate-600">Контакти й відповіді щодо ваших оголошень.</p>
+                      </div>
+                      <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-blue-700">
+                        {inquiries.filter((item) => item.status === "new").length} нових
+                      </span>
+                    </div>
+                    {inquiryMessage ? (
+                      <p className="mt-3 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-slate-700" role="status">
+                        {inquiryMessage}
+                      </p>
+                    ) : null}
+                    {inquiriesLoading ? (
+                      <p className="mt-4 text-sm text-slate-600">Завантаження заявок…</p>
+                    ) : inquiries.length ? (
+                      <ul className="mt-4 grid gap-3 lg:grid-cols-2">
+                        {inquiries.map((inquiry) => (
+                          <li key={inquiry.id} className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="truncate font-black text-slate-900">{inquiry.listing_title}</p>
+                                <p className="mt-1 text-sm font-semibold text-slate-700">{inquiry.name}</p>
+                              </div>
+                              <span className={`rounded-full px-2 py-1 text-[10px] font-black uppercase ${
+                                inquiry.status === "new"
+                                  ? "bg-amber-100 text-amber-800"
+                                  : inquiry.status === "responded"
+                                    ? "bg-emerald-100 text-emerald-800"
+                                    : "bg-slate-100 text-slate-700"
+                              }`}>
+                                {inquiry.status === "new"
+                                  ? "Нова"
+                                  : inquiry.status === "viewed"
+                                    ? "Переглянута"
+                                    : inquiry.status === "responded"
+                                      ? "Відповіли"
+                                      : "Закрита"}
+                              </span>
+                            </div>
+                            <div className="mt-3 space-y-1 text-sm text-slate-700">
+                              {inquiry.phone ? <p><a href={`tel:${inquiry.phone}`} className="font-bold text-blue-700">{inquiry.phone}</a></p> : null}
+                              {inquiry.email ? <p><a href={`mailto:${inquiry.email}`} className="font-bold text-blue-700">{inquiry.email}</a></p> : null}
+                              <p>Зручний канал: {inquiry.preferred_channel === "chat" ? "повідомлення без дзвінка" : inquiry.preferred_channel}</p>
+                              {inquiry.message ? <p className="rounded-xl bg-slate-50 p-2">{inquiry.message}</p> : null}
+                              {inquiry.response_message ? <p className="rounded-xl bg-emerald-50 p-2 text-emerald-900">Ваша відповідь: {inquiry.response_message}</p> : null}
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {inquiry.status === "new" ? (
+                                <button type="button" onClick={() => updateInquiry(inquiry, "viewed")} className="min-h-11 rounded-xl border border-slate-200 px-3 text-xs font-bold text-slate-700">
+                                  Позначити переглянутою
+                                </button>
+                              ) : null}
+                              {inquiry.status !== "responded" && inquiry.status !== "closed" ? (
+                                <button type="button" onClick={() => updateInquiry(inquiry, "responded")} className="min-h-11 rounded-xl bg-blue-600 px-3 text-xs font-black text-white">
+                                  Записати відповідь
+                                </button>
+                              ) : null}
+                              {inquiry.status !== "closed" ? (
+                                <button type="button" onClick={() => updateInquiry(inquiry, "closed")} className="min-h-11 rounded-xl px-3 text-xs font-bold text-slate-500">
+                                  Закрити
+                                </button>
+                              ) : null}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-4 rounded-2xl border border-dashed border-blue-200 bg-white p-5 text-center text-sm text-slate-600">
+                        Нових заявок ще немає.
+                      </p>
+                    )}
+                  </section>
 
                   <div
                     id="my-listings"
@@ -3681,6 +4234,36 @@ export default function RealEstateApp() {
                                 </div>
                                 <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100" aria-hidden="true">
                                   <span className="block h-full rounded-full bg-emerald-500" style={{ width: `${completeness}%` }} />
+                                </div>
+                                <div className="mt-3 rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-xs text-slate-700">
+                                  <div className="flex flex-wrap gap-2">
+                                    <span className="rounded-full bg-white px-2 py-1 font-bold">
+                                      Власник: {item.owner_verification_status === "verified" ? "підтверджено" : item.owner_verification_status === "pending" ? "на перевірці" : "не підтверджено"}
+                                    </span>
+                                    <span className="rounded-full bg-white px-2 py-1 font-bold">
+                                      Оголошення: {item.listing_verification_status === "verified" ? "підтверджено" : item.listing_verification_status === "pending" ? "на перевірці" : "не підтверджено"}
+                                    </span>
+                                    <span className={`rounded-full px-2 py-1 font-bold ${item.needs_freshness_confirmation ? "bg-amber-100 text-amber-900" : "bg-white"}`}>
+                                      {item.needs_freshness_confirmation ? "Потрібно підтвердити актуальність" : "Актуальність підтверджена"}
+                                    </span>
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {!["pending", "verified"].includes(item.owner_verification_status) ? (
+                                      <button type="button" onClick={() => requestListingVerification(item, "owner")} className="min-h-11 rounded-lg border border-emerald-200 bg-white px-3 font-black text-emerald-800">
+                                        Перевірити власника
+                                      </button>
+                                    ) : null}
+                                    {!["pending", "verified"].includes(item.listing_verification_status) ? (
+                                      <button type="button" onClick={() => requestListingVerification(item, "listing")} className="min-h-11 rounded-lg border border-emerald-200 bg-white px-3 font-black text-emerald-800">
+                                        Перевірити документи
+                                      </button>
+                                    ) : null}
+                                    {item.status === "published" && item.listing_status === "active" ? (
+                                      <button type="button" onClick={() => confirmListingFreshness(item)} className="min-h-11 rounded-lg bg-emerald-700 px-3 font-black text-white">
+                                        Підтвердити актуальність
+                                      </button>
+                                    ) : null}
+                                  </div>
                                 </div>
                                 <div className="mt-4 flex flex-wrap gap-2">
                                   {item.status === "published" ? (
@@ -3852,9 +4435,14 @@ export default function RealEstateApp() {
                     onClick={saveCurrentSearch}
                     className="text-sm font-semibold text-blue-600 underline transition hover:text-blue-700"
                   >
-                    Зберегти запит
+                    {authToken ? "Зберегти й сповіщати" : "Зберегти запит"}
                   </button>
                 </div>
+                {accountSyncMessage ? (
+                  <p className="mb-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800" role="status" aria-live="polite">
+                    {accountSyncMessage}
+                  </p>
+                ) : null}
                 <div className="flex flex-wrap gap-2">
                   {QUICK_SCENARIOS.map((scenario) => {
                     const isActive = propertyTypeFilter === scenario.value;
@@ -3882,13 +4470,23 @@ export default function RealEstateApp() {
                         className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-white px-3 py-1 text-xs font-semibold text-slate-700"
                       >
                         <button type="button" onClick={() => openSavedSearch(entry)} className="inline-flex min-h-[44px] items-center hover:text-blue-700">
+                          {entry.isActive ? "🔔 " : entry.serverId ? "🔕 " : ""}
                           {entry.name}
                         </button>
+                        {entry.serverId ? (
+                          <button
+                            type="button"
+                            onClick={() => toggleSavedSearchAlert(entry)}
+                            className="inline-flex h-11 items-center px-1 text-blue-700 hover:text-blue-900"
+                            aria-label={entry.isActive ? `Призупинити сповіщення ${entry.name}` : `Увімкнути сповіщення ${entry.name}`}
+                            title={entry.isActive ? "Призупинити email-сповіщення" : "Увімкнути email-сповіщення"}
+                          >
+                            {entry.isActive ? "Пауза" : "Увімкнути"}
+                          </button>
+                        ) : null}
                         <button
                           type="button"
-                          onClick={() =>
-                            setSavedSearches((current) => current.filter((item) => item.id !== entry.id))
-                          }
+                          onClick={() => deleteSavedSearch(entry)}
                           className="inline-flex h-11 w-11 items-center justify-center text-rose-700 hover:text-rose-900"
                           aria-label={`Видалити пошук ${entry.name}`}
                         >
@@ -4350,7 +4948,21 @@ export default function RealEstateApp() {
             ) : null}
 
             {resultsView === "map" ? (
-              <ListingsMapView properties={visibleProperties} onShowList={() => setResultsView("list")} />
+              <LazyFeatureBoundary
+                resetKey={resultsView}
+                fallback={(
+                  <div role="alert" className="rounded-[28px] border border-slate-200 bg-white px-5 py-20 text-center font-bold text-slate-600">
+                    Не вдалося завантажити карту.
+                    <button type="button" onClick={() => setResultsView("list")} className="ml-3 underline">Показати список</button>
+                  </div>
+                )}
+              >
+                <React.Suspense
+                  fallback={<p role="status" className="rounded-[28px] border border-slate-200 bg-white px-5 py-20 text-center font-bold text-slate-600">Готуємо карту…</p>}
+                >
+                  <LazyListingsMapView properties={visibleProperties} onShowList={() => setResultsView("list")} />
+                </React.Suspense>
+              </LazyFeatureBoundary>
             ) : null}
 
             <div
@@ -4750,7 +5362,7 @@ export default function RealEstateApp() {
                   <div className="grid gap-2 sm:grid-cols-2">
                     <label className="flex min-h-14 cursor-pointer items-center justify-center gap-3 rounded-2xl bg-blue-600 px-5 text-center text-sm font-black text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 focus-within:ring-4 focus-within:ring-blue-200">
                       <span className="text-xl" aria-hidden="true">＋</span>
-                      <span>Обрати фото</span>
+                      <span>Обрати з фототеки</span>
                       <input
                         type="file"
                         multiple
@@ -4774,7 +5386,7 @@ export default function RealEstateApp() {
                     ) : null}
                   </div>
                   <p className="mt-3 text-xs leading-relaxed text-slate-600">
-                    JPG, PNG, WEBP, AVIF, HEIC/HEIF · до 10 МБ кожне.
+                    Можна вибрати до 8 фото з фототеки телефона. JPG, PNG, WEBP, AVIF, HEIC/HEIF · до 10 МБ кожне.
                   </p>
                   {selectedListingFiles.length ? (
                     <div className="mt-3 space-y-3">
@@ -4798,7 +5410,14 @@ export default function RealEstateApp() {
                         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                           {selectedListingFilePreviews.map((preview, previewIndex) => (
                             <div key={preview.id} className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-                              <img src={preview.src} alt={preview.name} className="h-28 w-full object-cover" />
+                              <img
+                                src={preview.src}
+                                alt={preview.name}
+                                width="320"
+                                height="224"
+                                decoding="async"
+                                className="h-28 w-full object-cover"
+                              />
                               <span className="absolute left-2 top-2 rounded-full bg-emerald-700 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white shadow">
                                 Готово
                               </span>

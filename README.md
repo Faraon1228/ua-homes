@@ -86,6 +86,14 @@ bundle ID `com.uadim.app`. Ручний режим із
 fallback для збірки IPA без завантаження. Store release DriveCommunity буде
 налаштовано окремо пізніше.
 
+Push-сповіщення UA-Dim вмикаються лише коли release workflow отримує Firebase
+secrets: `UA_DIM_FIREBASE_API_KEY`, окремі
+`UA_DIM_FIREBASE_ANDROID_APP_ID`/`UA_DIM_FIREBASE_IOS_APP_ID`,
+`UA_DIM_FIREBASE_MESSAGING_SENDER_ID` і `UA_DIM_FIREBASE_PROJECT_ID`.
+Crash reporting вмикається окремим secret `UA_DIM_SENTRY_DSN`. Без цих значень
+застосунок збирається без placeholder-ключів: share, deep links, secure auth та
+offline-індикатор працюють, а Firebase/Sentry залишаються вимкненими.
+
 ## 🛠️ Архітектура
 
 ### Стек технологій

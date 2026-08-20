@@ -63,11 +63,28 @@ if [ ! -x "$TAILWIND" ]; then
 fi
 
 # ── compile source JSX ──
-echo "🔨 Compiling JSX → real-estate-app.js ..."
+echo "🔨 Compiling JSX → real-estate-app.js + lazy chunks ..."
+rm -rf "$WEB_DIR/chunks"
 "$ESBUILD" "$WEB_DIR/RealEstateApp.jsx" 2>/dev/null \
-  --bundle --format=iife --jsx=transform --jsx-factory=React.createElement \
+  --bundle --format=esm --splitting --jsx=transform --jsx-factory=React.createElement \
   --jsx-fragment=React.Fragment --target=es2020 --minify \
-  --charset=utf8 --outfile="$WEB_DIR/real-estate-app.js" && echo "   ✅ real-estate-app.js compiled ($(wc -c < "$WEB_DIR/real-estate-app.js" | tr -d ' ') bytes)"
+  --define:__UA_SELLER_BUILD__=false \
+  --charset=utf8 --outdir="$WEB_DIR" --entry-names=real-estate-app \
+  --chunk-names=chunks/[name]-[hash] && echo "   ✅ real-estate-app.js compiled ($(wc -c < "$WEB_DIR/real-estate-app.js" | tr -d ' ') bytes)"
+
+"$ESBUILD" "$WEB_DIR/RealEstateApp.jsx" 2>/dev/null \
+  --bundle --format=esm --splitting --jsx=transform --jsx-factory=React.createElement \
+  --jsx-fragment=React.Fragment --target=es2020 --minify \
+  --define:__UA_SELLER_BUILD__=true \
+  --charset=utf8 --outdir="$WEB_DIR" --entry-names=seller-app \
+  --chunk-names=chunks/[name]-[hash] && echo "   ✅ seller-app.js compiled ($(wc -c < "$WEB_DIR/seller-app.js" | tr -d ' ') bytes)"
+
+CATALOG_BYTES=$(wc -c < "$WEB_DIR/real-estate-app.js" | tr -d ' ')
+SELLER_BYTES=$(wc -c < "$WEB_DIR/seller-app.js" | tr -d ' ')
+if [ "$CATALOG_BYTES" -gt 130000 ] || [ "$SELLER_BYTES" -gt 135000 ]; then
+  echo "Frontend bundle budget exceeded: catalog=${CATALOG_BYTES}, seller=${SELLER_BYTES}" >&2
+  exit 1
+fi
 
 # ── generate purged Tailwind CSS ──
 echo "🎨 Generating purged ua-homes.css ..."
@@ -100,5 +117,37 @@ JS
   --config "$TW_CONFIG" --minify 2>&1 | sed '/^Browserslist/d'
 
 echo "   ✅ ua-homes.css ($(wc -c < "$WEB_DIR/ua-homes.css" | tr -d ' ') bytes)"
+
+BUILD_ID=$(
+  {
+    cat "$WEB_DIR/app-loader.js" "$WEB_DIR/real-estate-app.js" \
+      "$WEB_DIR/seller-app.js" "$WEB_DIR/ua-homes.css" "$WEB_DIR/sw.js" \
+      "$WEB_DIR/real-estate-demo.html" "$WEB_DIR/ua-homes-manifest.json" \
+      "$WEB_DIR/privacy.html" "$WEB_DIR/terms.html" "$WEB_DIR/cookie-policy.html" \
+      "$WEB_DIR/privacy-consent.css" "$WEB_DIR/privacy-consent.js" \
+      "$WEB_DIR/vendor/react.production.min.js" \
+      "$WEB_DIR/vendor/react-dom.production.min.js"
+    find "$WEB_DIR/chunks" -type f -name '*.js' -print |
+      sort |
+      while IFS= read -r chunk; do
+        cat "$chunk"
+      done
+  } | shasum -a 256 | cut -c1-12
+)
+{
+  printf "self.__UA_BUILD_ID = '%s';\n" "$BUILD_ID"
+  printf 'self.__UA_PRECACHE_ASSETS = [\n'
+  printf "  '/precache-manifest.js',\n"
+  printf "  '/real-estate-demo.html',\n"
+  printf "  '/app-loader.js',\n"
+  printf "  '/real-estate-app.js',\n"
+  printf "  '/seller-app.js',\n"
+  printf "  '/ua-homes.css',\n"
+  find "$WEB_DIR/chunks" -type f -name '*.js' -print |
+    sort |
+    sed "s#^$WEB_DIR#  '#; s#\$#',#"
+  printf '];\n'
+} > "$WEB_DIR/precache-manifest.js"
+
 echo ""
 echo "✅  Frontend build complete."

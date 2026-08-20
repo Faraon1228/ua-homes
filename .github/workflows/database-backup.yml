@@ -16,51 +16,120 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: restore-test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       BACKUP_TOKEN: ${{ secrets.UA_HOMES_BACKUP_TOKEN }}
       BACKUP_ENCRYPTION_KEY: ${{ secrets.UA_HOMES_BACKUP_ENCRYPTION_KEY }}
+      DATABASE_URL: ${{ secrets.UA_HOMES_DATABASE_URL }}
       BACKEND_URL: https://backend-production-51964.up.railway.app
     steps:
       - uses: actions/checkout@v5
 
       - name: Validate backup secrets
         run: |
-          test -n "$BACKUP_TOKEN" || { echo "UA_HOMES_BACKUP_TOKEN is missing"; exit 1; }
           test -n "$BACKUP_ENCRYPTION_KEY" || { echo "UA_HOMES_BACKUP_ENCRYPTION_KEY is missing"; exit 1; }
+          if [ -z "$DATABASE_URL" ]; then
+            test -n "$BACKUP_TOKEN" || { echo "UA_HOMES_BACKUP_TOKEN is missing"; exit 1; }
+          fi
 
-      - name: Download consistent database snapshot
+      - name: Create consistent database snapshot
         run: |
-          curl \
-            --fail \
-            --silent \
-            --show-error \
-            --request POST \
-            --retry 3 \
-            --retry-max-time 60 \
-            --connect-timeout 15 \
-            --max-time 120 \
-            --header "Authorization: Bearer $BACKUP_TOKEN" \
-            --dump-header backup-headers.txt \
-            --output backup.sqlite3 \
-            "$BACKEND_URL/api/operations/backup"
+          if [ -n "$DATABASE_URL" ]; then
+            docker run --rm \
+              --volume "$PWD:/backup" \
+              postgres:17 \
+              pg_dump \
+              --format=custom \
+              --no-owner \
+              --no-acl \
+              --file=/backup/backup.postgres \
+              "$DATABASE_URL"
+            test -s backup.postgres
+            echo "BACKUP_KIND=postgres" >> "$GITHUB_ENV"
+          else
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --request POST \
+              --retry 3 \
+              --retry-max-time 60 \
+              --connect-timeout 15 \
+              --max-time 120 \
+              --header "Authorization: Bearer $BACKUP_TOKEN" \
+              --dump-header backup-headers.txt \
+              --output backup.sqlite3 \
+              "$BACKEND_URL/api/operations/backup"
 
-          SERVER_SHA="$(
-            awk 'tolower($1) == "x-backup-sha256:" {gsub("\r", "", $2); print $2}' backup-headers.txt
-          )"
-          LOCAL_SHA="$(sha256sum backup.sqlite3 | awk '{print $1}')"
-          test -n "$SERVER_SHA" || { echo "Backup checksum header is missing"; exit 1; }
-          test "$LOCAL_SHA" = "$SERVER_SHA" || { echo "Downloaded backup checksum mismatch"; exit 1; }
+            SERVER_SHA="$(
+              awk 'tolower($1) == "x-backup-sha256:" {gsub("\r", "", $2); print $2}' backup-headers.txt
+            )"
+            LOCAL_SHA="$(sha256sum backup.sqlite3 | awk '{print $1}')"
+            test -n "$SERVER_SHA" || { echo "Backup checksum header is missing"; exit 1; }
+            test "$LOCAL_SHA" = "$SERVER_SHA" || { echo "Downloaded backup checksum mismatch"; exit 1; }
+            echo "BACKUP_KIND=sqlite" >> "$GITHUB_ENV"
+          fi
 
       - name: Verify backup and restore drill
         run: |
-          python3 backend/operations_backup.py verify --database backup.sqlite3 > backup-summary.json
-          python3 backend/operations_backup.py restore-drill --database backup.sqlite3 > restore-drill.json
-          grep -F '"integrity": "ok"' backup-summary.json
-          grep -F '"restore_drill": "ok"' restore-drill.json
+          if [ "$BACKUP_KIND" = "postgres" ]; then
+            docker run --rm \
+              --volume "$PWD:/backup" \
+              postgres:17 \
+              pg_restore --list /backup/backup.postgres > backup-summary.txt
+            test -s backup-summary.txt
+            docker run --rm \
+              --network host \
+              --env PGPASSWORD=restore-test \
+              postgres:17 \
+              createdb -h 127.0.0.1 -U postgres ua_homes_restore
+            docker run --rm \
+              --network host \
+              --volume "$PWD:/backup" \
+              --env PGPASSWORD=restore-test \
+              postgres:17 \
+              pg_restore \
+              --exit-on-error \
+              --no-owner \
+              --no-acl \
+              --dbname=postgresql://postgres:restore-test@127.0.0.1:5432/ua_homes_restore \
+              /backup/backup.postgres
+            docker run --rm \
+              --network host \
+              --env PGPASSWORD=restore-test \
+              postgres:17 \
+              psql \
+              postgresql://postgres:restore-test@127.0.0.1:5432/ua_homes_restore \
+              --tuples-only \
+              --command="SELECT 'users=' || COUNT(*) FROM users UNION ALL SELECT 'listings=' || COUNT(*) FROM listings;" \
+              > restore-drill.txt
+            grep -F "users=" restore-drill.txt
+            grep -F "listings=" restore-drill.txt
+          else
+            python3 backend/operations_backup.py verify --database backup.sqlite3 > backup-summary.json
+            python3 backend/operations_backup.py restore-drill --database backup.sqlite3 > restore-drill.json
+            grep -F '"integrity": "ok"' backup-summary.json
+            grep -F '"restore_drill": "ok"' restore-drill.json
+          fi
 
       - name: Encrypt and re-verify archive
         run: |
-          tar -czf ua-homes-backup.tar.gz backup.sqlite3 backup-summary.json restore-drill.json
+          if [ "$BACKUP_KIND" = "postgres" ]; then
+            tar -czf ua-homes-backup.tar.gz backup.postgres backup-summary.txt restore-drill.txt
+          else
+            tar -czf ua-homes-backup.tar.gz backup.sqlite3 backup-summary.json restore-drill.json
+          fi
           openssl enc \
             -aes-256-cbc \
             -salt \
@@ -81,9 +150,17 @@ jobs:
             -in ua-homes-backup.tar.gz.enc \
             -out restored/archive.tar.gz
           tar -xzf restored/archive.tar.gz -C restored
-          python3 backend/operations_backup.py verify --database restored/backup.sqlite3
+          if [ "$BACKUP_KIND" = "postgres" ]; then
+            docker run --rm \
+              --volume "$PWD/restored:/backup" \
+              postgres:17 \
+              pg_restore --list /backup/backup.postgres > /dev/null
+          else
+            python3 backend/operations_backup.py verify --database restored/backup.sqlite3
+          fi
 
-          rm -f backup.sqlite3 backup-headers.txt backup-summary.json restore-drill.json ua-homes-backup.tar.gz
+          rm -f backup.sqlite3 backup.postgres backup-headers.txt backup-summary.json \
+            backup-summary.txt restore-drill.json restore-drill.txt ua-homes-backup.tar.gz
           rm -rf restored
 
       - uses: actions/upload-artifact@v4

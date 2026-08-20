@@ -17,3 +17,5 @@ cloudinary>=1.33.0
 Pillow>=10.0.0
 # AVIF support (optional but recommended)
 pillow-heif>=0.14.0
+# Backend error reporting and API performance traces (enabled only with SENTRY_DSN)
+sentry-sdk[flask]>=2.0.0
