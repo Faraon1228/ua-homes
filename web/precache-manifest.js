@@ -1,10 +1,11 @@
-self.__UA_BUILD_ID = '061130d195ae';
+self.__UA_BUILD_ID = 'f5473c0b05fb';
 self.__UA_PRECACHE_ASSETS = [
   '/precache-manifest.js',
   '/',
   '/app',
   '/real-estate-demo.html',
   '/app-loader.js',
+  '/monitoring.js',
   '/real-estate-app.js',
   '/seller-app.js',
   '/ua-homes.css',

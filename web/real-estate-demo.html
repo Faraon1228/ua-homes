@@ -80,6 +80,7 @@
   <link rel="stylesheet" href="ua-homes.css?v=perf-20260820-1"/>
   <link rel="stylesheet" href="privacy-consent.css?v=20260813-2"/>
   <script defer src="privacy-consent.js?v=20260813-1"></script>
+  <script type="module" src="/monitoring.js"></script>
   <script defer src="vendor/react.production.min.js?v=e7ca5f4"></script>
   <script defer src="vendor/react-dom.production.min.js?v=e7ca5f4"></script>
   <style>
@@ -288,6 +289,7 @@
     };
 
     window.addEventListener("error", (event) => {
+      if (window.uaMonitoringEnabled) return;
       reportClientError("runtime_error", event.message || "Unknown runtime error", {
         filename: event.filename || null,
         lineno: event.lineno || null,
@@ -297,6 +299,7 @@
     });
 
     window.addEventListener("unhandledrejection", (event) => {
+      if (window.uaMonitoringEnabled) return;
       const reason =
         typeof event.reason === "string"
           ? event.reason

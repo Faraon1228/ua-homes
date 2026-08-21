@@ -20,15 +20,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install pinned frontend build dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Validate deployment contract
         run: |
           python3 scripts/validate-netlify-admin-config.py
           python3 scripts/validate-deploy-workflow.py
-      - name: Build static site
+      - name: Build static site with private source maps
         env:
+          SENTRY_GENERATE_SOURCEMAPS: "1"
           UA_HOMES_API: ${{ secrets.UA_HOMES_API }}
           UA_HOMES_PUBLIC_URL: https://ua-dim.com
-        run: python3 scripts/build-real-estate-demo.py
+          UA_HOMES_SENTRY_WEB_DSN: ${{ secrets.SENTRY_WEB_DSN }}
+          UA_HOMES_SENTRY_ADMIN_DSN: ${{ secrets.SENTRY_ADMIN_DSN }}
+          UA_HOMES_SENTRY_ENVIRONMENT: production
+          UA_HOMES_SENTRY_RELEASE: ${{ github.sha }}
+          UA_HOMES_SENTRY_WEB_TRACES_SAMPLE_RATE: ${{ vars.SENTRY_WEB_TRACES_SAMPLE_RATE || '0.01' }}
+          UA_HOMES_SENTRY_ADMIN_TRACES_SAMPLE_RATE: ${{ vars.SENTRY_ADMIN_TRACES_SAMPLE_RATE || '0.01' }}
+        run: |
+          ./scripts/rebuild-frontend.sh
+          python3 scripts/build-real-estate-demo.py
+      - name: Upload Sentry source maps when authorized
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_WEB_PROJECT: ${{ vars.SENTRY_WEB_PROJECT }}
+          SENTRY_ADMIN_PROJECT: ${{ vars.SENTRY_ADMIN_PROJECT }}
+          SENTRY_RELEASE: ${{ github.sha }}
+        run: ./scripts/upload-sentry-sourcemaps.sh
+      - name: Verify source maps are not published
+        run: test -z "$(find web -type f -name '*.map' -print -quit)"
       - uses: actions/upload-artifact@v4
         with:
           name: ua-homes-web-${{ github.sha }}

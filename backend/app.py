@@ -40,6 +40,8 @@ from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
+from backend.monitoring import bind_request_context, initialize_sentry, monitoring_state
+
 # Optional: Image optimization (Pillow)
 try:
     from PIL import Image
@@ -1358,30 +1360,9 @@ def _bootstrap_postgres_admin(cur):
 
 # ─── App setup ───────────────────────────────────────────────────────────────
 
+SENTRY_ENABLED = initialize_sentry()
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": _cors_origins()}}, supports_credentials=True, vary_header=True)
-
-SENTRY_DSN = os.environ.get("SENTRY_DSN", "").strip()
-if SENTRY_DSN:
-    import sentry_sdk
-
-    try:
-        traces_sample_rate = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1"))
-    except ValueError as exc:
-        raise RuntimeError("SENTRY_TRACES_SAMPLE_RATE must be a number between 0 and 1") from exc
-    if not 0 <= traces_sample_rate <= 1:
-        raise RuntimeError("SENTRY_TRACES_SAMPLE_RATE must be between 0 and 1")
-    sentry_sdk.init(
-        dsn=SENTRY_DSN,
-        environment=(
-            os.environ.get("RAILWAY_ENVIRONMENT_NAME")
-            or os.environ.get("ENVIRONMENT")
-            or "development"
-        ),
-        release=os.environ.get("RAILWAY_GIT_COMMIT_SHA") or None,
-        send_default_pii=False,
-        traces_sample_rate=traces_sample_rate,
-    )
 
 # Configure Cloudinary early so api_sign_request has credentials
 if CLOUDINARY_URL:
@@ -1397,6 +1378,11 @@ def assign_request_id():
         g.request_id = incoming_request_id
     else:
         g.request_id = secrets.token_hex(12)
+    bind_request_context(
+        g.request_id,
+        request.method,
+        request.url_rule.rule if request.url_rule else "unmatched",
+    )
 
 
 @app.before_request
@@ -9793,7 +9779,8 @@ def health():
             "s3" if S3_BUCKET else "cloudinary" if CLOUDINARY_URL else "unconfigured"
         ),
         distributed_rate_limits=bool(REDIS_URL),
-        error_monitoring=bool(SENTRY_DSN),
+        error_monitoring=SENTRY_ENABLED,
+        monitoring=monitoring_state(),
         maintenance_mode=MAINTENANCE_MODE,
     )
 

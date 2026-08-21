@@ -535,3 +535,56 @@ test("mobile navigation opens, closes, and does not overflow", async ({ page }, 
   );
   expect(overflow).toBeLessThanOrEqual(1);
 });
+
+test("monitoring is fail-safe when browser DSNs are absent", async ({ page }) => {
+  const sentryRequests = [];
+  await page.route("https://*.ingest.sentry.io/**", (route) => {
+    sentryRequests.push(route.request().url());
+    return route.fulfill({ status: 200, body: "{}" });
+  });
+  await page.route("**/api/admin/auth/session", (route) =>
+    route.fulfill({ status: 401, contentType: "application/json", body: '{"error":"Unauthorized"}' }),
+  );
+
+  await page.goto("/admin/login.html");
+  await expect.poll(() => page.evaluate(() => window.uaMonitoringEnabled)).toBe(false);
+  await page.evaluate(() => window.uaSentryCaptureException(new Error("disabled-check")));
+  await page.waitForTimeout(100);
+  expect(sentryRequests).toEqual([]);
+});
+
+test("enabled monitoring captures safely without sending PII", async ({ page }) => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const bundlePath = path.join(__dirname, "../../web/admin/monitoring.js");
+  const configuredBundle = fs
+    .readFileSync(bundlePath, "utf8")
+    .replace("__UA_HOMES_SENTRY_ADMIN_DSN__", "https://public@example.ingest.sentry.io/1")
+    .replace("__UA_HOMES_SENTRY_ENVIRONMENT__", "test")
+    .replace("__UA_HOMES_SENTRY_RELEASE__", "monitoring-test")
+    .replace("__UA_HOMES_SENTRY_ADMIN_TRACES_SAMPLE_RATE__", "0");
+  const envelopes = [];
+  await page.route("**/admin/monitoring.js", (route) =>
+    route.fulfill({ status: 200, contentType: "text/javascript", body: configuredBundle }),
+  );
+  await page.route("https://example.ingest.sentry.io/**", (route) => {
+    envelopes.push(route.request().postData() || "");
+    return route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+  });
+  await page.route("**/api/admin/auth/session", (route) =>
+    route.fulfill({ status: 401, contentType: "application/json", body: '{"error":"Unauthorized"}' }),
+  );
+
+  await page.goto("/admin/login.html");
+  await expect.poll(() => page.evaluate(() => window.uaMonitoringEnabled)).toBe(true);
+  await page.evaluate(() =>
+    window.uaSentryCaptureException(
+      new Error("deterministic failure for private@example.test"),
+      { email: "private@example.test" },
+    ),
+  );
+  await expect.poll(() => envelopes.length).toBeGreaterThan(0);
+  const payload = envelopes.join("\n");
+  expect(payload).not.toContain("private@example.test");
+  expect(payload).toContain("[Filtered]");
+});

@@ -88,6 +88,10 @@ jobs:
           FIREBASE_MESSAGING_SENDER_ID: ${{ matrix.app == 'UA-Dim' && secrets.UA_DIM_FIREBASE_MESSAGING_SENDER_ID || '' }}
           FIREBASE_PROJECT_ID: ${{ matrix.app == 'UA-Dim' && secrets.UA_DIM_FIREBASE_PROJECT_ID || '' }}
           SENTRY_DSN: ${{ matrix.app == 'UA-Dim' && secrets.UA_DIM_SENTRY_DSN || '' }}
+          SENTRY_ENVIRONMENT: production
+          SENTRY_RELEASE: ua-dim@${{ github.sha }}
+          SENTRY_TRACES_SAMPLE_RATE: ${{ vars.UA_DIM_SENTRY_TRACES_SAMPLE_RATE || '0.01' }}
+          SENTRY_PROFILES_SAMPLE_RATE: ${{ vars.UA_DIM_SENTRY_PROFILES_SAMPLE_RATE || '0' }}
         run: |
           BUILD_ARGS=()
           if [ "${{ matrix.app }}" = "UA-Dim" ]; then
@@ -96,6 +100,10 @@ jobs:
             [ -z "$FIREBASE_MESSAGING_SENDER_ID" ] || BUILD_ARGS+=("--dart-define=UA_DIM_FIREBASE_MESSAGING_SENDER_ID=$FIREBASE_MESSAGING_SENDER_ID")
             [ -z "$FIREBASE_PROJECT_ID" ] || BUILD_ARGS+=("--dart-define=UA_DIM_FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID")
             [ -z "$SENTRY_DSN" ] || BUILD_ARGS+=("--dart-define=UA_DIM_SENTRY_DSN=$SENTRY_DSN")
+            [ -z "$SENTRY_DSN" ] || BUILD_ARGS+=("--dart-define=UA_DIM_SENTRY_ENVIRONMENT=$SENTRY_ENVIRONMENT")
+            [ -z "$SENTRY_DSN" ] || BUILD_ARGS+=("--dart-define=UA_DIM_SENTRY_RELEASE=$SENTRY_RELEASE")
+            [ -z "$SENTRY_DSN" ] || BUILD_ARGS+=("--dart-define=UA_DIM_SENTRY_TRACES_SAMPLE_RATE=$SENTRY_TRACES_SAMPLE_RATE")
+            [ -z "$SENTRY_DSN" ] || BUILD_ARGS+=("--dart-define=UA_DIM_SENTRY_PROFILES_SAMPLE_RATE=$SENTRY_PROFILES_SAMPLE_RATE")
           fi
           flutter build ${{ matrix.build }} "${BUILD_ARGS[@]}"
         working-directory: ${{ matrix.directory }}
