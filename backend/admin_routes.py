@@ -1089,7 +1089,7 @@ def admin_duplicate_listing(listing_id):
 @require_permission(Permission.LISTINGS_WRITE)
 def admin_publish_listing(listing_id):
     """Publish/unpublish listing"""
-    from app import _refresh_listing_city_summary, cache_delete_prefix, db_now_expr, get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, db_text_timestamp_expr, get_db
     
     db = get_db()
     data = request.get_json() or {}
@@ -1105,8 +1105,8 @@ def admin_publish_listing(listing_id):
         UPDATE listings
         SET status = ?,
             moderation_status = ?,
-            moderation_updated_at = {db_now_expr()},
-            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, {db_now_expr()}) ELSE published_at END
+            moderation_updated_at = {db_text_timestamp_expr()},
+            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, {db_text_timestamp_expr()}) ELSE published_at END
         WHERE id = ?
         """,
         (status, "approved" if published else "pending_review", status, listing_id)
@@ -1129,7 +1129,7 @@ def admin_publish_listing(listing_id):
 @admin_bp.route("/import/csv", methods=["POST"])
 @require_permission(Permission.LISTINGS_WRITE)
 def admin_import_csv():
-    from app import _refresh_listing_city_summary, cache_delete_prefix, db_now_expr, get_db
+    from app import _refresh_listing_city_summary, cache_delete_prefix, db_text_timestamp_expr, get_db
 
     db = get_db()
     upload = request.files.get("file") or request.files.get("csv")
@@ -1159,7 +1159,7 @@ def admin_import_csv():
                 price, rooms, area, floor, total_floors, year_built, e_oselya,
                 views, images, status, latitude, longitude, description,
                 moderation_status, moderation_updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {db_now_expr()})
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {db_text_timestamp_expr()})
             """,
             (
                 admin_id,
@@ -1310,7 +1310,7 @@ def admin_moderate_listing(listing_id):
     from app import (
         _refresh_listing_city_summary,
         cache_delete_prefix,
-        db_now_expr,
+        db_text_timestamp_expr,
         get_db,
     )
 
@@ -1355,8 +1355,8 @@ def admin_moderate_listing(listing_id):
         SET status = ?,
             moderation_status = ?,
             moderation_reason = ?,
-            moderation_updated_at = {db_now_expr()},
-            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, {db_now_expr()}) ELSE published_at END,
+            moderation_updated_at = {db_text_timestamp_expr()},
+            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, {db_text_timestamp_expr()}) ELSE published_at END,
             owner_verification_status = ?,
             phone_verification_status = ?,
             verified_owner = CASE WHEN ? = 'verified' THEN 1 ELSE 0 END,
@@ -1402,7 +1402,7 @@ def admin_bulk_moderate():
     from app import (
         _refresh_listing_city_summary,
         cache_delete_prefix,
-        db_now_expr,
+        db_text_timestamp_expr,
         get_db,
     )
 
@@ -1450,8 +1450,8 @@ def admin_bulk_moderate():
             SET status = ?,
                 moderation_status = ?,
                 moderation_reason = ?,
-                moderation_updated_at = {db_now_expr()},
-                published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, {db_now_expr()}) ELSE published_at END
+                moderation_updated_at = {db_text_timestamp_expr()},
+                published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, {db_text_timestamp_expr()}) ELSE published_at END
             WHERE id = ?
             """,
             (new_status, moderation_status, reason, new_status, listing_id)
@@ -2752,7 +2752,7 @@ def _build_observability_report(db, hours: int):
         SELECT
             metric_name,
             COUNT(*) AS samples,
-            ROUND(AVG(metric_value), 2) AS avg_value,
+            CAST(ROUND(CAST(AVG(metric_value) AS NUMERIC), 2) AS REAL) AS avg_value,
             SUM(CASE WHEN rating = 'good' THEN 1 ELSE 0 END) AS good_count,
             SUM(CASE WHEN rating = 'needs-improvement' THEN 1 ELSE 0 END) AS needs_improvement_count,
             SUM(CASE WHEN rating = 'poor' THEN 1 ELSE 0 END) AS poor_count
@@ -2891,8 +2891,11 @@ def _build_lead_funnel_report(db, days_int: int):
         FROM lead_funnel_listing_metrics lfm
         LEFT JOIN listings l ON l.id = lfm.listing_id
         WHERE lfm.day >= ?
-        GROUP BY lfm.listing_id
-        HAVING intents > 0 OR submits > 0 OR redirects > 0
+        GROUP BY lfm.listing_id, l.title
+        HAVING
+            SUM(CASE WHEN lfm.event = 'lead_intent' THEN lfm.event_count ELSE 0 END) > 0
+            OR SUM(CASE WHEN lfm.event = 'lead_submit' THEN lfm.event_count ELSE 0 END) > 0
+            OR SUM(CASE WHEN lfm.event = 'lead_redirect' THEN lfm.event_count ELSE 0 END) > 0
         ORDER BY submits DESC, intents DESC, redirects DESC
         LIMIT 8
         """,

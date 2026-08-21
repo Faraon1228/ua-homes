@@ -3,10 +3,12 @@ import importlib
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
 import unittest
+from html import escape as html_escape
 from unittest import mock
 
 import bcrypt
@@ -584,6 +586,8 @@ class TrustFeatureTests(unittest.TestCase):
             "area": 48,
             "floor": 3,
             "totalFloors": 7,
+            "latitude": 49.84,
+            "longitude": 24.03,
             "publishNow": True,
             "images": ["https://res.cloudinary.com/demo/image/upload/example.jpg"],
             "videos": [
@@ -631,6 +635,9 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertIn(b"<video controls playsinline", detail_page.data)
         self.assertIn(b"/video/upload/example.mp4", detail_page.data)
         detail_html = detail_page.get_data(as_text=True)
+        self.assertIn('id="gallery" tabindex="0"', detail_html)
+        self.assertIn('aria-label="Галерея фотографій"', detail_html)
+        self.assertIn('title:"Місцезнаходження:', detail_html)
         self.assertLess(detail_html.index('id="listing-price"'), detail_html.index('id="gallery"'))
 
         fast_publish = self.client.post(
@@ -664,6 +671,81 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/listings/{listing['id']}").status_code, 404)
         catalog_after_delete = self.client.get("/api/listings?status=published&limit=100").get_json()["listings"]
         self.assertNotIn(listing["id"], [item["id"] for item in catalog_after_delete])
+
+    def test_listing_map_popup_escapes_html_before_script_encoding(self):
+        titles = (
+            "<img src=x onerror=alert(1)>",
+            "</script><script>alert(1)</script>",
+            'Квартира & "центр" \'Львова\'',
+            "&lt;img src=x onerror=alert(2)&gt;",
+        )
+
+        for title in titles:
+            with self.subTest(title=title):
+                with sqlite3.connect(TEST_DB) as db:
+                    db.execute(
+                        "UPDATE listings SET title = ?, latitude = ?, longitude = ? WHERE id = ?",
+                        (title, 50.45, 30.52, self.target_id),
+                    )
+                    db.commit()
+
+                page = self.client.get(f"/listing/{self.target_id}").get_data(as_text=True)
+                map_script_match = re.search(
+                    r"<script>\s+var m=L\.map.*?</script>",
+                    page,
+                    flags=re.DOTALL,
+                )
+                self.assertIsNotNone(map_script_match)
+                map_script = map_script_match.group(0)
+
+                popup_match = re.search(
+                    r"\.bindPopup\((.+)\)\.openPopup\(\);",
+                    map_script,
+                )
+                self.assertIsNotNone(popup_match)
+                popup_text = json.loads(popup_match.group(1))
+                self.assertEqual(popup_text, html_escape(title, quote=True))
+                self.assertNotIn("<", popup_text)
+                self.assertNotIn(">", popup_text)
+
+                marker_match = re.search(
+                    r"title:(.+?)\}\)\.addTo\(m\)\.bindPopup",
+                    map_script,
+                )
+                self.assertIsNotNone(marker_match)
+                self.assertEqual(
+                    json.loads(marker_match.group(1)),
+                    f"Місцезнаходження: {title}",
+                )
+
+                self.assertNotIn("<script>alert(1)</script>", page)
+                self.assertNotIn("<img src=x onerror=", page)
+                self.assertNotIn("</script><script", map_script)
+                json_ld_blocks = re.findall(
+                    r'<script type="application/ld\+json">(.*?)</script>',
+                    page,
+                    flags=re.DOTALL,
+                )
+                self.assertEqual(len(json_ld_blocks), 5)
+                for block in json_ld_blocks:
+                    json.loads(block)
+
+        normal_title = "Затишна квартира у Львові"
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE listings SET title = ? WHERE id = ?",
+                (normal_title, self.target_id),
+            )
+            db.commit()
+        normal_page = self.client.get(f"/listing/{self.target_id}").get_data(as_text=True)
+        self.assertIn(
+            f'<h1 id="listing-title" style="color:#fff;margin-top:14px">{normal_title}</h1>',
+            normal_page,
+        )
+        self.assertIn(
+            f".bindPopup({json.dumps(normal_title, ensure_ascii=False)}).openPopup();",
+            normal_page,
+        )
 
     def test_seller_cannot_spoof_agency_attribution(self):
         response = self.client.patch(
@@ -1808,6 +1890,45 @@ class TrustFeatureTests(unittest.TestCase):
                 app_module.db_text_timestamp_expr(offset_days=1),
                 "CAST(CURRENT_TIMESTAMP - INTERVAL '1 day' AS TEXT)",
             )
+            self.assertEqual(
+                app_module.db_timestamp_column_expr("published_at"),
+                "published_at::timestamptz",
+            )
+
+    def test_lead_funnel_upserts_qualify_postgres_counter_columns(self):
+        class Result:
+            @staticmethod
+            def fetchone():
+                return None
+
+        class RecordingDatabase:
+            def __init__(self):
+                self.queries = []
+
+            def execute(self, query, params=()):
+                self.queries.append(query)
+                return Result()
+
+        database = RecordingDatabase()
+        app_module._upsert_lead_funnel_summary(
+            database,
+            day="2026-08-21",
+            source="listing",
+            listing_type="sale",
+            event="lead_submit",
+            listing_id=42,
+            created_at="2026-08-21 12:00:00",
+            session_id=None,
+        )
+
+        self.assertIn(
+            "lead_funnel_daily_metrics.event_count + 1",
+            database.queries[0],
+        )
+        self.assertIn(
+            "lead_funnel_listing_metrics.event_count + 1",
+            database.queries[1],
+        )
 
     def test_postgres_cursor_exposes_captured_lastval_with_savepoint(self):
         class FakeCursor:
@@ -2645,6 +2766,21 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertNotIn("googletagmanager.com/ns.html", app_shell)
         self.assertNotIn("googletagmanager.com/ns.html", launch_shell)
         self.assertIn("!analyticsAllowed()", analytics_loader)
+
+    def test_service_worker_precaches_the_offline_app_shell(self):
+        web_dir = os.path.join(os.path.dirname(BACKEND_DIR), "web")
+        with open(os.path.join(web_dir, "sw.js"), encoding="utf-8") as handle:
+            service_worker = handle.read()
+        with open(
+            os.path.join(web_dir, "precache-manifest.js"),
+            encoding="utf-8",
+        ) as handle:
+            precache_manifest = handle.read()
+
+        self.assertIn("caches.match('/app')", service_worker)
+        self.assertIn("url.origin !== self.location.origin", service_worker)
+        self.assertIn("'/app'", precache_manifest)
+        self.assertIn("'/real-estate-demo.html'", precache_manifest)
 
     def test_production_entrypoints_do_not_expose_demo_urls(self):
         web_dir = os.path.join(os.path.dirname(BACKEND_DIR), "web")
