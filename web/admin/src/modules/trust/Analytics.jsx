@@ -37,13 +37,15 @@ export function Analytics() {
 }
 
 function BarRow({ label, value, max, formatValue }) {
-  const pct = max > 0 ? Math.max(4, Math.round((value / max) * 100)) : 0;
   return (
     <li className="bar-row">
       <span className="bar-label">{label}</span>
-      <span className="bar-track">
-        <span className="bar-fill" style={{ width: `${pct}%` }} />
-      </span>
+      <progress
+        className="bar-track"
+        value={value}
+        max={max > 0 ? max : 1}
+        aria-label={`${label}: ${formatValue ? formatValue(value) : formatNumber(value)}`}
+      />
       <span className="bar-value">{formatValue ? formatValue(value) : formatNumber(value)}</span>
     </li>
   );

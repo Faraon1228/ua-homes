@@ -44,6 +44,8 @@ jobs:
         run: ./scripts/rebuild-frontend.sh
       - name: Verify generated artifacts are current
         run: git diff --exit-code -- web/real-estate-app.js web/seller-app.js web/chunks web/precache-manifest.js web/ua-homes.css web/admin
+      - name: Validate deployed admin security policy
+        run: python3 scripts/validate-netlify-admin-config.py
       - name: Validate production substitutions
         env:
           UA_HOMES_API: https://backend.example.test

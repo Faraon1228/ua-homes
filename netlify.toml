@@ -177,6 +177,20 @@ status = 301
     Cache-Control = "public, max-age=3600"
 
 [[headers]]
+  for = "/admin/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    X-Permitted-Cross-Domain-Policies = "none"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+    Cross-Origin-Opener-Policy = "same-origin"
+    Cross-Origin-Resource-Policy = "same-origin"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    Content-Security-Policy = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https://res.cloudinary.com https://images.unsplash.com; script-src 'self'; style-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self';"
+    Cache-Control = "no-store"
+
+[[headers]]
   for = "/launch.html"
   [headers.values]
     Cache-Control = "public, max-age=3600, must-revalidate"
