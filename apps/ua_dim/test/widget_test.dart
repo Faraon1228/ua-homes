@@ -13,6 +13,7 @@ void main() {
     expect(app.title, 'UA-Dim');
     expect(find.text('UA-Dim mobile shell'), findsOneWidget);
     expect(uaDimProductionUrl, contains('ua-dim.com'));
+    expect(uaDimProductionUrl, isNot(contains('demo')));
     expect(uaDimProductionUrl, contains('source=ua-dim-app'));
     expect(uaDimProductionUrl, contains('release=20260820-photo-library'));
     expect(isUaDimInternalUri(Uri.parse(uaDimProductionUrl)), isTrue);

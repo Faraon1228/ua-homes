@@ -733,12 +733,65 @@ class TrustFeatureTests(unittest.TestCase):
             self.assertEqual(dispatch.call_args.kwargs["listing_id"], self.target_id)
 
     def test_media_upload_validation_rejects_unsafe_or_oversized_files(self):
+        self.assertEqual(
+            app_module.normalize_media_content_type("IMG_2008.HEIC", "image/heic"),
+            ("image/heic", "image"),
+        )
+        self.assertEqual(
+            app_module.normalize_media_content_type("IMG_2008.HEIF", "image/heif"),
+            ("image/heif", "image"),
+        )
+        self.assertEqual(
+            app_module.normalize_media_content_type("IMG_2008.JPG", "image/jpeg"),
+            ("image/jpeg", "image"),
+        )
+        self.assertEqual(
+            app_module.normalize_media_content_type("IMG_2008.PNG", "image/png"),
+            ("image/png", "image"),
+        )
+        self.assertEqual(
+            app_module.normalize_media_content_type("IMG_2008.HEIC", "image/jpeg"),
+            ("image/jpeg", "image"),
+        )
+
+        with mock.patch.object(
+            app_module,
+            "generate_presigned_upload_url",
+            return_value={
+                "storage": "cloudinary",
+                "method": "POST",
+                "uploadUrl": "https://api.cloudinary.com/v1_1/test-cloud/image/upload",
+            },
+        ):
+            maximum_heic = self.client.post(
+                "/api/media/presigned-url",
+                json={
+                    "filename": "IMG_LARGE.HEIC",
+                    "contentType": "image/heic",
+                    "size": app_module.MAX_UPLOAD_SIZE,
+                },
+                headers=self._auth(self.owner_token),
+            )
+        self.assertEqual(maximum_heic.status_code, 200)
+        self.assertEqual(maximum_heic.get_json()["contentType"], "image/heic")
+
         svg = self.client.post(
             "/api/media/presigned-url",
             json={"filename": "unsafe.svg", "contentType": "image/svg+xml", "size": 1024},
             headers=self._auth(self.owner_token),
         )
         self.assertEqual(svg.status_code, 400)
+
+        oversized_heic = self.client.post(
+            "/api/media/presigned-url",
+            json={
+                "filename": "IMG_TOO_LARGE.HEIC",
+                "contentType": "image/heic",
+                "size": app_module.MAX_UPLOAD_SIZE + 1,
+            },
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(oversized_heic.status_code, 413)
 
         oversized_video = self.client.post(
             "/api/media/presigned-url",
@@ -757,6 +810,93 @@ class TrustFeatureTests(unittest.TestCase):
             headers=self._auth(self.owner_token),
         )
         self.assertEqual(arbitrary_url.status_code, 400)
+
+    def test_phone_library_media_persists_through_listing_create_and_edit(self):
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE users SET plan_id = 'premium', plan_expires_at = NULL WHERE id = ?",
+                (self.owner_id,),
+            )
+            db.commit()
+
+        heic_public_id = f"listings/{self.owner_id}/ios/IMG_2008"
+        jpeg_public_id = f"listings/{self.owner_id}/ios/IMG_2009"
+        heic_url = (
+            "https://res.cloudinary.com/test-cloud/image/upload/"
+            f"{heic_public_id}.heic"
+        )
+        jpeg_url = (
+            "https://res.cloudinary.com/test-cloud/image/upload/"
+            f"{jpeg_public_id}.jpg"
+        )
+        confirmed_urls = []
+        for public_id, url in ((heic_public_id, heic_url), (jpeg_public_id, jpeg_url)):
+            confirmed = self.client.post(
+                "/api/media/confirm-upload",
+                json={
+                    "publicId": public_id,
+                    "resourceType": "image",
+                    "url": url,
+                },
+                headers=self._auth(self.owner_token),
+            )
+            self.assertEqual(confirmed.status_code, 200, confirmed.get_json())
+            confirmed_urls.append(confirmed.get_json()["url"])
+
+        payload = {
+            "title": "iPhone photo create",
+            "city": "Київ",
+            "district": "Печерський",
+            "propertyType": "квартира",
+            "conditionType": "вторинка",
+            "listingType": "sale",
+            "price": 100_000,
+            "rooms": 2,
+            "area": 50,
+            "floor": 1,
+            "totalFloors": 9,
+            "listingStatus": "active",
+            "description": "",
+            "images": [confirmed_urls[0]],
+        }
+        created = self.client.post(
+            "/api/listings",
+            json=payload,
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(created.status_code, 201, created.get_json())
+        listing_id = created.get_json()["listing"]["id"]
+        self.assertEqual(created.get_json()["listing"]["images"], [heic_url])
+
+        edited = self.client.patch(
+            f"/api/listings/{listing_id}",
+            json={
+                **payload,
+                "title": "iPhone photo edit",
+                "images": confirmed_urls,
+            },
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(edited.status_code, 200, edited.get_json())
+        self.assertEqual(edited.get_json()["listing"]["images"], [heic_url, jpeg_url])
+
+        without_new_photo = self.client.patch(
+            f"/api/listings/{listing_id}",
+            json={
+                **payload,
+                "title": "iPhone photo edit without replacement",
+                "images": confirmed_urls,
+            },
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(without_new_photo.status_code, 200, without_new_photo.get_json())
+        self.assertEqual(without_new_photo.get_json()["listing"]["images"], [heic_url, jpeg_url])
+        with sqlite3.connect(TEST_DB) as db:
+            stored_images = db.execute(
+                "SELECT images FROM listings WHERE id = ?",
+                (listing_id,),
+            ).fetchone()[0]
+        self.assertEqual(json.loads(stored_images), [heic_url, jpeg_url])
 
     def test_legacy_base64_listing_photos_are_rejected_and_not_serialized(self):
         data_uri = "data:image/jpeg;base64," + base64.b64encode(b"legacy-photo").decode("ascii")
@@ -1654,6 +1794,17 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(row["id"], 42)
         self.assertEqual(dict(row), {"id": 42, "title": "Test listing"})
 
+    def test_postgres_text_timestamp_expression_matches_text_schema(self):
+        with mock.patch.object(app_module, "_is_postgres", return_value=True):
+            self.assertEqual(
+                app_module.db_text_timestamp_expr(),
+                "CAST(CURRENT_TIMESTAMP AS TEXT)",
+            )
+            self.assertEqual(
+                app_module.db_text_timestamp_expr(offset_days=1),
+                "CAST(CURRENT_TIMESTAMP - INTERVAL '1 day' AS TEXT)",
+            )
+
     def test_postgres_cursor_exposes_captured_lastval_with_savepoint(self):
         class FakeCursor:
             lastrowid = None
@@ -2067,7 +2218,7 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(payload["sandbox"], 1)
         self.assertEqual(
             payload["result_url"],
-            f"https://ua-dim.example/real-estate-demo.html?payment=return&order_id={result['order_id']}",
+            f"https://ua-dim.example/?payment=return&order_id={result['order_id']}",
         )
         self.assertEqual(
             payload["server_url"],
@@ -2490,6 +2641,29 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertNotIn("googletagmanager.com/ns.html", app_shell)
         self.assertNotIn("googletagmanager.com/ns.html", launch_shell)
         self.assertIn("!analyticsAllowed()", analytics_loader)
+
+    def test_production_entrypoints_do_not_expose_demo_urls(self):
+        web_dir = os.path.join(os.path.dirname(BACKEND_DIR), "web")
+        with open(os.path.join(web_dir, "index.html"), encoding="utf-8") as handle:
+            index_shell = handle.read()
+        with open(os.path.join(web_dir, "ua-homes-manifest.json"), encoding="utf-8") as handle:
+            manifest = handle.read()
+        with open(
+            os.path.join(
+                os.path.dirname(BACKEND_DIR),
+                "apps",
+                "ua_dim",
+                "lib",
+                "screens",
+                "ua_dim_screen.dart",
+            ),
+            encoding="utf-8",
+        ) as handle:
+            mobile_shell = handle.read()
+
+        self.assertNotIn("real-estate-demo", index_shell)
+        self.assertNotIn("real-estate-demo", manifest)
+        self.assertNotIn("real-estate-demo", mobile_shell)
 
 
 if __name__ == "__main__":

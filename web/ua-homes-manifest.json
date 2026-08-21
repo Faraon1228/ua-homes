@@ -2,7 +2,7 @@
   "name": "UA-Dim — нерухомість в Україні",
   "short_name": "UA-Dim",
   "description": "Пошук нерухомості в Україні. єОселя, іпотека, карта, порівняння.",
-  "start_url": "/real-estate-demo.html",
+  "start_url": "/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#f8fafc",
@@ -40,12 +40,12 @@
   "shortcuts": [
     {
       "name": "Пошук квартир",
-      "url": "/real-estate-demo.html?type=apartment",
+      "url": "/?type=apartment",
       "description": "Шукати квартири"
     },
     {
       "name": "єОселя",
-      "url": "/real-estate-demo.html?eoselya=1",
+      "url": "/?eoselya=1",
       "description": "Об'єкти під програму єОселя"
     }
   ]

@@ -36,7 +36,9 @@ dependencies:
   webview_flutter: ^4.8.0
   webview_flutter_android: 4.14.0
   app_links: ^7.2.1
-  connectivity_plus: ^7.3.1
+  # 7.1+ references an iOS 26 Network API and does not compile on the
+  # macos-15/Xcode 16 runner used by release CI.
+  connectivity_plus: 7.0.0
   flutter_secure_storage: ^9.2.4
   share_plus: ^10.1.4
   sentry_flutter: ^9.27.0

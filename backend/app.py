@@ -734,6 +734,12 @@ def db_now_expr(offset_days: int | None = None) -> str:
     return f"datetime('now', '{sign}{abs(offset_days)} days')"
 
 
+def db_text_timestamp_expr(offset_days: int | None = None) -> str:
+    """Return the current timestamp with the TEXT type used by the shared schema."""
+    expression = db_now_expr(offset_days)
+    return f"CAST({expression} AS TEXT)" if _is_postgres() else expression
+
+
 def _is_db_integrity_error(exc: Exception) -> bool:
     if isinstance(exc, sqlite3.IntegrityError):
         return True
@@ -3897,7 +3903,10 @@ def public_app_base_url() -> str:
 
 
 def public_app_url() -> str:
-    return f"{public_app_base_url()}/real-estate-demo.html"
+    base = public_app_base_url()
+    if urlsplit(base).hostname in {"localhost", "127.0.0.1"}:
+        return f"{base}/real-estate-demo.html"
+    return f"{base}/"
 
 
 def public_seller_url() -> str:
@@ -6151,6 +6160,7 @@ def update_listing(listing_id: int):
 
     db = get_db()
     now_expr = db_now_expr()
+    text_now_expr = db_text_timestamp_expr()
     listing = db.execute(
         """
         SELECT id, user_id, status, published_at, moderation_status, moderation_reason,
@@ -6300,7 +6310,7 @@ def update_listing(listing_id: int):
             longitude = ?,
             description = ?,
             status = ?,
-            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, {now_expr}) ELSE published_at END,
+            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, {text_now_expr}) ELSE published_at END,
             listing_type = ?,
             source = ?,
             agency_slug = ?,
@@ -6669,7 +6679,7 @@ def update_listing_verification(listing_id: int):
     if is_admin:
         if moderation_status == "approved":
             next_status = "published"
-            published_at_sql = f"COALESCE(published_at, {db_now_expr()})"
+            published_at_sql = f"COALESCE(published_at, {db_text_timestamp_expr()})"
         elif moderation_status == "rejected":
             next_status = "rejected"
         else:
@@ -9780,7 +9790,7 @@ def payment_liqpay_create():
         "currency":    "UAH",
         "description": f"UA-Dim {plan['name']} — {plan['price']} UAH/міс",
         "order_id":    order_id,
-        "result_url":  f"{public_url}/real-estate-demo.html?payment=return&order_id={quote(order_id)}",
+        "result_url":  f"{public_url}/?payment=return&order_id={quote(order_id)}",
         "server_url":  f"{api_url}/api/payment/liqpay/callback",
         "language":    "uk",
     }

@@ -97,7 +97,7 @@ self.addEventListener('fetch', e => {
       .catch(() =>
         caches.match(e.request, { ignoreSearch: true }).then(cached =>
           cached || (e.request.mode === 'navigate'
-            ? caches.match('/real-estate-demo.html')
+            ? caches.match('/')
             : Response.error())
         )
       )

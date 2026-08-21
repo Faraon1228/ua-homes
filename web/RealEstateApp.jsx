@@ -1202,7 +1202,7 @@ function SmartSearchPage({
       <header className="sticky top-0 z-50 border-b border-slate-200 bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-4">
           <a
-            href="real-estate-demo.html"
+            href={getCatalogHref()}
             className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-100"
           >
             ← Повернутися
@@ -1214,7 +1214,7 @@ function SmartSearchPage({
             <div className="text-xs font-semibold text-blue-700">Розумний пошук</div>
           </div>
           <a
-            href="real-estate-demo.html"
+            href={getCatalogHref()}
             className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
           >
             Повний каталог
@@ -1357,7 +1357,7 @@ function SmartSearchPage({
             </h2>
           </div>
           <a
-            href="real-estate-demo.html"
+            href={getCatalogHref()}
             className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
           >
             Відкрити повний каталог
