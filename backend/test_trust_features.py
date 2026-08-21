@@ -3,10 +3,12 @@ import importlib
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
 import unittest
+from html import escape as html_escape
 from unittest import mock
 
 import bcrypt
@@ -669,6 +671,81 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/listings/{listing['id']}").status_code, 404)
         catalog_after_delete = self.client.get("/api/listings?status=published&limit=100").get_json()["listings"]
         self.assertNotIn(listing["id"], [item["id"] for item in catalog_after_delete])
+
+    def test_listing_map_popup_escapes_html_before_script_encoding(self):
+        titles = (
+            "<img src=x onerror=alert(1)>",
+            "</script><script>alert(1)</script>",
+            'Квартира & "центр" \'Львова\'',
+            "&lt;img src=x onerror=alert(2)&gt;",
+        )
+
+        for title in titles:
+            with self.subTest(title=title):
+                with sqlite3.connect(TEST_DB) as db:
+                    db.execute(
+                        "UPDATE listings SET title = ?, latitude = ?, longitude = ? WHERE id = ?",
+                        (title, 50.45, 30.52, self.target_id),
+                    )
+                    db.commit()
+
+                page = self.client.get(f"/listing/{self.target_id}").get_data(as_text=True)
+                map_script_match = re.search(
+                    r"<script>\s+var m=L\.map.*?</script>",
+                    page,
+                    flags=re.DOTALL,
+                )
+                self.assertIsNotNone(map_script_match)
+                map_script = map_script_match.group(0)
+
+                popup_match = re.search(
+                    r"\.bindPopup\((.+)\)\.openPopup\(\);",
+                    map_script,
+                )
+                self.assertIsNotNone(popup_match)
+                popup_text = json.loads(popup_match.group(1))
+                self.assertEqual(popup_text, html_escape(title, quote=True))
+                self.assertNotIn("<", popup_text)
+                self.assertNotIn(">", popup_text)
+
+                marker_match = re.search(
+                    r"title:(.+?)\}\)\.addTo\(m\)\.bindPopup",
+                    map_script,
+                )
+                self.assertIsNotNone(marker_match)
+                self.assertEqual(
+                    json.loads(marker_match.group(1)),
+                    f"Місцезнаходження: {title}",
+                )
+
+                self.assertNotIn("<script>alert(1)</script>", page)
+                self.assertNotIn("<img src=x onerror=", page)
+                self.assertNotIn("</script><script", map_script)
+                json_ld_blocks = re.findall(
+                    r'<script type="application/ld\+json">(.*?)</script>',
+                    page,
+                    flags=re.DOTALL,
+                )
+                self.assertEqual(len(json_ld_blocks), 5)
+                for block in json_ld_blocks:
+                    json.loads(block)
+
+        normal_title = "Затишна квартира у Львові"
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE listings SET title = ? WHERE id = ?",
+                (normal_title, self.target_id),
+            )
+            db.commit()
+        normal_page = self.client.get(f"/listing/{self.target_id}").get_data(as_text=True)
+        self.assertIn(
+            f'<h1 id="listing-title" style="color:#fff;margin-top:14px">{normal_title}</h1>',
+            normal_page,
+        )
+        self.assertIn(
+            f".bindPopup({json.dumps(normal_title, ensure_ascii=False)}).openPopup();",
+            normal_page,
+        )
 
     def test_seller_cannot_spoof_agency_attribution(self):
         response = self.client.patch(

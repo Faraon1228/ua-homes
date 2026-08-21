@@ -1647,6 +1647,18 @@ def imgs(*ids):
     return json.dumps([demo_image_url(uid) for uid in ids])
 
 
+def json_for_html_script(value) -> str:
+    """Serialize JSON without allowing data to terminate an HTML script element."""
+    return (
+        json.dumps(value, ensure_ascii=False)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 def normalize_listing_images(raw_images) -> list[str]:
     fallback = PLACEHOLDER_LISTING_IMAGE
     normalized: list[str] = []
@@ -8964,14 +8976,8 @@ def listing_page(lid: int):
     map_html = ""
     if listing.get("latitude") and listing.get("longitude"):
         lat, lng = listing["latitude"], listing["longitude"]
-        marker_title = json.dumps(
-            f"Місцезнаходження: {listing['title']}",
-            ensure_ascii=False,
-        ).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-        popup_title = json.dumps(
-            listing["title"],
-            ensure_ascii=False,
-        ).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+        marker_title = json_for_html_script(f"Місцезнаходження: {listing['title']}")
+        popup_title = json_for_html_script(escape(listing["title"], quote=True))
         map_html = f"""
 <div id="map" style="height:300px;border-radius:16px;margin:20px 0"></div>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -9158,11 +9164,11 @@ def listing_page(lid: int):
   <meta name="twitter:image" content="{escape(og_image)}"/>
   <meta name="twitter:image:alt" content="{escape(listing['title'])}"/>
   <meta name="twitter:site" content="@ua_homes"/>
-  <script type="application/ld+json">{json.dumps(organization_ld, ensure_ascii=False)}</script>
-  <script type="application/ld+json">{json.dumps(webpage_ld, ensure_ascii=False)}</script>
-  <script type="application/ld+json">{json.dumps(breadcrumb_ld, ensure_ascii=False)}</script>
-  <script type="application/ld+json">{json.dumps(listing_ld, ensure_ascii=False)}</script>
-  <script type="application/ld+json">{json.dumps(faq_ld, ensure_ascii=False)}</script>
+  <script type="application/ld+json">{json_for_html_script(organization_ld)}</script>
+  <script type="application/ld+json">{json_for_html_script(webpage_ld)}</script>
+  <script type="application/ld+json">{json_for_html_script(breadcrumb_ld)}</script>
+  <script type="application/ld+json">{json_for_html_script(listing_ld)}</script>
+  <script type="application/ld+json">{json_for_html_script(faq_ld)}</script>
   <style>
     *{{box-sizing:border-box}}
     body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;max-width:860px;margin:0 auto;padding:16px 20px 48px;color:#0f172a;background:linear-gradient(180deg,#f8fafc,#eef2ff);line-height:1.55}}
