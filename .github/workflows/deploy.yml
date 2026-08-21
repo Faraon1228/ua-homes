@@ -7,16 +7,64 @@ on:
       - main
       - agents/real-estate-filtering-feature
 
-# Netlify and Railway deploy through their GitHub integrations. This workflow
-# validates the generated frontend without duplicating either production deploy.
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-ua-homes-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   validate-frontend:
     name: Build frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Validate deployment contract
+        run: |
+          python3 scripts/validate-netlify-admin-config.py
+          python3 scripts/validate-deploy-workflow.py
       - name: Build static site
         env:
           UA_HOMES_API: ${{ secrets.UA_HOMES_API }}
           UA_HOMES_PUBLIC_URL: https://ua-dim.com
         run: python3 scripts/build-real-estate-demo.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ua-homes-web-${{ github.sha }}
+          path: web
+          include-hidden-files: true
+          retention-days: 1
+
+  deploy-netlify:
+    name: Deploy frontend to Netlify
+    needs: validate-frontend
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: ua-homes-web-${{ github.sha }}
+          path: web
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Deploy production site
+        working-directory: ${{ github.workspace }}
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: |
+          set -euo pipefail
+          : "${NETLIFY_AUTH_TOKEN:?NETLIFY_AUTH_TOKEN is not configured}"
+          : "${NETLIFY_SITE_ID:?NETLIFY_SITE_ID is not configured}"
+          test -f netlify.toml
+          npx --yes netlify-cli@27.1.2 deploy \
+            --prod \
+            --context=production \
+            --no-build \
+            --dir=web \
+            --site="${NETLIFY_SITE_ID}" \
+            --message="GitHub Actions ${GITHUB_SHA}"

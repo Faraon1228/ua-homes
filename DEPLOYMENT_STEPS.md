@@ -92,9 +92,10 @@ Railway має вбудовану PostgreSQL і Redis.
 ### Railway:
 - Settings → **Custom domain** → введіть домен
 
-### Split deploys:
-- public сайт публікуйте з [web/](/Users/vitalii/drive_community.worktrees/real-estate-filtering-feature/web)
-- admin сайт публікуйте з [web/admin/](/Users/vitalii/drive_community.worktrees/real-estate-filtering-feature/web/admin)
+### Frontend deploy:
+- GitHub Actions публікує [web/](./web) як єдиний public/admin deploy
+- канонічні redirects і headers завжди беруться з [`netlify.toml`](./netlify.toml)
+- production deploy запускається лише з `main` після успішної frontend validation
 - backend має окремий Railway service з `DATABASE_URL` і `REDIS_URL`
 
 ---
@@ -105,8 +106,8 @@ Railway має вбудовану PostgreSQL і Redis.
 - `RAILWAY_TOKEN` ✅
 - `RAILWAY_PROJECT_ID` ✅
 - `RAILWAY_SERVICE_ID` ✅
-- `NETLIFY_AUTH_TOKEN` (опціонально, якщо автоматичний деплой)
-- `NETLIFY_SITE_ID` (опціонально)
+- `NETLIFY_AUTH_TOKEN` ✅ (обов'язковий для production frontend deploy)
+- `NETLIFY_SITE_ID` ✅ (обов'язковий для production frontend deploy)
 - `UA_HOMES_API` (встановити після Railway)
 
 Repository variables для monitoring:
