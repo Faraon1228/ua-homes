@@ -20,6 +20,7 @@ export const PERMISSIONS = {
   USERS_MANAGE: "users/manage",
   LEADS_MANAGE: "leads/manage",
   AGENCIES_MANAGE: "agencies/manage",
+  DEVELOPERS_MANAGE: "developers/manage",
   SYSTEM_READ: "system/read",
 };
 

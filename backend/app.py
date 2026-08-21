@@ -740,7 +740,42 @@ def _is_db_integrity_error(exc: Exception) -> bool:
     return pgcode in {"23505", "23503", "23502"} or sqlstate in {"23505", "23503", "23502"}
 
 
+def _is_db_unique_error(exc: Exception) -> bool:
+    if isinstance(exc, sqlite3.IntegrityError):
+        return (
+            getattr(exc, "sqlite_errorcode", None) in {1555, 2067}
+            or str(exc).startswith("UNIQUE constraint failed:")
+        )
+    return getattr(exc, "pgcode", None) == "23505" or getattr(exc, "sqlstate", None) == "23505"
+
+
 _PG_MIGRATION_LOCK_ID = 8_140_713_559_001
+
+
+def _migrate_postgres_agency_profiles(cur) -> None:
+    cur.execute("""
+        ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+        ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS updated_at TEXT;
+    """)
+    cur.execute(
+        """
+        UPDATE agency_profiles
+        SET status = CASE WHEN status IN ('active', 'suspended') THEN status ELSE 'active' END,
+            revision = CASE WHEN revision > 0 THEN revision ELSE 1 END,
+            updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)
+        """
+    )
+    cur.execute(
+        "ALTER TABLE agency_profiles ALTER COLUMN updated_at SET DEFAULT CURRENT_TIMESTAMP"
+    )
+    cur.execute(
+        "ALTER TABLE agency_profiles ALTER COLUMN updated_at SET NOT NULL"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agency_profiles_kind_status"
+        " ON agency_profiles(kind, status)"
+    )
 
 
 def _init_postgres_db():
@@ -992,11 +1027,14 @@ def _init_postgres_db():
                 city                  TEXT    NOT NULL,
                 specialization        TEXT    NOT NULL DEFAULT '',
                 is_verified           INTEGER NOT NULL DEFAULT 0,
+                status                TEXT    NOT NULL DEFAULT 'active',
                 avg_response_minutes  INTEGER,
                 team_size             INTEGER,
                 completed_deals       INTEGER NOT NULL DEFAULT 0,
                 last_verified_at      TEXT,
-                created_at            TEXT    NOT NULL DEFAULT ({db_now_expr()})
+                revision              INTEGER NOT NULL DEFAULT 1,
+                created_at            TEXT    NOT NULL DEFAULT ({db_now_expr()}),
+                updated_at            TEXT    NOT NULL DEFAULT ({db_now_expr()})
             );
 
             CREATE TABLE IF NOT EXISTS premium_orders (
@@ -1155,6 +1193,7 @@ def _init_postgres_db():
             ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS responded_at TEXT;
             ALTER TABLE listing_alerts ADD COLUMN IF NOT EXISTS last_sent_listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL;
         """)
+        _migrate_postgres_agency_profiles(cur)
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_lead_requests_listing_status
                 ON lead_requests(listing_id, status, created_at DESC);
@@ -2407,6 +2446,71 @@ def _reporter_fingerprint(identity: str) -> str:
     return hmac.new(SECRET_KEY.encode("utf-8"), material, hashlib.sha256).hexdigest()
 
 
+def _ensure_sqlite_agency_updated_at_contract(db) -> None:
+    updated_at_column = next(
+        (
+            row
+            for row in db.execute("PRAGMA table_info(agency_profiles)").fetchall()
+            if row[1] == "updated_at"
+        ),
+        None,
+    )
+    if (
+        updated_at_column
+        and updated_at_column[3] == 1
+        and updated_at_column[4] == "datetime('now')"
+    ):
+        return
+
+    db.execute("DROP TABLE IF EXISTS agency_profiles_updated_at_migration")
+    db.execute(
+        """
+        CREATE TABLE agency_profiles_updated_at_migration (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug                  TEXT    NOT NULL UNIQUE,
+            name                  TEXT    NOT NULL,
+            kind                  TEXT    NOT NULL DEFAULT 'agency',
+            city                  TEXT    NOT NULL,
+            specialization        TEXT    NOT NULL DEFAULT '',
+            is_verified           INTEGER NOT NULL DEFAULT 0,
+            status                TEXT    NOT NULL DEFAULT 'active',
+            avg_response_minutes  INTEGER,
+            team_size             INTEGER,
+            completed_deals       INTEGER NOT NULL DEFAULT 0,
+            last_verified_at      TEXT,
+            revision              INTEGER NOT NULL DEFAULT 1,
+            created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+            updated_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO agency_profiles_updated_at_migration (
+            id, slug, name, kind, city, specialization, is_verified, status,
+            avg_response_minutes, team_size, completed_deals, last_verified_at,
+            revision, created_at, updated_at
+        )
+        SELECT
+            id, slug, name, kind, city, specialization, is_verified, status,
+            avg_response_minutes, team_size, completed_deals, last_verified_at,
+            revision, created_at, updated_at
+        FROM agency_profiles
+        """
+    )
+    db.execute("DROP TABLE agency_profiles")
+    db.execute(
+        "ALTER TABLE agency_profiles_updated_at_migration RENAME TO agency_profiles"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agency_profiles_verified"
+        " ON agency_profiles(is_verified)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agency_profiles_city ON agency_profiles(city)"
+    )
+
+
 def init_db():
     if _is_postgres():
         _init_postgres_db()
@@ -2708,11 +2812,14 @@ def init_db():
             city                  TEXT    NOT NULL,
             specialization        TEXT    NOT NULL DEFAULT '',
             is_verified           INTEGER NOT NULL DEFAULT 0,
+            status                TEXT    NOT NULL DEFAULT 'active',
             avg_response_minutes  INTEGER,
             team_size             INTEGER,
             completed_deals       INTEGER NOT NULL DEFAULT 0,
             last_verified_at      TEXT,
-            created_at            TEXT    NOT NULL DEFAULT (db_now_expr())
+            revision              INTEGER NOT NULL DEFAULT 1,
+            created_at            TEXT    NOT NULL DEFAULT (db_now_expr()),
+            updated_at            TEXT    NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_agency_profiles_verified ON agency_profiles(is_verified);
         CREATE INDEX IF NOT EXISTS idx_agency_profiles_city ON agency_profiles(city);
@@ -2973,7 +3080,26 @@ def init_db():
         db.execute("ALTER TABLE agency_profiles ADD COLUMN team_size INTEGER")
     if "completed_deals" not in agency_columns:
         db.execute("ALTER TABLE agency_profiles ADD COLUMN completed_deals INTEGER NOT NULL DEFAULT 0")
-    db.execute("UPDATE agency_profiles SET completed_deals = COALESCE(completed_deals, 0)")
+    if "status" not in agency_columns:
+        db.execute("ALTER TABLE agency_profiles ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    if "revision" not in agency_columns:
+        db.execute("ALTER TABLE agency_profiles ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+    if "updated_at" not in agency_columns:
+        db.execute("ALTER TABLE agency_profiles ADD COLUMN updated_at TEXT")
+    db.execute(
+        f"""
+        UPDATE agency_profiles
+        SET completed_deals = COALESCE(completed_deals, 0),
+            status = CASE WHEN status IN ('active', 'suspended') THEN status ELSE 'active' END,
+            revision = CASE WHEN revision > 0 THEN revision ELSE 1 END,
+            updated_at = COALESCE(updated_at, created_at, {now_expr})
+        """
+    )
+    _ensure_sqlite_agency_updated_at_contract(db)
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agency_profiles_kind_status"
+        " ON agency_profiles(kind, status)"
+    )
 
     db.execute("UPDATE listings SET source = COALESCE(NULLIF(source, ''), 'owner')")
     db.execute("UPDATE listings SET listing_status = COALESCE(NULLIF(listing_status, ''), 'active')")
@@ -4627,7 +4753,9 @@ def _seo_landing_stats(db: sqlite3.Connection, limit: int = 8):
 
 def _content_articles(db: sqlite3.Connection) -> list[dict]:
     city_rows, district_rows = _seo_landing_stats(db, limit=6)
-    agency_rows = _agency_metrics(db, sort_by="reputation", limit=4)
+    agency_rows = _agency_metrics(
+        db, where_sql="WHERE ap.status = 'active'", sort_by="reputation", limit=4
+    )
     
     # Single aggregated query instead of 5 separate COUNT queries (performance: -600ms)
     stats_row = db.execute(f"""
@@ -5223,7 +5351,7 @@ LISTING_SELECT = """
            ap.name AS agency_name, ap.kind AS agency_kind, ap.is_verified AS agency_verified
     FROM   listings l
     JOIN   users u ON u.id = l.user_id
-    LEFT JOIN agency_profiles ap ON ap.slug = u.agency_slug
+    LEFT JOIN agency_profiles ap ON ap.slug = u.agency_slug AND ap.status = 'active'
     LEFT JOIN (
         SELECT city, district, property_type, listing_type, rooms,
                CAST(area / 5 AS INTEGER) AS area_bucket,
@@ -5270,6 +5398,7 @@ def _agency_metrics(
     where_params: tuple = (),
     sort_by: str = "reputation",
     limit: int = 30,
+    include_management: bool = False,
 ):
     query = f"""
         SELECT
@@ -5279,10 +5408,14 @@ def _agency_metrics(
             ap.city,
             ap.specialization,
             ap.is_verified,
+            ap.status,
             ap.avg_response_minutes,
             ap.team_size,
             ap.completed_deals,
             ap.last_verified_at,
+            ap.revision,
+            ap.created_at,
+            ap.updated_at,
             COUNT(CASE WHEN l.status = 'published' THEN 1 END) AS active_listings,
             COUNT(l.id) AS total_listings,
             ROUND(AVG(
@@ -5311,7 +5444,9 @@ def _agency_metrics(
         FROM agency_profiles ap
         LEFT JOIN listings l ON l.agency_slug = ap.slug
         {where_sql}
-        GROUP BY ap.slug, ap.name, ap.kind, ap.city, ap.specialization, ap.is_verified, ap.avg_response_minutes, ap.team_size, ap.completed_deals, ap.last_verified_at
+        GROUP BY ap.slug, ap.name, ap.kind, ap.city, ap.specialization, ap.is_verified,
+                 ap.status, ap.avg_response_minutes, ap.team_size, ap.completed_deals,
+                 ap.last_verified_at, ap.revision, ap.created_at, ap.updated_at
         ORDER BY ap.is_verified DESC, active_listings DESC, ap.name ASC
         LIMIT ?
     """
@@ -5342,7 +5477,7 @@ def _agency_metrics(
         else:
             reputation_tier = "C"
 
-        metrics.append({
+        item = {
             "slug": row["slug"],
             "name": row["name"],
             "kind": row["kind"],
@@ -5362,7 +5497,15 @@ def _agency_metrics(
             "freshness_score": freshness_score,
             "reputation_score": reputation_score,
             "reputation_tier": reputation_tier,
-        })
+        }
+        if include_management:
+            item.update({
+                "status": row["status"],
+                "revision": int(row["revision"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            })
+        metrics.append(item)
 
     if sort_by == "active":
         metrics.sort(key=lambda item: (item["active_listings"], item["reputation_score"]), reverse=True)
@@ -5386,7 +5529,7 @@ def get_agencies():
     sort_by = strip(args.get("sort", "reputation"), 32).lower()
     limit = nonneg_int(args.get("limit")) or 30
     limit = min(max(limit, 1), 100)
-    filters = []
+    filters = ["ap.status = 'active'"]
     params: list = []
     if verified_only:
         filters.append("ap.is_verified = 1")
@@ -5411,7 +5554,7 @@ def agencies_catalog_page():
     verified_only = truthy_flag(request.args.get("verified_only"))
     sort_by = strip(request.args.get("sort", "reputation"), 32).lower()
     q = strip(request.args.get("q", ""), 80)
-    filters = []
+    filters = ["ap.status = 'active'"]
     params: list = []
     if verified_only:
         filters.append("ap.is_verified = 1")
@@ -5470,7 +5613,9 @@ def agencies_catalog_page():
 @app.route("/api/agencies/<slug>", methods=["GET"])
 def get_agency_profile(slug: str):
     db = get_db()
-    metrics = _agency_metrics(db, "WHERE ap.slug = ?", (slug,))
+    metrics = _agency_metrics(
+        db, "WHERE ap.slug = ? AND ap.status = 'active'", (slug,)
+    )
     if not metrics:
         return jsonify(error="Агентство/забудовника не знайдено"), 404
     profile = metrics[0]
@@ -5485,7 +5630,9 @@ def get_agency_profile(slug: str):
 @app.route("/agencies/<slug>", methods=["GET"])
 def agency_profile_page(slug: str):
     db = get_db()
-    metrics = _agency_metrics(db, "WHERE ap.slug = ?", (slug,))
+    metrics = _agency_metrics(
+        db, "WHERE ap.slug = ? AND ap.status = 'active'", (slug,)
+    )
     if not metrics:
         return Response("<h1>Профіль не знайдено</h1>", status=404, mimetype="text/html")
     profile = metrics[0]
@@ -6089,7 +6236,7 @@ def seller_can_fast_publish(db, user_id: int) -> bool:
         """
         SELECT 1
         FROM users u
-        LEFT JOIN agency_profiles ap ON ap.slug = u.agency_slug
+        LEFT JOIN agency_profiles ap ON ap.slug = u.agency_slug AND ap.status = 'active'
         WHERE u.id = ?
           AND (
               COALESCE(ap.is_verified, 0) = 1

@@ -25,6 +25,7 @@ export const NAV_SECTIONS = [
     items: [
       { id: "users", label: "Користувачі", icon: "users", permission: PERMISSIONS.USERS_MANAGE },
       { id: "agencies", label: "Агенції", icon: "building", permission: PERMISSIONS.AGENCIES_MANAGE },
+      { id: "developers", label: "Забудовники", icon: "building", permission: PERMISSIONS.DEVELOPERS_MANAGE },
     ],
   },
   {

@@ -39,6 +39,7 @@ class Permission(str, Enum):
     USERS_MANAGE = "users/manage"
     LEADS_MANAGE = "leads/manage"
     AGENCIES_MANAGE = "agencies/manage"
+    DEVELOPERS_MANAGE = "developers/manage"
     SYSTEM_READ = "system/read"
 
 
@@ -804,11 +805,11 @@ def admin_create_listing():
         json.dumps(data.get('highlights') or [], ensure_ascii=False),
         str(data.get('captureMode') or 'off_site').strip().lower(),
     ))
-    db.commit()
+    listing_id = cur.lastrowid
     _refresh_listing_city_summary(db)
+    db.commit()
     cache_delete_prefix("admin:reports:listings-by-city:")
     
-    listing_id = cur.lastrowid
     if status == "published":
         apply_public_listing_side_effects(db, (listing_id,))
     
@@ -837,7 +838,7 @@ def admin_get_listing(listing_id):
     
     # Get images
     images = db.execute(
-        "SELECT id, image_url FROM listing_images WHERE listing_id = ? ORDER BY 'order'",
+        'SELECT id, image_url FROM listing_images WHERE listing_id = ? ORDER BY "order"',
         (listing_id,)
     ).fetchall()
     
@@ -851,7 +852,12 @@ def admin_get_listing(listing_id):
 @require_permission(Permission.LISTINGS_WRITE)
 def admin_update_listing(listing_id):
     """Update listing"""
-    from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
+    from app import (
+        _refresh_listing_city_summary,
+        cache_delete_prefix,
+        get_db,
+        log_field_change,
+    )
     
     db = get_db()
     data = request.get_json(silent=True)
@@ -859,7 +865,17 @@ def admin_update_listing(listing_id):
         return jsonify(error="JSON object required"), 400
     now = datetime.datetime.utcnow().isoformat(timespec='seconds')
     
-    existing = db.execute("SELECT id, status FROM listings WHERE id = ?", (listing_id,)).fetchone()
+    existing = db.execute(
+        """
+        SELECT id, title, city, district, price, rooms, area, floor,
+               total_floors, year_built, e_oselya, description, property_type,
+               condition_type, latitude, longitude, status, listing_status,
+               source, has_photo_tour, has_video_tour, listing_highlights,
+               capture_mode
+        FROM listings WHERE id = ?
+        """,
+        (listing_id,),
+    ).fetchone()
     if not existing:
         return jsonify(error="Listing not found"), 404
     if "status" in data and str(data.get("status") or "").strip().lower() not in {
@@ -870,13 +886,19 @@ def admin_update_listing(listing_id):
         "active", "sold", "removed"
     }:
         return jsonify(error="Invalid listing lifecycle status"), 400
-    for field in ("price", "area"):
-        if field in data:
-            try:
-                if float(data[field]) <= 0:
-                    raise ValueError
-            except (TypeError, ValueError):
-                return jsonify(error=f"{field} must be a positive number"), 400
+    if "price" in data:
+        try:
+            price_value = int(data["price"])
+            if price_value <= 0 or float(data["price"]) != price_value:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify(error="price must be a positive integer"), 400
+    if "area" in data:
+        try:
+            if float(data["area"]) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify(error="area must be a positive number"), 400
     if "rooms" in data:
         try:
             if int(data["rooms"]) < 0:
@@ -901,10 +923,21 @@ def admin_update_listing(listing_id):
             value = data[field]
             if field in {'has_photo_tour', 'has_video_tour', 'e_oselya'}:
                 value = 1 if bool(value) else 0
+            elif field == 'price':
+                value = int(value)
+            elif field == 'rooms':
+                value = int(value)
+            elif field == 'area':
+                value = float(value)
             elif field == 'listing_highlights' and isinstance(value, list):
                 value = json.dumps(value, ensure_ascii=False)
-            elif field in {'capture_mode', 'source', 'status', 'listing_status', 'property_type', 'condition_type'} and value is not None:
+            elif field in {'capture_mode', 'source', 'status', 'listing_status'} and value is not None:
+                value = str(value).strip().lower()
+            elif field in {'property_type', 'condition_type'} and value is not None:
                 value = str(value).strip()
+            log_field_change(
+                db, listing_id, field, existing[field], value, "admin"
+            )
             updates.append(f"{field} = ?")
             params.append(value)
 
@@ -925,8 +958,8 @@ def admin_update_listing(listing_id):
     query = f"UPDATE listings SET {', '.join(updates)} WHERE id = ?"
     
     db.execute(query, params)
-    db.commit()
     _refresh_listing_city_summary(db)
+    db.commit()
     cache_delete_prefix("admin:reports:listings-by-city:")
     resulting_status = str(data.get("status") or existing["status"]).strip().lower()
     if existing["status"] == "published" or resulting_status == "published":
@@ -957,8 +990,8 @@ def admin_delete_listing(listing_id):
     
     # Delete listing
     db.execute("DELETE FROM listings WHERE id = ?", (listing_id,))
-    db.commit()
     _refresh_listing_city_summary(db)
+    db.commit()
     cache_delete_prefix("admin:reports:listings-by-city:")
     if existing["status"] == "published":
         apply_public_listing_side_effects(db)
@@ -1046,8 +1079,8 @@ def admin_duplicate_listing(listing_id):
     for row in new_image_rows:
         db.execute(LISTING_IMAGE_INSERT_SQL, row)
 
-    db.commit()
     _refresh_listing_city_summary(db)
+    db.commit()
     cache_delete_prefix("admin:reports:listings-by-city:")
     return jsonify(ok=True, id=new_listing_id, title=title), 201
 
@@ -1079,8 +1112,8 @@ def admin_publish_listing(listing_id):
         (status, "approved" if published else "pending_review", status, listing_id)
     )
     log_moderation_action(db, listing_id, "publish" if published else "unpublish")
-    db.commit()
     _refresh_listing_city_summary(db)
+    db.commit()
     cache_delete_prefix("admin:reports:listings-by-city:")
     if existing["status"] == "published" or status == "published":
         newly_published = (
@@ -1159,8 +1192,8 @@ def admin_import_csv():
         db.rollback()
         return jsonify(error="CSV import failed", details=errors[:20]), 422
 
-    db.commit()
     _refresh_listing_city_summary(db)
+    db.commit()
     cache_delete_prefix("admin:reports:listings-by-city:")
     if published_imports:
         apply_public_listing_side_effects(db, published_imports)
@@ -1343,8 +1376,8 @@ def admin_moderate_listing(listing_id):
         ),
     )
     log_moderation_action(db, listing_id, action, reason)
-    db.commit()
     _refresh_listing_city_summary(db)
+    db.commit()
     cache_delete_prefix("admin:reports:listings-by-city:")
     if listing["status"] == "published" or new_status == "published":
         newly_published = (
@@ -1424,8 +1457,8 @@ def admin_bulk_moderate():
             (new_status, moderation_status, reason, new_status, listing_id)
         )
         log_moderation_action(db, listing_id, action, reason)
-    db.commit()
     _refresh_listing_city_summary(db)
+    db.commit()
     cache_delete_prefix("admin:reports:listings-by-city:")
     if new_status == "published" or any(row["status"] == "published" for row in existing):
         published_listing_ids = previously_unpublished_ids if new_status == "published" else ()
@@ -1467,8 +1500,8 @@ def admin_bulk_delete():
         db.execute("DELETE FROM listing_images WHERE listing_id = ?", (listing_id,))
         db.execute("DELETE FROM listings WHERE id = ?", (listing_id,))
 
-    db.commit()
     _refresh_listing_city_summary(db)
+    db.commit()
     cache_delete_prefix("admin:reports:listings-by-city:")
     if any(row["status"] == "published" for row in existing):
         apply_public_listing_side_effects(db)
@@ -2152,9 +2185,10 @@ def admin_update_lead(lead_id):
     return jsonify(ok=True, status=status, responded_at=responded_at)
 
 
-@admin_bp.route("/agencies", methods=["GET"])
-@require_permission(Permission.AGENCIES_MANAGE)
-def admin_agencies():
+ORGANIZATION_STATUSES = {"active", "suspended"}
+
+
+def _admin_organizations(kind):
     from app import _agency_metrics, get_db
 
     try:
@@ -2162,45 +2196,69 @@ def admin_agencies():
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     search = (request.args.get("search") or "").strip()
+    status = (request.args.get("status") or "").strip().lower()
+    verified = (request.args.get("verified") or "").strip().lower()
     if len(search) > 120:
         return jsonify(error="search must be at most 120 characters"), 400
-    where, params = "", ()
+    if status and status not in ORGANIZATION_STATUSES:
+        return jsonify(error="Invalid organization status"), 400
+    if verified and verified not in {"true", "false"}:
+        return jsonify(error="verified must be true or false"), 400
+    clauses = ["ap.kind = ?"]
+    params = [kind]
     if search:
-        where = "WHERE ap.name LIKE ? OR ap.slug LIKE ? OR ap.city LIKE ?"
-        params = (f"%{search}%",) * 3
+        clauses.append(
+            "(LOWER(ap.name) LIKE LOWER(?) OR LOWER(ap.slug) LIKE LOWER(?)"
+            " OR LOWER(ap.city) LIKE LOWER(?))"
+        )
+        params.extend([f"%{search}%"] * 3)
+    if status:
+        clauses.append("ap.status = ?")
+        params.append(status)
+    if verified:
+        clauses.append("ap.is_verified = ?")
+        params.append(int(verified == "true"))
+    where = "WHERE " + " AND ".join(clauses)
     db = get_db()
     total = db.execute(
-        "SELECT COUNT(*) FROM agency_profiles ap "
-        + (where if where else ""),
-        params,
+        "SELECT COUNT(*) FROM agency_profiles ap " + where,
+        tuple(params),
     ).fetchone()[0]
     agencies = _agency_metrics(
-        db, where_sql=where, where_params=params, limit=limit + offset
+        db,
+        where_sql=where,
+        where_params=tuple(params),
+        limit=limit + offset,
+        include_management=True,
     )[offset:offset + limit]
-    return jsonify(agencies=agencies, total=int(total), limit=limit, offset=offset)
+    key = "developers" if kind == "developer" else "agencies"
+    return jsonify(**{key: agencies}, total=int(total), limit=limit, offset=offset)
 
 
-@admin_bp.route("/agencies/<string:slug>", methods=["GET"])
-@require_permission(Permission.AGENCIES_MANAGE)
-def admin_agency_detail(slug):
+def _admin_organization_detail(slug, kind):
     from app import _agency_metrics, get_db
 
     rows = _agency_metrics(
-        get_db(), where_sql="WHERE ap.slug = ?", where_params=(slug,), limit=1
+        get_db(),
+        where_sql="WHERE ap.slug = ? AND ap.kind = ?",
+        where_params=(slug, kind),
+        limit=1,
+        include_management=True,
     )
     if not rows:
-        return jsonify(error="Agency not found"), 404
-    return jsonify(agency=rows[0])
+        return jsonify(error="Organization not found"), 404
+    key = "developer" if kind == "developer" else "agency"
+    return jsonify(**{key: rows[0]})
 
 
-def _validate_agency_payload(data, *, creating=False):
+def _validate_organization_payload(data, *, creating=False):
     if not isinstance(data, dict):
         raise ValueError("JSON object required")
     values = {}
     if creating or "slug" in data:
         slug = str(data.get("slug") or "").strip().lower()
         if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug) or len(slug) > 80:
-            raise ValueError("Invalid agency slug")
+            raise ValueError("Invalid organization slug")
         values["slug"] = slug
     for field, maximum in (("name", 160), ("city", 120), ("specialization", 500)):
         if creating or field in data:
@@ -2213,93 +2271,292 @@ def _validate_agency_payload(data, *, creating=False):
         if kind not in {"agency", "developer"}:
             raise ValueError("kind must be agency or developer")
         values["kind"] = kind
+    if "status" in data:
+        status = str(data.get("status") or "").strip().lower()
+        if status not in ORGANIZATION_STATUSES:
+            raise ValueError("status must be active or suspended")
+        values["status"] = status
     for field in ("avg_response_minutes", "team_size", "completed_deals"):
         if field in data:
-            try:
-                value = int(data[field])
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"{field} must be an integer") from exc
+            value = data[field]
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"{field} must be an integer")
             if value < 0 or value > 1_000_000:
                 raise ValueError(f"Invalid {field}")
             values[field] = value
     return values
 
 
-@admin_bp.route("/agencies", methods=["POST"])
-@require_permission(Permission.AGENCIES_MANAGE)
-def admin_create_agency():
-    from app import get_db
+def _expected_revision(data):
+    if not isinstance(data, dict):
+        raise ValueError("JSON object required")
+    revision = data.get("revision")
+    if isinstance(revision, bool) or not isinstance(revision, int):
+        raise ValueError("revision must be a positive integer")
+    if revision < 1:
+        raise ValueError("revision must be a positive integer")
+    return revision
+
+
+def _admin_create_organization(kind):
+    from app import _is_db_unique_error, get_db
 
     try:
-        values = _validate_agency_payload(request.get_json(silent=True), creating=True)
+        values = _validate_organization_payload(
+            request.get_json(silent=True), creating=True
+        )
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
+    values["kind"] = kind
+    values["status"] = "active"
     db = get_db()
     if db.execute("SELECT 1 FROM agency_profiles WHERE slug = ?", (values["slug"],)).fetchone():
-        return jsonify(error="Agency slug already exists"), 409
-    cursor = db.execute(
-        """
-        INSERT INTO agency_profiles (
-            slug, name, kind, city, specialization,
-            avg_response_minutes, team_size, completed_deals
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            values["slug"], values["name"], values["kind"], values["city"],
-            values["specialization"], values.get("avg_response_minutes"),
-            values.get("team_size"), values.get("completed_deals", 0),
-        ),
-    )
-    db.commit()
-    return jsonify(ok=True, id=cursor.lastrowid, slug=values["slug"]), 201
-
-
-@admin_bp.route("/agencies/<string:slug>", methods=["PATCH"])
-@require_permission(Permission.AGENCIES_MANAGE)
-def admin_update_agency(slug):
-    from app import get_db
-
+        return jsonify(error="Organization slug already exists"), 409
     try:
-        values = _validate_agency_payload(request.get_json(silent=True))
+        cursor = db.execute(
+            """
+            INSERT INTO agency_profiles (
+                slug, name, kind, city, specialization, status,
+                avg_response_minutes, team_size, completed_deals
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                values["slug"], values["name"], kind, values["city"],
+                values["specialization"], values["status"],
+                values.get("avg_response_minutes"), values.get("team_size"),
+                values.get("completed_deals", 0),
+            ),
+        )
+    except Exception as exc:
+        if not _is_db_unique_error(exc):
+            raise
+        db.rollback()
+        return jsonify(error="Organization slug already exists"), 409
+    db.commit()
+    return jsonify(
+        ok=True, id=cursor.lastrowid, slug=values["slug"], revision=1
+    ), 201
+
+
+def _admin_update_organization(slug, kind):
+    from app import db_now_expr, get_db
+
+    data = request.get_json(silent=True)
+    try:
+        revision = _expected_revision(data)
+        values = _validate_organization_payload(data)
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     values.pop("slug", None)
+    values.pop("kind", None)
     if not values:
-        return jsonify(error="No agency fields provided"), 400
+        return jsonify(error="No organization fields provided"), 400
     db = get_db()
-    if not db.execute("SELECT 1 FROM agency_profiles WHERE slug = ?", (slug,)).fetchone():
-        return jsonify(error="Agency not found"), 404
-    db.execute(
-        f"UPDATE agency_profiles SET {', '.join(f'{key} = ?' for key in values)} WHERE slug = ?",
-        list(values.values()) + [slug],
+    existing = db.execute(
+        """
+        SELECT status, is_verified, revision
+        FROM agency_profiles WHERE slug = ? AND kind = ?
+        """,
+        (slug, kind),
+    ).fetchone()
+    if not existing:
+        return jsonify(error="Organization not found"), 404
+    if int(existing["revision"]) != revision:
+        return jsonify(error="Organization changed; refresh and try again"), 409
+    assignments = [f"{key} = ?" for key in values]
+    params = list(values.values())
+    if values.get("status") == "suspended":
+        assignments.extend(["is_verified = 0", "last_verified_at = NULL"])
+    assignments.extend([
+        f"updated_at = {db_now_expr()}",
+        "revision = revision + 1",
+    ])
+    transition = db.execute(
+        f"""
+        UPDATE agency_profiles
+        SET {', '.join(assignments)}
+        WHERE slug = ? AND kind = ? AND revision = ?
+        """,
+        params + [slug, kind, revision],
     )
+    if transition.rowcount != 1:
+        db.rollback()
+        return jsonify(error="Organization changed; refresh and try again"), 409
     db.commit()
-    return jsonify(ok=True, slug=slug)
+    return jsonify(ok=True, slug=slug, revision=revision + 1)
 
 
-@admin_bp.route("/agencies/<string:slug>/verify", methods=["POST"])
-@require_permission(Permission.AGENCIES_MANAGE)
-def admin_verify_agency(slug):
+def _admin_verify_organization(slug, kind):
     from app import db_now_expr, get_db
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or not isinstance(data.get("verified"), bool):
         return jsonify(error="verified must be a boolean"), 400
+    try:
+        revision = _expected_revision(data)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     db = get_db()
-    if not db.execute("SELECT 1 FROM agency_profiles WHERE slug = ?", (slug,)).fetchone():
-        return jsonify(error="Agency not found"), 404
-    db.execute(
+    existing = db.execute(
+        """
+        SELECT status, revision FROM agency_profiles
+        WHERE slug = ? AND kind = ?
+        """,
+        (slug, kind),
+    ).fetchone()
+    if not existing:
+        return jsonify(error="Organization not found"), 404
+    if int(existing["revision"]) != revision:
+        return jsonify(error="Organization changed; refresh and try again"), 409
+    if data["verified"] and existing["status"] != "active":
+        return jsonify(error="Suspended organizations cannot be verified"), 409
+    transition = db.execute(
         f"""
         UPDATE agency_profiles
         SET is_verified = ?,
-            last_verified_at = CASE WHEN ? = 1 THEN {db_now_expr()} ELSE NULL END
-        WHERE slug = ?
+            last_verified_at = CASE WHEN ? = 1 THEN {db_now_expr()} ELSE NULL END,
+            updated_at = {db_now_expr()},
+            revision = revision + 1
+        WHERE slug = ? AND kind = ? AND revision = ?
         """,
-        (int(data["verified"]), int(data["verified"]), slug),
+        (
+            int(data["verified"]), int(data["verified"]), slug, kind, revision,
+        ),
     )
+    if transition.rowcount != 1:
+        db.rollback()
+        return jsonify(error="Organization changed; refresh and try again"), 409
     db.commit()
-    return jsonify(ok=True, slug=slug, is_verified=data["verified"])
+    return jsonify(
+        ok=True, slug=slug, is_verified=data["verified"], revision=revision + 1
+    )
+
+
+def _admin_delete_organization(slug, kind):
+    from app import get_db
+
+    data = request.get_json(silent=True)
+    try:
+        revision = _expected_revision(data)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    db = get_db()
+    existing = db.execute(
+        """
+        SELECT status, is_verified, revision
+        FROM agency_profiles WHERE slug = ? AND kind = ?
+        """,
+        (slug, kind),
+    ).fetchone()
+    if not existing:
+        return jsonify(error="Organization not found"), 404
+    if int(existing["revision"]) != revision:
+        return jsonify(error="Organization changed; refresh and try again"), 409
+    if existing["status"] != "suspended" or bool(existing["is_verified"]):
+        return jsonify(
+            error="Suspend and remove verification before deleting"
+        ), 409
+    user_count = db.execute(
+        "SELECT COUNT(*) FROM users WHERE agency_slug = ?", (slug,)
+    ).fetchone()[0]
+    listing_count = db.execute(
+        "SELECT COUNT(*) FROM listings WHERE agency_slug = ?", (slug,)
+    ).fetchone()[0]
+    if int(user_count) or int(listing_count):
+        return jsonify(
+            error="Organization is linked to users or listings and cannot be deleted"
+        ), 409
+    deleted = db.execute(
+        """
+        DELETE FROM agency_profiles
+        WHERE slug = ? AND kind = ? AND revision = ?
+          AND NOT EXISTS (
+              SELECT 1 FROM users WHERE agency_slug = ?
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM listings WHERE agency_slug = ?
+          )
+        """,
+        (slug, kind, revision, slug, slug),
+    )
+    if deleted.rowcount != 1:
+        db.rollback()
+        return jsonify(error="Organization changed; refresh and try again"), 409
+    db.commit()
+    return jsonify(ok=True, slug=slug)
+
+
+@admin_bp.route("/agencies", methods=["GET"])
+@require_permission(Permission.AGENCIES_MANAGE)
+def admin_agencies():
+    return _admin_organizations("agency")
+
+
+@admin_bp.route("/agencies/<string:slug>", methods=["GET"])
+@require_permission(Permission.AGENCIES_MANAGE)
+def admin_agency_detail(slug):
+    return _admin_organization_detail(slug, "agency")
+
+
+@admin_bp.route("/agencies", methods=["POST"])
+@require_permission(Permission.AGENCIES_MANAGE)
+def admin_create_agency():
+    return _admin_create_organization("agency")
+
+
+@admin_bp.route("/agencies/<string:slug>", methods=["PATCH"])
+@require_permission(Permission.AGENCIES_MANAGE)
+def admin_update_agency(slug):
+    return _admin_update_organization(slug, "agency")
+
+
+@admin_bp.route("/agencies/<string:slug>/verify", methods=["POST"])
+@require_permission(Permission.AGENCIES_MANAGE)
+def admin_verify_agency(slug):
+    return _admin_verify_organization(slug, "agency")
+
+
+@admin_bp.route("/agencies/<string:slug>", methods=["DELETE"])
+@require_permission(Permission.AGENCIES_MANAGE)
+def admin_delete_agency(slug):
+    return _admin_delete_organization(slug, "agency")
+
+
+@admin_bp.route("/developers", methods=["GET"])
+@require_permission(Permission.DEVELOPERS_MANAGE)
+def admin_developers():
+    return _admin_organizations("developer")
+
+
+@admin_bp.route("/developers/<string:slug>", methods=["GET"])
+@require_permission(Permission.DEVELOPERS_MANAGE)
+def admin_developer_detail(slug):
+    return _admin_organization_detail(slug, "developer")
+
+
+@admin_bp.route("/developers", methods=["POST"])
+@require_permission(Permission.DEVELOPERS_MANAGE)
+def admin_create_developer():
+    return _admin_create_organization("developer")
+
+
+@admin_bp.route("/developers/<string:slug>", methods=["PATCH"])
+@require_permission(Permission.DEVELOPERS_MANAGE)
+def admin_update_developer(slug):
+    return _admin_update_organization(slug, "developer")
+
+
+@admin_bp.route("/developers/<string:slug>/verify", methods=["POST"])
+@require_permission(Permission.DEVELOPERS_MANAGE)
+def admin_verify_developer(slug):
+    return _admin_verify_organization(slug, "developer")
+
+
+@admin_bp.route("/developers/<string:slug>", methods=["DELETE"])
+@require_permission(Permission.DEVELOPERS_MANAGE)
+def admin_delete_developer(slug):
+    return _admin_delete_organization(slug, "developer")
 
 
 @admin_bp.route("/listings/<int:listing_id>/history", methods=["GET"])

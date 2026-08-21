@@ -13,6 +13,7 @@ const LazyListings = lazy(() => import("./modules/listings/Listings.jsx").then((
 const LazyRequests = lazy(() => import("./modules/requests/Requests.jsx").then((m) => ({ default: m.Requests })));
 const LazyUsers = lazy(() => import("./modules/community/Users.jsx").then((m) => ({ default: m.Users })));
 const LazyAgencies = lazy(() => import("./modules/community/Agencies.jsx").then((m) => ({ default: m.Agencies })));
+const LazyDevelopers = lazy(() => import("./modules/community/Developers.jsx").then((m) => ({ default: m.Developers })));
 const LazyPricesHistory = lazy(() => import("./modules/trust/PricesHistory.jsx").then((m) => ({ default: m.PricesHistory })));
 const LazyAnalytics = lazy(() => import("./modules/trust/Analytics.jsx").then((m) => ({ default: m.Analytics })));
 const LazyHealth = lazy(() => import("./modules/system/Health.jsx").then((m) => ({ default: m.Health })));
@@ -134,6 +135,7 @@ function DashboardShell() {
               {route === "requests" ? <LazyRequests /> : null}
               {route === "users" ? <LazyUsers focusUser={focusUser} onConsumeFocusUser={() => setFocusUser(null)} /> : null}
               {route === "agencies" ? <LazyAgencies /> : null}
+              {route === "developers" ? <LazyDevelopers /> : null}
               {route === "prices" ? <LazyPricesHistory staff={staff} /> : null}
               {route === "analytics" ? <LazyAnalytics /> : null}
               {route === "health" ? <LazyHealth /> : null}

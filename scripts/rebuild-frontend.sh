@@ -110,7 +110,8 @@ rm -rf "$WEB_DIR/admin/chunks"
 
 # ── generate purged Tailwind CSS ──
 echo "🎨 Generating purged ua-homes.css ..."
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ua-dim-frontend.XXXXXX")"
+TMP_DIR="$REPO_DIR/.frontend-build-tmp.$$"
+mkdir -p "$TMP_DIR"
 trap 'rm -rf "$TMP_DIR"' EXIT
 TW_INPUT="$TMP_DIR/input.css"
 TW_CONFIG="$TMP_DIR/config.js"
