@@ -644,7 +644,7 @@ def _upsert_lead_funnel_summary(db, *, day: str, source: str, listing_type: str,
         INSERT INTO lead_funnel_daily_metrics (day, source, listing_type, event, event_count)
         VALUES (?, ?, ?, ?, 1)
         ON CONFLICT(day, source, listing_type, event)
-        DO UPDATE SET event_count = event_count + 1
+        DO UPDATE SET event_count = lead_funnel_daily_metrics.event_count + 1
         """,
         (day, source, listing_type, event),
     )
@@ -654,7 +654,7 @@ def _upsert_lead_funnel_summary(db, *, day: str, source: str, listing_type: str,
             INSERT INTO lead_funnel_listing_metrics (day, listing_id, event, event_count)
             VALUES (?, ?, ?, 1)
             ON CONFLICT(day, listing_id, event)
-            DO UPDATE SET event_count = event_count + 1
+            DO UPDATE SET event_count = lead_funnel_listing_metrics.event_count + 1
             """,
             (day, listing_id, event),
         )
@@ -730,6 +730,11 @@ def db_text_timestamp_expr(offset_days: int | None = None) -> str:
     """Return the current timestamp with the TEXT type used by the shared schema."""
     expression = db_now_expr(offset_days)
     return f"CAST({expression} AS TEXT)" if _is_postgres() else expression
+
+
+def db_timestamp_column_expr(column: str) -> str:
+    """Return a TEXT timestamp column converted for chronological comparison."""
+    return f"{column}::timestamptz" if _is_postgres() else column
 
 
 def _is_db_integrity_error(exc: Exception) -> bool:
@@ -4760,12 +4765,13 @@ def _content_articles(db: sqlite3.Connection) -> list[dict]:
     )
     
     # Single aggregated query instead of 5 separate COUNT queries (performance: -600ms)
+    published_at_expression = db_timestamp_column_expr("published_at")
     stats_row = db.execute(f"""
         SELECT 
           COUNT(*) as total_count,
           SUM(CASE WHEN e_oselya = 1 THEN 1 ELSE 0 END) as e_oselya_count,
           SUM(CASE WHEN listing_status = 'active' THEN 1 ELSE 0 END) as active_count,
-          SUM(CASE WHEN published_at >= {db_now_expr(-14)} THEN 1 ELSE 0 END) as freshness_count
+          SUM(CASE WHEN {published_at_expression} >= {db_now_expr(-14)} THEN 1 ELSE 0 END) as freshness_count
         FROM listings WHERE status='published'
     """).fetchone()
     
@@ -6182,7 +6188,7 @@ def report_listing(lid: int):
             return jsonify(duplicate=True, report=_sanitized(existing_by_key)), 200
         return jsonify(error="idempotency_key вже використано для іншого запиту", code="idempotency_conflict"), 409
 
-    created_at_expression = "created_at::timestamptz" if _is_postgres() else "created_at"
+    created_at_expression = db_timestamp_column_expr("created_at")
     recent_dupe = db.execute(
         f"""
         SELECT id FROM listing_reports
@@ -6362,7 +6368,6 @@ def update_listing(listing_id: int):
     from app import _refresh_listing_city_summary, cache_delete_prefix
 
     db = get_db()
-    now_expr = db_now_expr()
     text_now_expr = db_text_timestamp_expr()
     listing = db.execute(
         """
@@ -6527,7 +6532,7 @@ def update_listing(listing_id: int):
             phone_verification_status = ?,
             moderation_status = ?,
             moderation_reason = ?,
-            moderation_updated_at = {now_expr},
+            moderation_updated_at = {text_now_expr},
             listing_verification_status = ?
         WHERE id = ?
         """,
@@ -6910,7 +6915,7 @@ def update_listing_verification(listing_id: int):
             phone_verification_status = ?,
             moderation_status = ?,
             moderation_reason = ?,
-            moderation_updated_at = {db_now_expr()},
+            moderation_updated_at = {db_text_timestamp_expr()},
             listing_verification_status = ?,
             status = ?,
             published_at = {published_at_sql}
@@ -8930,7 +8935,11 @@ def listing_page(lid: int):
             f'<img src="{escape(img)}" alt="{escape(listing["title"])}" width="900" height="506" loading="{("eager" if i==0 else "lazy")}" style="width:100%;height:100%;object-fit:cover;flex-shrink:0;scroll-snap-align:start"/>'
             for i, img in enumerate(listing["images"])
         )
-        photos_html = f'<div id="gallery" style="display:flex;overflow-x:auto;scroll-snap-type:x mandatory;border-radius:16px;aspect-ratio:16/9;background:#e2e8f0">{imgs_html}</div>'
+        photos_html = (
+            '<div id="gallery" tabindex="0" aria-label="Галерея фотографій" '
+            'style="display:flex;overflow-x:auto;scroll-snap-type:x mandatory;'
+            f'border-radius:16px;aspect-ratio:16/9;background:#e2e8f0">{imgs_html}</div>'
+        )
         if len(listing["images"]) > 1:
             photos_html += f'<p style="font-size:13px;color:#94a3b8;margin-top:6px">{len(listing["images"])} фото · прокрутіть</p>'
     else:
@@ -8955,6 +8964,14 @@ def listing_page(lid: int):
     map_html = ""
     if listing.get("latitude") and listing.get("longitude"):
         lat, lng = listing["latitude"], listing["longitude"]
+        marker_title = json.dumps(
+            f"Місцезнаходження: {listing['title']}",
+            ensure_ascii=False,
+        ).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+        popup_title = json.dumps(
+            listing["title"],
+            ensure_ascii=False,
+        ).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
         map_html = f"""
 <div id="map" style="height:300px;border-radius:16px;margin:20px 0"></div>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -8968,7 +8985,7 @@ def listing_page(lid: int):
     iconSize:[18,18],
     iconAnchor:[9,9]
   }});
-  L.marker([{lat},{lng}],{{icon:markerIcon}}).addTo(m).bindPopup('{escape(listing["title"])}').openPopup();
+  L.marker([{lat},{lng}],{{icon:markerIcon,title:{marker_title}}}).addTo(m).bindPopup({popup_title}).openPopup();
 </script>"""
 
     # Reviews HTML

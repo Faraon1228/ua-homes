@@ -930,6 +930,75 @@ class AdminPanelTests(unittest.TestCase):
             [("listing-create-persist",), ("listing-update-persist",)],
         )
 
+    def test_observability_average_is_portable_to_postgres(self):
+        class Result:
+            @staticmethod
+            def fetchall():
+                return []
+
+        class RecordingDatabase:
+            def __init__(self):
+                self.queries = []
+
+            def execute(self, query, params=()):
+                self.queries.append(query)
+                return Result()
+
+        database = RecordingDatabase()
+        with (
+            mock.patch.object(app_module, "cached_json_get", return_value=None),
+            mock.patch.object(app_module, "cached_json_set"),
+        ):
+            report = admin_routes_module._build_observability_report(database, 24)
+
+        self.assertEqual(report["vitals_by_metric"], [])
+        self.assertTrue(
+            any(
+                "CAST(ROUND(CAST(AVG(metric_value) AS NUMERIC), 2) AS REAL)"
+                in query
+                for query in database.queries
+            )
+        )
+
+    def test_lead_funnel_listing_query_is_portable_to_postgres(self):
+        class Result:
+            @staticmethod
+            def fetchall():
+                return []
+
+            @staticmethod
+            def fetchone():
+                return {
+                    "views": 0,
+                    "intents": 0,
+                    "submits": 0,
+                    "redirects": 0,
+                }
+
+        class RecordingDatabase:
+            def __init__(self):
+                self.queries = []
+
+            def execute(self, query, params=()):
+                self.queries.append(query)
+                return Result()
+
+        database = RecordingDatabase()
+        with (
+            mock.patch.object(app_module, "cached_json_get", return_value=None),
+            mock.patch.object(app_module, "cached_json_set"),
+        ):
+            report = admin_routes_module._build_lead_funnel_report(database, 30)
+
+        self.assertEqual(report["top_listings"], [])
+        listing_query = next(
+            query
+            for query in database.queries
+            if "FROM lead_funnel_listing_metrics" in query
+        )
+        self.assertIn("GROUP BY lfm.listing_id, l.title", listing_query)
+        self.assertNotIn("HAVING intents", listing_query)
+
 
 if __name__ == "__main__":
     unittest.main()

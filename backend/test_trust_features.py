@@ -584,6 +584,8 @@ class TrustFeatureTests(unittest.TestCase):
             "area": 48,
             "floor": 3,
             "totalFloors": 7,
+            "latitude": 49.84,
+            "longitude": 24.03,
             "publishNow": True,
             "images": ["https://res.cloudinary.com/demo/image/upload/example.jpg"],
             "videos": [
@@ -631,6 +633,9 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertIn(b"<video controls playsinline", detail_page.data)
         self.assertIn(b"/video/upload/example.mp4", detail_page.data)
         detail_html = detail_page.get_data(as_text=True)
+        self.assertIn('id="gallery" tabindex="0"', detail_html)
+        self.assertIn('aria-label="Галерея фотографій"', detail_html)
+        self.assertIn('title:"Місцезнаходження:', detail_html)
         self.assertLess(detail_html.index('id="listing-price"'), detail_html.index('id="gallery"'))
 
         fast_publish = self.client.post(
@@ -1808,6 +1813,45 @@ class TrustFeatureTests(unittest.TestCase):
                 app_module.db_text_timestamp_expr(offset_days=1),
                 "CAST(CURRENT_TIMESTAMP - INTERVAL '1 day' AS TEXT)",
             )
+            self.assertEqual(
+                app_module.db_timestamp_column_expr("published_at"),
+                "published_at::timestamptz",
+            )
+
+    def test_lead_funnel_upserts_qualify_postgres_counter_columns(self):
+        class Result:
+            @staticmethod
+            def fetchone():
+                return None
+
+        class RecordingDatabase:
+            def __init__(self):
+                self.queries = []
+
+            def execute(self, query, params=()):
+                self.queries.append(query)
+                return Result()
+
+        database = RecordingDatabase()
+        app_module._upsert_lead_funnel_summary(
+            database,
+            day="2026-08-21",
+            source="listing",
+            listing_type="sale",
+            event="lead_submit",
+            listing_id=42,
+            created_at="2026-08-21 12:00:00",
+            session_id=None,
+        )
+
+        self.assertIn(
+            "lead_funnel_daily_metrics.event_count + 1",
+            database.queries[0],
+        )
+        self.assertIn(
+            "lead_funnel_listing_metrics.event_count + 1",
+            database.queries[1],
+        )
 
     def test_postgres_cursor_exposes_captured_lastval_with_savepoint(self):
         class FakeCursor:
@@ -2645,6 +2689,21 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertNotIn("googletagmanager.com/ns.html", app_shell)
         self.assertNotIn("googletagmanager.com/ns.html", launch_shell)
         self.assertIn("!analyticsAllowed()", analytics_loader)
+
+    def test_service_worker_precaches_the_offline_app_shell(self):
+        web_dir = os.path.join(os.path.dirname(BACKEND_DIR), "web")
+        with open(os.path.join(web_dir, "sw.js"), encoding="utf-8") as handle:
+            service_worker = handle.read()
+        with open(
+            os.path.join(web_dir, "precache-manifest.js"),
+            encoding="utf-8",
+        ) as handle:
+            precache_manifest = handle.read()
+
+        self.assertIn("caches.match('/app')", service_worker)
+        self.assertIn("url.origin !== self.location.origin", service_worker)
+        self.assertIn("'/app'", precache_manifest)
+        self.assertIn("'/real-estate-demo.html'", precache_manifest)
 
     def test_production_entrypoints_do_not_expose_demo_urls(self):
         web_dir = os.path.join(os.path.dirname(BACKEND_DIR), "web")

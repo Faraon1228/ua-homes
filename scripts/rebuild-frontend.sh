@@ -161,6 +161,8 @@ BUILD_ID=$(
   printf 'self.__UA_PRECACHE_ASSETS = [\n'
   printf "  '/precache-manifest.js',\n"
   printf "  '/',\n"
+  printf "  '/app',\n"
+  printf "  '/real-estate-demo.html',\n"
   printf "  '/app-loader.js',\n"
   printf "  '/real-estate-app.js',\n"
   printf "  '/seller-app.js',\n"
