@@ -63,7 +63,6 @@ jobs:
           test -f netlify.toml
           npx --yes netlify-cli@27.1.2 deploy \
             --prod \
-            --context=production \
             --no-build \
             --dir=web \
             --site="${NETLIFY_SITE_ID}" \
