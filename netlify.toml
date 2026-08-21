@@ -58,6 +58,12 @@
 
 # /app → main SPA
 [[redirects]]
+  from = "/real-estate-demo.html"
+  to = "/"
+  status = 301
+  force = true
+
+[[redirects]]
   from = "/app"
   to = "/real-estate-demo.html"
   status = 200

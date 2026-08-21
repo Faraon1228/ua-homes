@@ -35,7 +35,7 @@
     document.addEventListener('DOMContentLoaded', () => {
       if (!['localhost', '127.0.0.1'].includes(window.location.hostname)) return;
       document.querySelectorAll('[data-seller-link]').forEach((link) => {
-        link.href = 'real-estate-demo.html?seller=1#add';
+        link.href = '/seller#add';
       });
     });
   </script>
@@ -63,9 +63,9 @@
         <span class="bg-yellow-400 text-blue-900 text-xs font-bold px-2 py-0.5 rounded">β</span>
       </div>
       <div class="hidden md:flex items-center gap-8 text-sm font-medium text-gray-600">
-        <a href="real-estate-demo.html?listingType=sale" class="hover:text-blue-700 transition">Купити</a>
-        <a href="real-estate-demo.html?listingType=rent" class="hover:text-blue-700 transition">Орендувати</a>
-        <a href="real-estate-demo.html" class="hover:text-blue-700 transition">Новобудови</a>
+        <a href="/?listingType=sale" class="hover:text-blue-700 transition">Купити</a>
+        <a href="/?listingType=rent" class="hover:text-blue-700 transition">Орендувати</a>
+        <a href="/" class="hover:text-blue-700 transition">Новобудови</a>
         <a href="#eoselya" class="hover:text-blue-700 transition">єОселя</a>
       </div>
       <div class="flex items-center gap-2">
@@ -73,7 +73,7 @@
            class="bg-yellow-400 hover:bg-yellow-300 text-blue-900 text-sm font-bold px-4 py-2.5 rounded-xl transition shadow-md shadow-yellow-300/40">
           + Додати оголошення
         </a>
-        <a href="real-estate-demo.html"
+        <a href="/"
            class="bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition shadow-md shadow-blue-200">
           Переглянути об'єкти →
         </a>
@@ -97,7 +97,7 @@
         фільтрами по поверху та року, пошуком по тексту — і зв'язуйтесь напряму з власником.
       </p>
       <div class="flex flex-col sm:flex-row gap-4 justify-center">
-        <a href="real-estate-demo.html"
+        <a href="/"
            class="bg-yellow-400 hover:bg-yellow-300 text-blue-900 font-black text-lg px-10 py-4 rounded-2xl transition shadow-xl shadow-yellow-400/30">
           🏠 Переглянути об'єкти
         </a>
@@ -227,7 +227,7 @@
         </div>
       </div>
       <div class="text-center">
-        <a href="real-estate-demo.html"
+        <a href="/"
            class="inline-flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white font-bold px-10 py-4 rounded-2xl transition shadow-xl shadow-blue-200 text-lg">
           Переглянути всі 40+ об'єктів →
         </a>
@@ -265,7 +265,7 @@
             </ul>
           </div>
         </div>
-        <a href="real-estate-demo.html?eOselya=true"
+        <a href="/?eOselya=true"
            class="inline-flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white font-bold px-8 py-4 rounded-2xl transition">
           Знайти єОселя-об'єкти →
         </a>
@@ -306,7 +306,7 @@
       <h2 class="text-4xl md:text-5xl font-black mb-6">Спробуйте UA-Dim<br/>прямо зараз</h2>
       <p class="text-blue-100 text-lg mb-10">Безкоштовно. Без реєстрації для перегляду. Без ріелторів.</p>
       <div class="flex flex-col sm:flex-row gap-4 justify-center">
-        <a href="real-estate-demo.html"
+        <a href="/"
            class="bg-yellow-400 hover:bg-yellow-300 text-blue-900 font-black text-lg px-10 py-4 rounded-2xl transition shadow-xl">
           🏠 Відкрити застосунок
         </a>
@@ -330,7 +330,7 @@
         <span class="text-gray-500 text-sm">© 2026 · Нерухомість України</span>
       </div>
       <div class="flex flex-wrap justify-center gap-x-6 gap-y-3 text-sm">
-        <a href="real-estate-demo.html" class="hover:text-white transition">Застосунок</a>
+        <a href="/" class="hover:text-white transition">Застосунок</a>
         <a href="/privacy.html" class="hover:text-white transition">Конфіденційність</a>
         <a href="/terms.html" class="hover:text-white transition">Умови</a>
         <a href="/cookie-policy.html" class="hover:text-white transition">Cookies</a>
