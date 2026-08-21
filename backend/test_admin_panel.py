@@ -524,6 +524,129 @@ class AdminPanelTests(unittest.TestCase):
                 "leads/manage",
             )
 
+    def test_existing_agency_schema_migration_restores_timestamp_contract(self):
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute("DROP TABLE agency_profiles")
+            db.execute(
+                """
+                CREATE TABLE agency_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slug TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'agency',
+                    city TEXT NOT NULL,
+                    specialization TEXT NOT NULL DEFAULT '',
+                    is_verified INTEGER NOT NULL DEFAULT 0,
+                    avg_response_minutes INTEGER,
+                    team_size INTEGER,
+                    completed_deals INTEGER NOT NULL DEFAULT 0,
+                    last_verified_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            db.execute(
+                """
+                INSERT INTO agency_profiles (slug, name, city, created_at)
+                VALUES ('legacy-agency', 'Legacy Agency', 'Київ', '2024-01-02 03:04:05')
+                """
+            )
+            db.commit()
+
+        app_module.init_db()
+
+        with sqlite3.connect(TEST_DB) as db:
+            updated_at = next(
+                row
+                for row in db.execute("PRAGMA table_info(agency_profiles)")
+                if row[1] == "updated_at"
+            )
+            legacy_timestamps = db.execute(
+                "SELECT created_at, updated_at FROM agency_profiles"
+                " WHERE slug = 'legacy-agency'"
+            ).fetchone()
+        self.assertEqual(updated_at[3], 1)
+        self.assertEqual(updated_at[4], "datetime('now')")
+        self.assertEqual(
+            legacy_timestamps,
+            ("2024-01-02 03:04:05", "2024-01-02 03:04:05"),
+        )
+
+        for kind, path in (("agency", "agencies"), ("developer", "developers")):
+            slug = f"migrated-{kind}"
+            created = self.client.post(
+                f"/api/admin/{path}",
+                headers=self._auth(self.admin_token),
+                json={"slug": slug, "name": f"Migrated {kind}", "city": "Львів"},
+            )
+            self.assertEqual(created.status_code, 201, created.get_json())
+            detail = self.client.get(
+                f"/api/admin/{path}/{slug}",
+                headers=self._auth(self.admin_token),
+            )
+            self.assertEqual(detail.status_code, 200)
+            self.assertEqual(detail.get_json()[kind]["slug"], slug)
+
+        with sqlite3.connect(TEST_DB) as db:
+            migrated_rows = db.execute(
+                "SELECT kind, updated_at FROM agency_profiles"
+                " WHERE slug IN ('migrated-agency', 'migrated-developer')"
+                " ORDER BY kind"
+            ).fetchall()
+        self.assertEqual([row[0] for row in migrated_rows], ["agency", "developer"])
+        self.assertTrue(all(row[1] for row in migrated_rows))
+
+    def test_postgres_agency_migration_installs_default_before_not_null(self):
+        class RecordingCursor:
+            def __init__(self):
+                self.statements = []
+
+            def execute(self, statement):
+                self.statements.append(" ".join(statement.split()))
+
+        cursor = RecordingCursor()
+        app_module._migrate_postgres_agency_profiles(cursor)
+
+        self.assertIn(
+            "ADD COLUMN IF NOT EXISTS updated_at TEXT",
+            cursor.statements[0],
+        )
+        self.assertIn(
+            "updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)",
+            cursor.statements[1],
+        )
+        self.assertEqual(
+            cursor.statements[2],
+            "ALTER TABLE agency_profiles ALTER COLUMN updated_at"
+            " SET DEFAULT CURRENT_TIMESTAMP",
+        )
+        self.assertEqual(
+            cursor.statements[3],
+            "ALTER TABLE agency_profiles ALTER COLUMN updated_at SET NOT NULL",
+        )
+
+        class PostgresError(Exception):
+            def __init__(self, sqlstate):
+                self.sqlstate = sqlstate
+
+        self.assertTrue(app_module._is_db_unique_error(PostgresError("23505")))
+        self.assertFalse(app_module._is_db_unique_error(PostgresError("23502")))
+
+        sqlite_db = sqlite3.connect(":memory:")
+        sqlite_db.execute(
+            "CREATE TABLE constraints (slug TEXT UNIQUE, required TEXT NOT NULL)"
+        )
+        sqlite_db.execute("INSERT INTO constraints VALUES ('existing', 'value')")
+        with self.assertRaises(sqlite3.IntegrityError) as unique_error:
+            sqlite_db.execute(
+                "INSERT INTO constraints VALUES ('existing', 'other value')"
+            )
+        with self.assertRaises(sqlite3.IntegrityError) as not_null_error:
+            sqlite_db.execute("INSERT INTO constraints VALUES ('new', NULL)")
+        sqlite_db.close()
+        self.assertTrue(app_module._is_db_unique_error(unique_error.exception))
+        self.assertFalse(app_module._is_db_unique_error(not_null_error.exception))
+
     def test_developer_lifecycle_filters_concurrency_rbac_and_audit(self):
         forbidden_request_id = "moderator-developer-forbidden"
         forbidden = self.client.post(

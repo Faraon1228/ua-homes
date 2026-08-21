@@ -740,7 +740,42 @@ def _is_db_integrity_error(exc: Exception) -> bool:
     return pgcode in {"23505", "23503", "23502"} or sqlstate in {"23505", "23503", "23502"}
 
 
+def _is_db_unique_error(exc: Exception) -> bool:
+    if isinstance(exc, sqlite3.IntegrityError):
+        return (
+            getattr(exc, "sqlite_errorcode", None) in {1555, 2067}
+            or str(exc).startswith("UNIQUE constraint failed:")
+        )
+    return getattr(exc, "pgcode", None) == "23505" or getattr(exc, "sqlstate", None) == "23505"
+
+
 _PG_MIGRATION_LOCK_ID = 8_140_713_559_001
+
+
+def _migrate_postgres_agency_profiles(cur) -> None:
+    cur.execute("""
+        ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+        ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS updated_at TEXT;
+    """)
+    cur.execute(
+        """
+        UPDATE agency_profiles
+        SET status = CASE WHEN status IN ('active', 'suspended') THEN status ELSE 'active' END,
+            revision = CASE WHEN revision > 0 THEN revision ELSE 1 END,
+            updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)
+        """
+    )
+    cur.execute(
+        "ALTER TABLE agency_profiles ALTER COLUMN updated_at SET DEFAULT CURRENT_TIMESTAMP"
+    )
+    cur.execute(
+        "ALTER TABLE agency_profiles ALTER COLUMN updated_at SET NOT NULL"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agency_profiles_kind_status"
+        " ON agency_profiles(kind, status)"
+    )
 
 
 def _init_postgres_db():
@@ -1157,25 +1192,8 @@ def _init_postgres_db():
             ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS response_message TEXT;
             ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS responded_at TEXT;
             ALTER TABLE listing_alerts ADD COLUMN IF NOT EXISTS last_sent_listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL;
-            ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
-            ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1;
-            ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS updated_at TEXT;
         """)
-        cur.execute(
-            f"""
-            UPDATE agency_profiles
-            SET status = CASE WHEN status IN ('active', 'suspended') THEN status ELSE 'active' END,
-                revision = CASE WHEN revision > 0 THEN revision ELSE 1 END,
-                updated_at = COALESCE(updated_at, created_at, {db_now_expr()})
-            """
-        )
-        cur.execute(
-            "ALTER TABLE agency_profiles ALTER COLUMN updated_at SET NOT NULL"
-        )
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_agency_profiles_kind_status"
-            " ON agency_profiles(kind, status)"
-        )
+        _migrate_postgres_agency_profiles(cur)
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_lead_requests_listing_status
                 ON lead_requests(listing_id, status, created_at DESC);
@@ -2428,6 +2446,71 @@ def _reporter_fingerprint(identity: str) -> str:
     return hmac.new(SECRET_KEY.encode("utf-8"), material, hashlib.sha256).hexdigest()
 
 
+def _ensure_sqlite_agency_updated_at_contract(db) -> None:
+    updated_at_column = next(
+        (
+            row
+            for row in db.execute("PRAGMA table_info(agency_profiles)").fetchall()
+            if row[1] == "updated_at"
+        ),
+        None,
+    )
+    if (
+        updated_at_column
+        and updated_at_column[3] == 1
+        and updated_at_column[4] == "datetime('now')"
+    ):
+        return
+
+    db.execute("DROP TABLE IF EXISTS agency_profiles_updated_at_migration")
+    db.execute(
+        """
+        CREATE TABLE agency_profiles_updated_at_migration (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug                  TEXT    NOT NULL UNIQUE,
+            name                  TEXT    NOT NULL,
+            kind                  TEXT    NOT NULL DEFAULT 'agency',
+            city                  TEXT    NOT NULL,
+            specialization        TEXT    NOT NULL DEFAULT '',
+            is_verified           INTEGER NOT NULL DEFAULT 0,
+            status                TEXT    NOT NULL DEFAULT 'active',
+            avg_response_minutes  INTEGER,
+            team_size             INTEGER,
+            completed_deals       INTEGER NOT NULL DEFAULT 0,
+            last_verified_at      TEXT,
+            revision              INTEGER NOT NULL DEFAULT 1,
+            created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+            updated_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO agency_profiles_updated_at_migration (
+            id, slug, name, kind, city, specialization, is_verified, status,
+            avg_response_minutes, team_size, completed_deals, last_verified_at,
+            revision, created_at, updated_at
+        )
+        SELECT
+            id, slug, name, kind, city, specialization, is_verified, status,
+            avg_response_minutes, team_size, completed_deals, last_verified_at,
+            revision, created_at, updated_at
+        FROM agency_profiles
+        """
+    )
+    db.execute("DROP TABLE agency_profiles")
+    db.execute(
+        "ALTER TABLE agency_profiles_updated_at_migration RENAME TO agency_profiles"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agency_profiles_verified"
+        " ON agency_profiles(is_verified)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agency_profiles_city ON agency_profiles(city)"
+    )
+
+
 def init_db():
     if _is_postgres():
         _init_postgres_db()
@@ -3012,6 +3095,7 @@ def init_db():
             updated_at = COALESCE(updated_at, created_at, {now_expr})
         """
     )
+    _ensure_sqlite_agency_updated_at_contract(db)
     db.execute(
         "CREATE INDEX IF NOT EXISTS idx_agency_profiles_kind_status"
         " ON agency_profiles(kind, status)"

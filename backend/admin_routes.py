@@ -2299,7 +2299,7 @@ def _expected_revision(data):
 
 
 def _admin_create_organization(kind):
-    from app import _is_db_integrity_error, get_db
+    from app import _is_db_unique_error, get_db
 
     try:
         values = _validate_organization_payload(
@@ -2329,7 +2329,7 @@ def _admin_create_organization(kind):
             ),
         )
     except Exception as exc:
-        if not _is_db_integrity_error(exc):
+        if not _is_db_unique_error(exc):
             raise
         db.rollback()
         return jsonify(error="Organization slug already exists"), 409
