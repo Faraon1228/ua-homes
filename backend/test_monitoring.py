@@ -38,6 +38,7 @@ class MonitoringTest(unittest.TestCase):
             self.assertEqual(options["traces_sample_rate"], 0.01)
             self.assertEqual(options["profiles_sample_rate"], 0.0)
             self.assertFalse(options["send_default_pii"])
+            self.assertFalse(options["include_local_variables"])
             self.assertIs(options["before_send"], monitoring.before_send)
 
     def test_expected_http_failures_are_filtered(self):
@@ -70,6 +71,25 @@ class MonitoringTest(unittest.TestCase):
                 },
             },
             "extra": {"upload_url": "signed", "attempt": 2},
+            "exception": {
+                "values": [
+                    {
+                        "type": "RuntimeError",
+                        "value": "database connection failed",
+                        "stacktrace": {
+                            "frames": [
+                                {
+                                    "function": "create_listing",
+                                    "vars": {
+                                        "password": "secret",
+                                        "email": "person@example.test",
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
         }
         result = monitoring.before_send(event, None)
         self.assertEqual(result["message"], "database connection failed")
@@ -81,6 +101,10 @@ class MonitoringTest(unittest.TestCase):
         self.assertEqual(result["request"]["data"]["password"], "[Filtered]")
         self.assertEqual(result["request"]["data"]["title"], "safe listing title")
         self.assertEqual(result["extra"]["upload_url"], "[Filtered]")
+        self.assertNotIn(
+            "vars",
+            result["exception"]["values"][0]["stacktrace"]["frames"][0],
+        )
 
     def test_health_transactions_are_not_sampled(self):
         self.assertIsNone(

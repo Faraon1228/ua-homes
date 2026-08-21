@@ -1,7 +1,5 @@
 // ignore_for_file: experimental_member_use
 
-import 'dart:convert';
-
 import 'package:flutter/widgets.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
@@ -67,6 +65,19 @@ String sanitizeSentryText(String value) =>
 bool isExpectedSentryFailure(Object? value) =>
     _expectedFailure.hasMatch(value?.toString() ?? '');
 
+bool _isExpectedSentryEvent(SentryEvent event) {
+  if (isExpectedSentryFailure(event.throwable) ||
+      isExpectedSentryFailure(event.message?.formatted)) {
+    return true;
+  }
+  return event.exceptions?.any(
+        (exception) =>
+            isExpectedSentryFailure(exception.type) ||
+            isExpectedSentryFailure(exception.value),
+      ) ??
+      false;
+}
+
 Breadcrumb? filterSentryBreadcrumb(Breadcrumb? breadcrumb, Hint _) {
   if (breadcrumb == null) return null;
   final category = (breadcrumb.category ?? '').toLowerCase();
@@ -83,9 +94,7 @@ Breadcrumb? filterSentryBreadcrumb(Breadcrumb? breadcrumb, Hint _) {
 }
 
 SentryEvent? filterSentryEvent(SentryEvent event, Hint hint) {
-  final serialized = jsonEncode(event.toJson());
-  if (isExpectedSentryFailure(event.throwable) ||
-      _expectedFailure.hasMatch(serialized)) {
+  if (_isExpectedSentryEvent(event)) {
     return null;
   }
 

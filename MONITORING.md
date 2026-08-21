@@ -23,7 +23,7 @@ Flutter release jobs pass the DSN, environment, release SHA, traces, and profile
 
 ## Privacy and noise policy
 
-The backend and browsers discard expected authentication, authorization, validation, rate-limit and other 4xx failures. Browser/mobile offline and ordinary network failures are discarded. Authorization/CSRF/cookies and password/token/phone/email/message/upload/contact/location fields are removed or replaced before send; users, request bodies and query strings are not sent. Request IDs, safe route templates, environment and release remain for diagnosis. Traces default to 1%; profiling defaults to off.
+The backend and browsers discard expected authentication, authorization, validation, rate-limit and other 4xx failures. Browser/mobile offline and ordinary network failures are discarded. Authorization/CSRF/cookies and password/token/phone/email/message/upload/contact/location fields are removed or replaced before send; users, request bodies, query strings, and backend stack-frame local variables are not sent. Request IDs, safe route templates, environment and release remain for diagnosis. Traces default to 1%; profiling defaults to off.
 
 ## Rollout, verification, and rollback
 

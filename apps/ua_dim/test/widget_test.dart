@@ -106,6 +106,49 @@ void main() {
     expect(safe?.message, 'resumed');
     expect(safe?.data, isNull);
   });
+
+  test('Sentry expected-error filtering only inspects error diagnostics', () {
+    final crash = SentryEvent(
+      throwable: StateError('Null check operator used on a null value'),
+      exceptions: [
+        SentryException(
+          type: 'StateError',
+          value: 'Null check operator used on a null value',
+        ),
+      ],
+      breadcrumbs: [
+        Breadcrumb(
+          category: 'app.lifecycle',
+          message: 'validation completed before crash',
+        ),
+      ],
+    );
+    final retained = filterSentryEvent(crash, Hint());
+    expect(retained, same(crash));
+    expect(retained?.breadcrumbs?.single.message, contains('validation'));
+
+    expect(
+      filterSentryEvent(
+        SentryEvent(
+          exceptions: [
+            SentryException(
+              type: 'ValidationError',
+              value: 'Listing validation failed',
+            ),
+          ],
+        ),
+        Hint(),
+      ),
+      isNull,
+    );
+    expect(
+      filterSentryEvent(
+        SentryEvent(throwable: Exception('Unauthorized request')),
+        Hint(),
+      ),
+      isNull,
+    );
+  });
 }
 
 // Monitoring configuration is tested without initializing a transport or using a

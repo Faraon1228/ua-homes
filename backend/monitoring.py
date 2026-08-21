@@ -127,11 +127,33 @@ def _is_expected_event(event: Mapping[str, Any], hint: Mapping[str, Any] | None)
     )
 
 
+def _strip_exception_frame_vars(event: Mapping[str, Any]) -> None:
+    exception = event.get("exception")
+    if not isinstance(exception, Mapping):
+        return
+    values = exception.get("values")
+    if not isinstance(values, list):
+        return
+    for value in values:
+        if not isinstance(value, Mapping):
+            continue
+        stacktrace = value.get("stacktrace")
+        if not isinstance(stacktrace, Mapping):
+            continue
+        frames = stacktrace.get("frames")
+        if not isinstance(frames, list):
+            continue
+        for frame in frames:
+            if isinstance(frame, dict):
+                frame.pop("vars", None)
+
+
 def before_send(event: dict[str, Any], hint: dict[str, Any] | None) -> dict[str, Any] | None:
     """Drop expected client failures and remove request/user PII."""
     if _is_expected_event(event, hint):
         return None
 
+    _strip_exception_frame_vars(event)
     event.pop("user", None)
     request = event.get("request")
     if isinstance(request, dict):
@@ -201,6 +223,7 @@ def initialize_sentry() -> bool:
         release=os.environ.get("SENTRY_RELEASE") or os.environ.get("RAILWAY_GIT_COMMIT_SHA") or None,
         integrations=[FlaskIntegration(transaction_style="url")],
         send_default_pii=False,
+        include_local_variables=False,
         traces_sample_rate=_sample_rate("SENTRY_TRACES_SAMPLE_RATE", 0.01),
         profiles_sample_rate=_sample_rate("SENTRY_PROFILES_SAMPLE_RATE", 0.0),
         before_send=before_send,
