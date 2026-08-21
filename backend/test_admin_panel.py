@@ -2,6 +2,7 @@ import importlib
 import os
 import sqlite3
 import unittest
+from unittest import mock
 
 import bcrypt
 
@@ -596,7 +597,7 @@ class AdminPanelTests(unittest.TestCase):
         self.assertEqual([row[0] for row in migrated_rows], ["agency", "developer"])
         self.assertTrue(all(row[1] for row in migrated_rows))
 
-    def test_postgres_agency_migration_installs_default_before_not_null(self):
+    def test_postgres_agency_migration_uses_text_timestamps_idempotently(self):
         class RecordingCursor:
             def __init__(self):
                 self.statements = []
@@ -605,25 +606,27 @@ class AdminPanelTests(unittest.TestCase):
                 self.statements.append(" ".join(statement.split()))
 
         cursor = RecordingCursor()
-        app_module._migrate_postgres_agency_profiles(cursor)
+        with mock.patch.object(app_module, "_is_postgres", return_value=True):
+            app_module._migrate_postgres_agency_profiles(cursor)
+            app_module._migrate_postgres_agency_profiles(cursor)
 
-        self.assertIn(
-            "ADD COLUMN IF NOT EXISTS updated_at TEXT",
-            cursor.statements[0],
-        )
-        self.assertIn(
-            "updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)",
-            cursor.statements[1],
-        )
-        self.assertEqual(
-            cursor.statements[2],
+        expected_statements = [
+            "ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS status TEXT"
+            " NOT NULL DEFAULT 'active'; ALTER TABLE agency_profiles ADD COLUMN"
+            " IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1; ALTER TABLE"
+            " agency_profiles ADD COLUMN IF NOT EXISTS updated_at TEXT;",
+            "UPDATE agency_profiles SET status = CASE WHEN status IN ('active',"
+            " 'suspended') THEN status ELSE 'active' END, revision = CASE WHEN"
+            " revision > 0 THEN revision ELSE 1 END, updated_at ="
+            " COALESCE(updated_at, created_at, CAST(CURRENT_TIMESTAMP AS TEXT))",
             "ALTER TABLE agency_profiles ALTER COLUMN updated_at"
-            " SET DEFAULT CURRENT_TIMESTAMP",
-        )
-        self.assertEqual(
-            cursor.statements[3],
+            " SET DEFAULT CAST(CURRENT_TIMESTAMP AS TEXT)",
             "ALTER TABLE agency_profiles ALTER COLUMN updated_at SET NOT NULL",
-        )
+            "CREATE INDEX IF NOT EXISTS idx_agency_profiles_kind_status"
+            " ON agency_profiles(kind, status)",
+        ]
+        self.assertEqual(cursor.statements[:5], expected_statements)
+        self.assertEqual(cursor.statements[5:], expected_statements)
 
         class PostgresError(Exception):
             def __init__(self, sqlstate):

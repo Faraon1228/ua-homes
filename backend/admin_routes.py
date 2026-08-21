@@ -2340,7 +2340,7 @@ def _admin_create_organization(kind):
 
 
 def _admin_update_organization(slug, kind):
-    from app import db_now_expr, get_db
+    from app import db_text_timestamp_expr, get_db
 
     data = request.get_json(silent=True)
     try:
@@ -2369,7 +2369,7 @@ def _admin_update_organization(slug, kind):
     if values.get("status") == "suspended":
         assignments.extend(["is_verified = 0", "last_verified_at = NULL"])
     assignments.extend([
-        f"updated_at = {db_now_expr()}",
+        f"updated_at = {db_text_timestamp_expr()}",
         "revision = revision + 1",
     ])
     transition = db.execute(
@@ -2388,7 +2388,7 @@ def _admin_update_organization(slug, kind):
 
 
 def _admin_verify_organization(slug, kind):
-    from app import db_now_expr, get_db
+    from app import db_text_timestamp_expr, get_db
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or not isinstance(data.get("verified"), bool):
@@ -2415,8 +2415,8 @@ def _admin_verify_organization(slug, kind):
         f"""
         UPDATE agency_profiles
         SET is_verified = ?,
-            last_verified_at = CASE WHEN ? = 1 THEN {db_now_expr()} ELSE NULL END,
-            updated_at = {db_now_expr()},
+            last_verified_at = CASE WHEN ? = 1 THEN {db_text_timestamp_expr()} ELSE NULL END,
+            updated_at = {db_text_timestamp_expr()},
             revision = revision + 1
         WHERE slug = ? AND kind = ? AND revision = ?
         """,

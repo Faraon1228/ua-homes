@@ -753,21 +753,23 @@ _PG_MIGRATION_LOCK_ID = 8_140_713_559_001
 
 
 def _migrate_postgres_agency_profiles(cur) -> None:
+    text_now_expr = db_text_timestamp_expr()
     cur.execute("""
         ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
         ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1;
         ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS updated_at TEXT;
     """)
     cur.execute(
-        """
+        f"""
         UPDATE agency_profiles
         SET status = CASE WHEN status IN ('active', 'suspended') THEN status ELSE 'active' END,
             revision = CASE WHEN revision > 0 THEN revision ELSE 1 END,
-            updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)
+            updated_at = COALESCE(updated_at, created_at, {text_now_expr})
         """
     )
     cur.execute(
-        "ALTER TABLE agency_profiles ALTER COLUMN updated_at SET DEFAULT CURRENT_TIMESTAMP"
+        "ALTER TABLE agency_profiles ALTER COLUMN updated_at"
+        f" SET DEFAULT {text_now_expr}"
     )
     cur.execute(
         "ALTER TABLE agency_profiles ALTER COLUMN updated_at SET NOT NULL"
@@ -1033,8 +1035,8 @@ def _init_postgres_db():
                 completed_deals       INTEGER NOT NULL DEFAULT 0,
                 last_verified_at      TEXT,
                 revision              INTEGER NOT NULL DEFAULT 1,
-                created_at            TEXT    NOT NULL DEFAULT ({db_now_expr()}),
-                updated_at            TEXT    NOT NULL DEFAULT ({db_now_expr()})
+                created_at            TEXT    NOT NULL DEFAULT ({db_text_timestamp_expr()}),
+                updated_at            TEXT    NOT NULL DEFAULT ({db_text_timestamp_expr()})
             );
 
             CREATE TABLE IF NOT EXISTS premium_orders (
