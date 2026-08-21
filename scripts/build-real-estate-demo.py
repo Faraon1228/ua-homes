@@ -51,6 +51,10 @@ for monitoring_path in monitoring_paths:
         raise SystemExit(f'Missing file: {monitoring_path}')
     content = monitoring_path.read_text(encoding='utf-8')
     for placeholder, value in monitoring_values.items():
+        # Keep an absent DSN as its inert placeholder so deterministic disabled
+        # builds remain testable; the bootstrap rejects placeholder values.
+        if placeholder.endswith('_DSN__') and not value:
+            continue
         content = content.replace(json.dumps(placeholder), json.dumps(value))
     monitoring_path.write_text(content, encoding='utf-8')
 print('Prepared optional browser monitoring configuration (DSN values not displayed)')
