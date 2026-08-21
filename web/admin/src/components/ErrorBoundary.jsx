@@ -11,6 +11,10 @@ export class ErrorBoundary extends React.Component {
     return { failed: true };
   }
 
+  componentDidCatch(error, info) {
+    window.uaSentryCaptureException?.(error, { component_stack: info.componentStack });
+  }
+
   componentDidUpdate(prevProps) {
     if (this.state.failed && prevProps.resetKey !== this.props.resetKey) {
       this.setState({ failed: false });

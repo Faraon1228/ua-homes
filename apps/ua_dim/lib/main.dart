@@ -1,21 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:sentry_flutter/sentry_flutter.dart';
 
+import 'monitoring/sentry_monitoring.dart';
 import 'screens/ua_dim_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  const dsn = String.fromEnvironment('UA_DIM_SENTRY_DSN');
-  if (dsn.isEmpty) {
-    runApp(const UaDimApp());
-    return;
-  }
-  await SentryFlutter.init((options) {
-    options
-      ..dsn = dsn
-      ..tracesSampleRate = 0.1
-      ..sendDefaultPii = false;
-  }, appRunner: () => runApp(SentryWidget(child: const UaDimApp())));
+  // SentryFlutter installs FlutterError, PlatformDispatcher and guarded-zone
+  // integrations. With no dart-define DSN the same app starts without an SDK.
+  await runUaDimApp(const UaDimApp());
 }
 
 class UaDimApp extends StatelessWidget {

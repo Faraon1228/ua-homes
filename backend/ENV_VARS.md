@@ -88,13 +88,16 @@ listing reports, and audit reads.
 | Variable | Description | Default |
 |---|---|---|
 | `SENTRY_DSN` | Backend Sentry project DSN; enables Flask errors and traces | disabled |
-| `SENTRY_TRACES_SAMPLE_RATE` | Fraction of backend requests recorded as performance traces (`0..1`) | `0.1` |
+| `SENTRY_ENVIRONMENT` | Explicit deployment environment tag | Railway environment or `development` |
+| `SENTRY_RELEASE` | Release identifier; Railway commit SHA is the fallback | unset |
+| `SENTRY_TRACES_SAMPLE_RATE` | Fraction of backend requests recorded as performance traces (`0..1`) | `0.01` |
+| `SENTRY_PROFILES_SAMPLE_RATE` | Fraction of traced requests profiled (`0..1`) | `0` |
 
 Every media upload and lead request emits a structured JSON log with request ID,
 route, status, database engine, and API duration. All 5xx responses and requests
 slower than one second are logged as well. Responses expose `Server-Timing` and
 `X-Response-Time-Ms`; `/api/health` reports database engine, storage, distributed
-rate-limit, and error-monitoring readiness without exposing credentials.
+rate-limit, and error-monitoring readiness without exposing credentials. See `MONITORING.md` for project credentials, privacy filters, rollout, safe verification, and rollback.
 
 ## Rate limiting
 

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:ua_dim/main.dart';
+import 'package:ua_dim/monitoring/sentry_monitoring.dart';
 import 'package:ua_dim/screens/ua_dim_screen.dart';
 
 void main() {
@@ -58,4 +60,53 @@ void main() {
     expect(isJavaScriptTrue('false'), isFalse);
     expect(isJavaScriptTrue(null), isFalse);
   });
+  test('Sentry configuration is disabled without a DSN', () {
+    const config = UaDimSentryConfig(
+      dsn: '',
+      environment: 'test',
+      release: 'test-release',
+      tracesSampleRate: 0.01,
+      profilesSampleRate: 0,
+    );
+    expect(config.enabled, isFalse);
+    expect(parseSentrySampleRate('invalid', 0.01), 0.01);
+    expect(parseSentrySampleRate('2', 0.01), 0.01);
+  });
+
+  test('Sentry enabled configuration and privacy filters are conservative', () {
+    const config = UaDimSentryConfig(
+      dsn: 'https://public@example.ingest.sentry.io/1',
+      environment: 'test',
+      release: 'test-release',
+      tracesSampleRate: 0.01,
+      profilesSampleRate: 0,
+    );
+    expect(config.enabled, isTrue);
+    expect(config.tracesSampleRate, 0.01);
+    expect(config.profilesSampleRate, 0);
+    expect(sanitizeSentryText('private@example.test'), '[Filtered]');
+    expect(
+      isExpectedSentryFailure(Exception('SocketException: offline')),
+      isTrue,
+    );
+    expect(
+      filterSentryBreadcrumb(
+        Breadcrumb.http(
+          url: Uri.parse('https://ua-dim.com/listing/1?token=x'),
+          method: 'GET',
+        ),
+        Hint(),
+      ),
+      isNull,
+    );
+    final safe = filterSentryBreadcrumb(
+      Breadcrumb(category: 'app.lifecycle', message: 'resumed'),
+      Hint(),
+    );
+    expect(safe?.message, 'resumed');
+    expect(safe?.data, isNull);
+  });
 }
+
+// Monitoring configuration is tested without initializing a transport or using a
+// real DSN, keeping verification safe and deterministic.

@@ -12,6 +12,32 @@ const LazyListingsMapView = React.lazy(() =>
 );
 const LazyTrustDialog = React.lazy(() => import("./features/TrustDialog.jsx"));
 
+class RootErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error, info) {
+    window.uaSentryCaptureException?.(error, { component_stack: info.componentStack });
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <p role="alert" className="m-6 rounded-2xl bg-rose-50 p-5 font-bold text-rose-800">
+          Не вдалося відкрити застосунок. Оновіть сторінку та спробуйте ще раз.
+        </p>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 class LazyFeatureBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -5654,7 +5680,9 @@ if (typeof document !== "undefined") {
     const renderApp = () => {
       if (root.dataset.mounted === "true") return;
       root.dataset.mounted = "true";
-      window.ReactDOM.createRoot(root).render(React.createElement(RealEstateApp));
+      window.ReactDOM.createRoot(root).render(
+        React.createElement(RootErrorBoundary, null, React.createElement(RealEstateApp)),
+      );
     };
     const sellerPage =
       /^\/seller\/?$/.test(window.location.pathname) ||
