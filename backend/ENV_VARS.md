@@ -66,9 +66,22 @@ python3 backend/operations_backup.py restore-drill --database backup.sqlite3
 ```
 
 `Monitor production health` runs every 15 minutes against backend readiness,
-the public listings API, and the seller frontend. It checks three-second API
-latency thresholds and optionally enforces `UA_HOMES_DATABASE_ENGINE`. It opens a
-single GitHub issue when checks fail and closes that issue after recovery.
+the public listings API, the seller frontend, and the admin login shell when the
+repository variable `UA_HOMES_ADMIN_URL` is configured. It checks three-second
+API latency thresholds and optionally enforces `UA_HOMES_DATABASE_ENGINE`. It
+opens a single GitHub issue when checks fail and closes that issue after recovery.
+
+## Staff access
+
+The admin site uses the same-origin `/api` proxy. Staff sessions are short-lived
+HttpOnly cookies protected by origin and CSRF checks; do not store staff tokens
+or operations keys in browser storage. The configured bootstrap credentials
+create the first administrator only and never reset an existing account.
+
+Platform roles are `admin` and `moderator`. Administrators manage users,
+agencies, requests, system health, and destructive listing operations.
+Moderators are limited to dashboard/listing reads, moderation, verification,
+listing reports, and audit reads.
 
 ## Backend observability
 

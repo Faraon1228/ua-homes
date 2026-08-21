@@ -37,6 +37,7 @@ TABLE_ORDER = [
     "premium_orders",
     "listing_reports",
     "listing_change_history",
+    "admin_audit_log",
 ]
 
 

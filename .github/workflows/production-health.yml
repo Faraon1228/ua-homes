@@ -20,6 +20,7 @@ jobs:
     env:
       BACKEND_URL: https://backend-production-51964.up.railway.app
       SELLER_URL: https://ua-dim.com/seller
+      ADMIN_URL: ${{ vars.UA_HOMES_ADMIN_URL }}
       EXPECTED_DATABASE_ENGINE: ${{ vars.UA_HOMES_DATABASE_ENGINE }}
     steps:
       - name: Check production services
@@ -81,6 +82,21 @@ jobs:
           else
             echo "FAIL seller frontend" | tee -a health-report.txt
             failures=1
+          fi
+
+          if [ -n "$ADMIN_URL" ]; then
+             if curl --fail --silent --show-error --max-time 20 \
+               "$ADMIN_URL/login.html" \
+               --output admin-login.html &&
+               grep -Fq 'data-admin-login' admin-login.html
+             then
+               echo "OK admin frontend" | tee -a health-report.txt
+             else
+               echo "FAIL admin frontend" | tee -a health-report.txt
+               failures=1
+             fi
+          else
+             echo "SKIP admin frontend (UA_HOMES_ADMIN_URL is not configured)" | tee -a health-report.txt
           fi
 
           cat health-report.txt >> "$GITHUB_STEP_SUMMARY"

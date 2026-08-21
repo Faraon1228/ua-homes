@@ -39,6 +39,7 @@ class TrustFeatureTests(unittest.TestCase):
         with sqlite3.connect(TEST_DB) as db:
             db.execute("PRAGMA foreign_keys=ON")
             for table in (
+                "admin_audit_log",
                 "client_observability_events",
                 "lead_funnel_events",
                 "lead_requests",
@@ -100,7 +101,10 @@ class TrustFeatureTests(unittest.TestCase):
                     " AND name NOT LIKE 'listings_fts%'"
                 )
             }
-        self.assertEqual(set(postgres_migration.TABLE_ORDER), application_tables)
+        self.assertEqual(
+            set(postgres_migration.TABLE_ORDER),
+            application_tables,
+        )
         self.assertEqual(
             postgres_migration.normalize_value("users", "email", " Admin@Example.COM "),
             "admin@example.com",
