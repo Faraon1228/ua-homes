@@ -1,13 +1,44 @@
 import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest import mock
 
 from werkzeug.exceptions import BadRequest, TooManyRequests
 
-from backend import monitoring
+if __package__:
+    from . import monitoring
+else:
+    import monitoring
 
 
 class MonitoringTest(unittest.TestCase):
+    def test_app_imports_from_railway_backend_service_root(self):
+        backend_dir = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory(dir=backend_dir) as test_dir:
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PYTHONPATH": str(backend_dir),
+                    "UA_HOMES_DB_PATH": str(Path(test_dir) / "startup.db"),
+                    "UA_HOMES_SECRET": "railway-startup-test-secret-at-least-32-bytes",
+                }
+            )
+            environment.pop("DATABASE_URL", None)
+            environment.pop("SENTRY_DSN", None)
+            result = subprocess.run(
+                [sys.executable, "-c", "import app"],
+                cwd=backend_dir,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_missing_dsn_is_disabled_and_healthy(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertFalse(monitoring.initialize_sentry())
