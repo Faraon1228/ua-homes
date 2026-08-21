@@ -106,6 +106,7 @@ class AdminPanelTests(unittest.TestCase):
             "/api/admin/users",
             "/api/admin/leads",
             "/api/admin/agencies",
+            "/api/admin/developers",
             "/api/admin/system/health",
         ):
             self.assertEqual(
@@ -267,14 +268,30 @@ class AdminPanelTests(unittest.TestCase):
         self.assertIn('"order"', translated_sql)
 
         with sqlite3.connect(TEST_DB) as db:
-            db.execute(
+            db.executemany(
                 """
                 INSERT INTO listing_images (listing_id, image_url, "order")
                 VALUES (?, ?, ?)
                 """,
-                (self.listing_id, "https://cdn.example.test/listing.jpg", 3),
+                (
+                    (self.listing_id, "https://cdn.example.test/listing.jpg", 3),
+                    (self.listing_id, "https://cdn.example.test/first.jpg", 1),
+                ),
             )
             db.commit()
+
+        detail = self.client.get(
+            f"/api/admin/listings/{self.listing_id}",
+            headers=self._auth(self.admin_token),
+        )
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(
+            [image["image_url"] for image in detail.get_json()["listing"]["images"]],
+            [
+                "https://cdn.example.test/first.jpg",
+                "https://cdn.example.test/listing.jpg",
+            ],
+        )
 
         response = self.client.post(
             f"/api/admin/listings/{self.listing_id}/duplicate",
@@ -288,18 +305,22 @@ class AdminPanelTests(unittest.TestCase):
                 "SELECT title, status FROM listings WHERE id = ?",
                 (duplicate_id,),
             ).fetchone()
-            copied_image = db.execute(
+            copied_images = db.execute(
                 """
                 SELECT image_url, "order"
                 FROM listing_images
                 WHERE listing_id = ?
+                ORDER BY "order"
                 """,
                 (duplicate_id,),
-            ).fetchone()
+            ).fetchall()
         self.assertEqual(duplicate, ("Panel listing (Copy)", "draft"))
         self.assertEqual(
-            copied_image,
-            ("https://cdn.example.test/listing.jpg", 3),
+            copied_images,
+            [
+                ("https://cdn.example.test/first.jpg", 1),
+                ("https://cdn.example.test/listing.jpg", 3),
+            ],
         )
 
     def test_report_contract_redaction_transition_and_transactional_audit(self):
@@ -418,10 +439,39 @@ class AdminPanelTests(unittest.TestCase):
             ).status_code,
             403,
         )
+        forbidden_lead_update = self.client.patch(
+            f"/api/admin/leads/{lead_id}",
+            headers={
+                **self._auth(self.moderator_token),
+                "X-Request-ID": "moderator-lead-update",
+            },
+            json={"status": "closed"},
+        )
+        self.assertEqual(forbidden_lead_update.status_code, 403)
         lead = self.client.get(
             f"/api/admin/leads/{lead_id}", headers=self._auth(self.admin_token)
         ).get_json()["lead"]
         self.assertEqual(lead["phone"], "+380501234567")
+        lead_updated = self.client.patch(
+            f"/api/admin/leads/{lead_id}",
+            headers={
+                **self._auth(self.admin_token),
+                "X-Request-ID": "admin-lead-update",
+            },
+            json={
+                "status": "responded",
+                "response_message": "Зателефонуємо сьогодні",
+            },
+        )
+        self.assertEqual(lead_updated.status_code, 200)
+        persisted_lead = self.client.get(
+            f"/api/admin/leads/{lead_id}", headers=self._auth(self.admin_token)
+        ).get_json()["lead"]
+        self.assertEqual(persisted_lead["status"], "responded")
+        self.assertEqual(
+            persisted_lead["response_message"],
+            "Зателефонуємо сьогодні",
+        )
         created = self.client.post(
             "/api/admin/agencies",
             headers=self._auth(self.admin_token),
@@ -437,10 +487,11 @@ class AdminPanelTests(unittest.TestCase):
             },
         )
         self.assertEqual(created.status_code, 201)
+        revision = created.get_json()["revision"]
         verified = self.client.post(
             "/api/admin/agencies/panel-agency/verify",
             headers=self._auth(self.admin_token),
-            json={"verified": True},
+            json={"verified": True, "revision": revision},
         )
         self.assertEqual(verified.status_code, 200)
         agency = self.client.get(
@@ -451,6 +502,307 @@ class AdminPanelTests(unittest.TestCase):
         self.assertEqual(agency["avg_response_minutes"], 18)
         self.assertEqual(agency["team_size"], 7)
         self.assertEqual(agency["completed_deals"], 43)
+        self.assertEqual(agency["revision"], 2)
+        with sqlite3.connect(TEST_DB) as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT status, response_message FROM lead_requests WHERE id = ?",
+                    (lead_id,),
+                ).fetchone(),
+                ("responded", "Зателефонуємо сьогодні"),
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT COUNT(*) FROM admin_audit_log WHERE request_id = 'moderator-lead-update'"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT permission FROM admin_audit_log WHERE request_id = 'admin-lead-update'"
+                ).fetchone()[0],
+                "leads/manage",
+            )
+
+    def test_developer_lifecycle_filters_concurrency_rbac_and_audit(self):
+        forbidden_request_id = "moderator-developer-forbidden"
+        forbidden = self.client.post(
+            "/api/admin/developers",
+            headers={
+                **self._auth(self.moderator_token),
+                "X-Request-ID": forbidden_request_id,
+            },
+            json={
+                "slug": "forbidden-builder",
+                "name": "Forbidden Builder",
+                "city": "Київ",
+            },
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        created = self.client.post(
+            "/api/admin/developers",
+            headers={
+                **self._auth(self.admin_token),
+                "X-Request-ID": "developer-create",
+            },
+            json={
+                "slug": "north-star-build",
+                "name": "North Star Build",
+                "kind": "agency",
+                "city": "Львів",
+                "specialization": "Житлові комплекси",
+                "avg_response_minutes": 25,
+                "team_size": 12,
+                "completed_deals": 90,
+            },
+        )
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.get_json()["revision"], 1)
+
+        listed = self.client.get(
+            "/api/admin/developers?search=North&status=active&verified=false",
+            headers=self._auth(self.admin_token),
+        )
+        self.assertEqual(listed.status_code, 200)
+        developers = listed.get_json()["developers"]
+        self.assertEqual(len(developers), 1)
+        self.assertEqual(developers[0]["kind"], "developer")
+        self.assertEqual(developers[0]["revision"], 1)
+        self.assertEqual(
+            self.client.get(
+                "/api/admin/agencies?search=North",
+                headers=self._auth(self.admin_token),
+            ).get_json()["total"],
+            0,
+        )
+
+        updated = self.client.patch(
+            "/api/admin/developers/north-star-build",
+            headers={
+                **self._auth(self.admin_token),
+                "X-Request-ID": "developer-update",
+            },
+            json={"name": "North Star Development", "revision": 1},
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.get_json()["revision"], 2)
+
+        stale = self.client.patch(
+            "/api/admin/developers/north-star-build",
+            headers={
+                **self._auth(self.admin_token),
+                "X-Request-ID": "developer-stale",
+            },
+            json={"city": "Одеса", "revision": 1},
+        )
+        self.assertEqual(stale.status_code, 409)
+
+        verified = self.client.post(
+            "/api/admin/developers/north-star-build/verify",
+            headers=self._auth(self.admin_token),
+            json={"verified": True, "revision": 2},
+        )
+        self.assertEqual(verified.status_code, 200)
+        self.assertEqual(verified.get_json()["revision"], 3)
+
+        suspended = self.client.patch(
+            "/api/admin/developers/north-star-build",
+            headers=self._auth(self.admin_token),
+            json={"status": "suspended", "revision": 3},
+        )
+        self.assertEqual(suspended.status_code, 200)
+        self.assertEqual(suspended.get_json()["revision"], 4)
+        detail = self.client.get(
+            "/api/admin/developers/north-star-build",
+            headers=self._auth(self.admin_token),
+        ).get_json()["developer"]
+        self.assertEqual(detail["name"], "North Star Development")
+        self.assertEqual(detail["city"], "Львів")
+        self.assertEqual(detail["status"], "suspended")
+        self.assertFalse(detail["is_verified"])
+        self.assertEqual(
+            self.client.get("/api/agencies/north-star-build").status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.get(
+                "/api/agencies?kind=developer&q=North"
+            ).get_json()["agencies"],
+            [],
+        )
+
+        rejected_verify = self.client.post(
+            "/api/admin/developers/north-star-build/verify",
+            headers={
+                **self._auth(self.admin_token),
+                "X-Request-ID": "developer-suspended-verify",
+            },
+            json={"verified": True, "revision": 4},
+        )
+        self.assertEqual(rejected_verify.status_code, 409)
+
+        deleted = self.client.delete(
+            "/api/admin/developers/north-star-build",
+            headers=self._auth(self.admin_token),
+            json={"revision": 4},
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(
+            self.client.get(
+                "/api/admin/developers/north-star-build",
+                headers=self._auth(self.admin_token),
+            ).status_code,
+            404,
+        )
+
+        with sqlite3.connect(TEST_DB) as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT COUNT(*) FROM agency_profiles WHERE slug = 'north-star-build'"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT COUNT(*) FROM agency_profiles WHERE slug = 'forbidden-builder'"
+                ).fetchone()[0],
+                0,
+            )
+            for request_id in (
+                forbidden_request_id,
+                "developer-stale",
+                "developer-suspended-verify",
+            ):
+                self.assertEqual(
+                    db.execute(
+                        "SELECT COUNT(*) FROM admin_audit_log WHERE request_id = ?",
+                        (request_id,),
+                    ).fetchone()[0],
+                    0,
+                )
+            successful_audits = db.execute(
+                """
+                SELECT permission FROM admin_audit_log
+                WHERE request_id IN ('developer-create', 'developer-update')
+                ORDER BY request_id
+                """
+            ).fetchall()
+        self.assertEqual(
+            successful_audits,
+            [("developers/manage",), ("developers/manage",)],
+        )
+
+    def test_developer_delete_rejects_linked_profiles_without_mutation_or_audit(self):
+        created = self.client.post(
+            "/api/admin/developers",
+            headers=self._auth(self.admin_token),
+            json={
+                "slug": "linked-builder",
+                "name": "Linked Builder",
+                "city": "Київ",
+            },
+        )
+        self.assertEqual(created.status_code, 201)
+        suspended = self.client.patch(
+            "/api/admin/developers/linked-builder",
+            headers=self._auth(self.admin_token),
+            json={"status": "suspended", "revision": 1},
+        )
+        self.assertEqual(suspended.status_code, 200)
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE users SET agency_slug = 'linked-builder' WHERE id = ?",
+                (self.user_id,),
+            )
+            db.commit()
+        rejected = self.client.delete(
+            "/api/admin/developers/linked-builder",
+            headers={
+                **self._auth(self.admin_token),
+                "X-Request-ID": "linked-developer-delete",
+            },
+            json={"revision": 2},
+        )
+        self.assertEqual(rejected.status_code, 409)
+        with sqlite3.connect(TEST_DB) as db:
+            profile = db.execute(
+                "SELECT status, revision FROM agency_profiles WHERE slug = 'linked-builder'"
+            ).fetchone()
+            audit_count = db.execute(
+                "SELECT COUNT(*) FROM admin_audit_log WHERE request_id = 'linked-developer-delete'"
+            ).fetchone()[0]
+        self.assertEqual(profile, ("suspended", 2))
+        self.assertEqual(audit_count, 0)
+
+    def test_listing_price_history_summary_and_audit_commit_atomically(self):
+        created = self.client.post(
+            "/api/admin/listings",
+            headers={
+                **self._auth(self.admin_token),
+                "X-Request-ID": "listing-create-persist",
+            },
+            json={
+                "title": "Persisted admin listing",
+                "city": "Полтава",
+                "district": "Центр",
+                "price": 2_000_000,
+                "rooms": 2,
+                "area": 60,
+                "status": "published",
+            },
+        )
+        self.assertEqual(created.status_code, 201)
+        listing_id = created.get_json()["id"]
+        updated = self.client.put(
+            f"/api/admin/listings/{listing_id}",
+            headers={
+                **self._auth(self.admin_token),
+                "X-Request-ID": "listing-update-persist",
+            },
+            json={"price": 2_100_000, "status": "PUBLISHED"},
+        )
+        self.assertEqual(updated.status_code, 200)
+
+        history = self.client.get(
+            f"/api/admin/listings/{listing_id}/history",
+            headers=self._auth(self.admin_token),
+        )
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual(
+            history.get_json()["price_history"][0],
+            {
+                "actor_type": "admin",
+                "created_at": history.get_json()["price_history"][0]["created_at"],
+                "field_name": "price",
+                "new_value": "2100000",
+                "old_value": "2000000",
+            },
+        )
+
+        with sqlite3.connect(TEST_DB) as db:
+            listing = db.execute(
+                "SELECT price, status FROM listings WHERE id = ?", (listing_id,)
+            ).fetchone()
+            summary = db.execute(
+                """
+                SELECT published_count, price_sum
+                FROM listing_city_summary WHERE city = 'Полтава'
+                """
+            ).fetchone()
+            audits = db.execute(
+                """
+                SELECT request_id FROM admin_audit_log
+                WHERE request_id IN ('listing-create-persist', 'listing-update-persist')
+                ORDER BY request_id
+                """
+            ).fetchall()
+        self.assertEqual(listing, (2_100_000, "published"))
+        self.assertEqual(summary, (1, 2_100_000))
+        self.assertEqual(
+            audits,
+            [("listing-create-persist",), ("listing-update-persist",)],
+        )
 
 
 if __name__ == "__main__":

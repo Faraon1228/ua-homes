@@ -24,6 +24,7 @@ const admin = {
   permissions: [
     "admin/all",
     "agencies/manage",
+    "developers/manage",
     "audit/read",
     "dashboard/read",
     "leads/manage",
@@ -187,6 +188,7 @@ test("moderator sees only permitted navigation and an accessible overview", asyn
   await expect(page.getByTestId("nav-item-audit")).toBeVisible();
   await expect(page.getByTestId("nav-item-users")).toHaveCount(0);
   await expect(page.getByTestId("nav-item-agencies")).toHaveCount(0);
+  await expect(page.getByTestId("nav-item-developers")).toHaveCount(0);
   await expect(page.getByTestId("nav-item-health")).toHaveCount(0);
   await expect(
     page.getByTestId("main-content").getByRole("heading", { name: "Огляд" }),
@@ -200,7 +202,7 @@ test("administrator sees privileged operational sections", async ({ page }) => {
   await mockSessionAndOverview(page, admin);
   await page.goto("/admin/dashboard.html");
 
-  for (const item of ["requests", "users", "agencies", "analytics", "health"]) {
+  for (const item of ["requests", "users", "agencies", "developers", "analytics", "health"]) {
     await expect(page.getByTestId(`nav-item-${item}`)).toBeVisible();
   }
   await expect(
@@ -389,6 +391,132 @@ test("lead response draft resets when another lead opens", async ({ page }) => {
   await page.getByRole("button", { name: "Закрити панель" }).click();
   await page.getByRole("button", { name: "Покупець Б" }).click();
   await expect(page.getByLabel("Відповідь")).toHaveValue("Чернетка Б");
+});
+
+test("developer directory performs persisted CRUD-style operations with CSRF", async ({ page }) => {
+  await mockSessionAndOverview(page, admin);
+  let developer = null;
+  const mutations = [];
+
+  await page.route("**/api/admin/developers?*", (route) => {
+    const url = new URL(route.request().url());
+    expect(url.searchParams.get("limit")).toBe("20");
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        developers: developer ? [developer] : [],
+        total: developer ? 1 : 0,
+        limit: 20,
+        offset: 0,
+      }),
+    });
+  });
+  await page.route("**/api/admin/developers", async (route) => {
+    const request = route.request();
+    const body = request.postDataJSON();
+    mutations.push({ method: request.method(), headers: request.headers(), body });
+    developer = {
+      slug: body.slug,
+      name: body.name,
+      city: body.city,
+      kind: "developer",
+      specialization: body.specialization,
+      status: "active",
+      is_verified: false,
+      revision: 1,
+      active_listings: 0,
+    };
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, slug: developer.slug, revision: 1 }),
+    });
+  });
+  await page.route("**/api/admin/developers/future-home", async (route) => {
+    const request = route.request();
+    const body = request.postDataJSON();
+    mutations.push({ method: request.method(), headers: request.headers(), body });
+    if (request.method() === "PATCH") {
+      developer = {
+        ...developer,
+        ...body,
+        is_verified: body.status === "suspended" ? false : developer.is_verified,
+        revision: developer.revision + 1,
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, revision: developer.revision }),
+      });
+      return;
+    }
+    developer = null;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true }),
+    });
+  });
+  await page.route("**/api/admin/developers/future-home/verify", async (route) => {
+    const request = route.request();
+    const body = request.postDataJSON();
+    mutations.push({ method: request.method(), headers: request.headers(), body });
+    developer = {
+      ...developer,
+      is_verified: body.verified,
+      revision: developer.revision + 1,
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        is_verified: developer.is_verified,
+        revision: developer.revision,
+      }),
+    });
+  });
+
+  await page.goto("/admin/dashboard.html#/developers");
+  await expect(page.getByTestId("topbar-title")).toHaveText("Забудовники");
+  await page.getByTestId("add-developer").click();
+  await page.getByLabel("Slug (унікальний ідентифікатор)").fill("future-home");
+  await page.getByLabel("Назва").fill("Future Home");
+  await page.getByLabel("Місто").fill("Київ");
+  await page.getByLabel("Спеціалізація").fill("Новобудови");
+  await page.getByRole("button", { name: "Зберегти" }).click();
+  await expect(page.getByRole("button", { name: "Відкрити Future Home" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Редагувати Future Home" }).click();
+  await page.getByLabel("Місто").fill("Львів");
+  await page.getByRole("button", { name: "Зберегти" }).click();
+  await page.getByRole("button", { name: "Верифікувати Future Home" }).click();
+  await expect(page.getByText("Підтверджено")).toBeVisible();
+
+  await page.getByRole("button", { name: "Редагувати Future Home" }).click();
+  await page.getByTestId("developer-form").getByLabel("Статус").selectOption("suspended");
+  await page.getByRole("button", { name: "Зберегти" }).click();
+  await page.getByRole("button", { name: "Видалити Future Home" }).click();
+  await expect(page.getByTestId("delete-developer-dialog")).toBeVisible();
+  await page.getByTestId("delete-developer-dialog-confirm").click();
+  await expect(page.getByText("Забудовників не знайдено")).toBeVisible();
+
+  expect(mutations.map((entry) => entry.method)).toEqual(["POST", "PATCH", "POST", "PATCH", "DELETE"]);
+  for (const mutation of mutations) {
+    expect(mutation.headers["x-csrf-token"]).toBe("csrf_token_for_browser_tests_123456");
+  }
+  expect(mutations[1].body.revision).toBe(1);
+  expect(mutations[2].body).toEqual({ verified: true, revision: 2 });
+  expect(mutations[3].body).toMatchObject({ status: "suspended", revision: 3 });
+  expect(mutations[4].body).toEqual({ revision: 4 });
+
+  const accessibility = await new AxeBuilder({ page }).include("#main-content").analyze();
+  expect(accessibility.violations).toEqual([]);
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
 });
 
 test("mobile navigation opens, closes, and does not overflow", async ({ page }, testInfo) => {
