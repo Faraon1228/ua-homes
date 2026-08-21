@@ -1,3 +1,4 @@
+import importlib
 import os
 import sqlite3
 import unittest
@@ -5,6 +6,8 @@ import unittest
 import bcrypt
 
 from backend.test_trust_features import TEST_DB, app_module
+
+admin_routes_module = importlib.import_module("admin_routes")
 
 
 def setUpModule():
@@ -252,6 +255,52 @@ class AdminPanelTests(unittest.TestCase):
                 "SELECT role, status FROM users WHERE id = ?", (self.admin_id,)
             ).fetchone()
         self.assertEqual(row, ("admin", "active"))
+
+    def test_duplicate_listing_copies_images_with_postgres_safe_order_identifier(self):
+        insert_sql = admin_routes_module.LISTING_IMAGE_INSERT_SQL
+        self.assertIn('"order"', insert_sql)
+        self.assertNotIn("'order'", insert_sql)
+        translated_sql = app_module._DbCursorProxy(
+            None, None, is_postgres=True
+        )._translate_query(insert_sql)
+        self.assertEqual(translated_sql.count("%s"), 3)
+        self.assertIn('"order"', translated_sql)
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                """
+                INSERT INTO listing_images (listing_id, image_url, "order")
+                VALUES (?, ?, ?)
+                """,
+                (self.listing_id, "https://cdn.example.test/listing.jpg", 3),
+            )
+            db.commit()
+
+        response = self.client.post(
+            f"/api/admin/listings/{self.listing_id}/duplicate",
+            headers=self._auth(self.admin_token),
+        )
+        self.assertEqual(response.status_code, 201)
+        duplicate_id = response.get_json()["id"]
+
+        with sqlite3.connect(TEST_DB) as db:
+            duplicate = db.execute(
+                "SELECT title, status FROM listings WHERE id = ?",
+                (duplicate_id,),
+            ).fetchone()
+            copied_image = db.execute(
+                """
+                SELECT image_url, "order"
+                FROM listing_images
+                WHERE listing_id = ?
+                """,
+                (duplicate_id,),
+            ).fetchone()
+        self.assertEqual(duplicate, ("Panel listing (Copy)", "draft"))
+        self.assertEqual(
+            copied_image,
+            ("https://cdn.example.test/listing.jpg", 3),
+        )
 
     def test_report_contract_redaction_transition_and_transactional_audit(self):
         with sqlite3.connect(TEST_DB) as db:

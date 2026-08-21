@@ -57,6 +57,9 @@ ROLE_PERMISSIONS = {
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 ADMIN_COOKIE = "ua_dim_staff_session"
 CSRF_COOKIE = "ua_dim_staff_csrf"
+LISTING_IMAGE_INSERT_SQL = (
+    'INSERT INTO listing_images (listing_id, image_url, "order") VALUES (?, ?, ?)'
+)
 _SENSITIVE_AUDIT_KEYS = {
     "password", "password_hash", "token", "authorization", "csrf_token",
     "reporter_fingerprint", "phone", "email", "message", "details",
@@ -1041,10 +1044,7 @@ def admin_duplicate_listing(listing_id):
         new_image_rows.append((new_listing_id, image_url, image["image_order"]))
 
     for row in new_image_rows:
-        db.execute(
-            "INSERT INTO listing_images (listing_id, image_url, 'order') VALUES (?, ?, ?)",
-            row
-        )
+        db.execute(LISTING_IMAGE_INSERT_SQL, row)
 
     db.commit()
     _refresh_listing_city_summary(db)
@@ -1586,10 +1586,7 @@ def admin_upload_image(listing_id):
     # Save to DB
     image_url = f"/images/listings/{listing_id}/{filename}"
     
-    db.execute(
-        "INSERT INTO listing_images (listing_id, image_url, 'order') VALUES (?, ?, ?)",
-        (listing_id, image_url, 0)
-    )
+    db.execute(LISTING_IMAGE_INSERT_SQL, (listing_id, image_url, 0))
     current_images_row = db.execute(
         "SELECT images FROM listings WHERE id = ?",
         (listing_id,)
