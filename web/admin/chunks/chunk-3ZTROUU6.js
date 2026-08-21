@@ -1,0 +1,1 @@
+var n="ua_dim_admin_pref:";function o(r,t){try{let e=window.localStorage.getItem(n+r);return e===null?t:JSON.parse(e)}catch{return t}}function c(r,t){try{window.localStorage.setItem(n+r,JSON.stringify(t))}catch{}}export{o as a,c as b};

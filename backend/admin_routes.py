@@ -3,59 +3,220 @@ UA Homes Admin API Routes
 Endpoints for admin panel property/user management
 """
 
-from flask import Blueprint, g, jsonify, request, Response
+from flask import Blueprint, g, jsonify, make_response, request, Response
 from functools import wraps
+from enum import Enum
 import datetime
 import csv
+import hmac
 import io
 import json
+import os
+import re
+import secrets
+from urllib.parse import urlsplit
+
+from app import limiter
 
 # Create blueprint
-admin_bp = Blueprint('admin', __name__, url_prefix='/api/admin')
+admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 
-# Helper: Require JWT auth + admin role
+
+class StaffRole(str, Enum):
+    ADMIN = "admin"
+    MODERATOR = "moderator"
+
+
+class Permission(str, Enum):
+    ADMIN_ONLY = "admin/all"
+    DASHBOARD_READ = "dashboard/read"
+    LISTINGS_READ = "listings/read"
+    LISTINGS_WRITE = "listings/write"
+    LISTINGS_MODERATE = "listings/moderate"
+    VERIFICATIONS_MANAGE = "verifications/manage"
+    REPORTS_MANAGE = "reports/manage"
+    AUDIT_READ = "audit/read"
+    USERS_MANAGE = "users/manage"
+    LEADS_MANAGE = "leads/manage"
+    AGENCIES_MANAGE = "agencies/manage"
+    SYSTEM_READ = "system/read"
+
+
+MODERATOR_PERMISSIONS = frozenset({
+    Permission.DASHBOARD_READ.value,
+    Permission.LISTINGS_READ.value,
+    Permission.LISTINGS_MODERATE.value,
+    Permission.VERIFICATIONS_MANAGE.value,
+    Permission.REPORTS_MANAGE.value,
+    Permission.AUDIT_READ.value,
+})
+ROLE_PERMISSIONS = {
+    StaffRole.ADMIN.value: frozenset(permission.value for permission in Permission),
+    StaffRole.MODERATOR.value: MODERATOR_PERMISSIONS,
+}
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+ADMIN_COOKIE = "ua_dim_staff_session"
+CSRF_COOKIE = "ua_dim_staff_csrf"
+LISTING_IMAGE_INSERT_SQL = (
+    'INSERT INTO listing_images (listing_id, image_url, "order") VALUES (?, ?, ?)'
+)
+_SENSITIVE_AUDIT_KEYS = {
+    "password", "password_hash", "token", "authorization", "csrf_token",
+    "reporter_fingerprint", "phone", "email", "message", "details",
+}
+
+
+def _staff_permissions(role):
+    return sorted(ROLE_PERMISSIONS.get(str(role or ""), ()))
+
+
+def _request_origin_allowed():
+    origin = request.headers.get("Origin", "").strip()
+    if not origin:
+        return True
+    try:
+        parsed = urlsplit(origin)
+    except ValueError:
+        return False
+    origin_host = (parsed.hostname or "").lower()
+    request_host = (request.host.split(":", 1)[0] or "").lower()
+    if origin_host == request_host:
+        return True
+    configured = {
+        urlsplit(value.strip()).hostname
+        for value in os.environ.get("UA_HOMES_CORS_ORIGINS", "").split(",")
+        if value.strip()
+    }
+    return origin_host in {
+        "ua-homes.netlify.app", "ua-dim.netlify.app", "ua-dom.com",
+        "www.ua-dom.com", "ua-dim.com", "www.ua-dim.com",
+    } | {host.lower() for host in configured if host}
+
+
+def _audit_metadata():
+    payload = request.get_json(silent=True)
+    keys = sorted(
+        str(key)[:80]
+        for key in payload.keys()
+        if isinstance(payload, dict)
+        and str(key).lower() not in _SENSITIVE_AUDIT_KEYS
+    )[:30] if isinstance(payload, dict) else []
+    return json.dumps(
+        {"changed_fields": keys},
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+
+
+def record_admin_audit(db, *, action, permission, resource_type, resource_id=None):
+    db.execute(
+        """
+        INSERT INTO admin_audit_log (
+            actor_id, actor_role, action, permission, resource_type,
+            resource_id, metadata_json, request_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            g.user_id,
+            g.staff_role,
+            str(action)[:120],
+            str(permission)[:80],
+            str(resource_type)[:80],
+            None if resource_id is None else str(resource_id)[:120],
+            _audit_metadata(),
+            str(getattr(g, "request_id", "unknown"))[:128],
+        ),
+    )
+
+
+def require_permission(permission):
+    permission_value = permission.value if isinstance(permission, Permission) else str(permission)
+
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            from app import decode_token, get_db, token_matches_user_version
+            import jwt
+
+            authorization = request.headers.get("Authorization", "")
+            cookie_auth = not authorization.startswith("Bearer ")
+            token = request.cookies.get(ADMIN_COOKIE, "") if cookie_auth else authorization[7:]
+            try:
+                payload = decode_token(token)
+                user_id = int(payload["sub"])
+            except (jwt.PyJWTError, KeyError, TypeError, ValueError):
+                return jsonify(error="Unauthorized"), 401
+
+            db = get_db()
+            user = db.execute(
+                """
+                SELECT id, email, name, role, auth_token_version, status
+                FROM users WHERE id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+            if (
+                not user
+                or user["status"] != "active"
+                or not token_matches_user_version(payload, user)
+            ):
+                return jsonify(error="Unauthorized"), 401
+            if user["role"] not in ROLE_PERMISSIONS:
+                return jsonify(error="Forbidden"), 403
+
+            permissions = ROLE_PERMISSIONS[user["role"]]
+            if (
+                permission_value != Permission.ADMIN_ONLY.value
+                and permission_value not in permissions
+            ) or (
+                permission_value == Permission.ADMIN_ONLY.value
+                and user["role"] != StaffRole.ADMIN.value
+            ):
+                return jsonify(error="Forbidden"), 403
+
+            if request.method not in SAFE_METHODS:
+                if not _request_origin_allowed():
+                    return jsonify(error="Invalid request origin"), 403
+                if cookie_auth:
+                    supplied = request.headers.get("X-CSRF-Token", "")
+                    expected = request.cookies.get(CSRF_COOKIE, "")
+                    if (
+                        not _valid_csrf_token(expected)
+                        or not _valid_csrf_token(supplied)
+                        or not hmac.compare_digest(supplied, expected)
+                    ):
+                        return jsonify(error="CSRF validation failed"), 403
+
+            g.user_id = user_id
+            g.user_email = user["email"]
+            g.staff_role = user["role"]
+            g.staff_permissions = sorted(permissions)
+            if request.method not in SAFE_METHODS:
+                route_values = request.view_args or {}
+                resource_id = next(iter(route_values.values()), None)
+                resource_type = (
+                    request.endpoint.rsplit(".", 1)[-1].replace("admin_", "")
+                    if request.endpoint else "admin"
+                )
+                record_admin_audit(
+                    db,
+                    action=f"{request.method.lower()}:{resource_type}",
+                    permission=permission_value,
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                )
+            result = f(*args, **kwargs)
+            response = make_response(result)
+            if request.method not in SAFE_METHODS and response.status_code >= 400:
+                db.rollback()
+            return response
+        return wrapper
+    return decorator
+
+
 def require_auth_admin(f):
-    """Require both auth and admin role"""
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        # Check auth
-        from app import decode_token
-        import jwt
-        
-        auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
-            return jsonify(error="Unauthorized"), 401
-        
-        token = auth[7:]
-        try:
-            payload = decode_token(token)
-        except jwt.ExpiredSignatureError:
-            return jsonify(error="Token expired"), 401
-        except jwt.PyJWTError:
-            return jsonify(error="Invalid token"), 401
-        
-        g.user_id = int(payload["sub"])
-        g.user_email = payload["email"]
-        
-        # Check admin role
-        from app import get_db, token_matches_user_version
-        db = get_db()
-        user = db.execute(
-            "SELECT role, auth_token_version, status FROM users WHERE id = ?",
-            (g.user_id,)
-        ).fetchone()
-
-        if (
-            not user
-            or user["status"] != "active"
-            or not token_matches_user_version(payload, user)
-        ):
-            return jsonify(error="Invalid token"), 401
-        if user['role'] != 'admin':
-            return jsonify(error="Admin access required"), 403
-        
-        return f(*args, **kwargs)
-    return wrapper
+    """Backward-compatible admin-only decorator."""
+    return require_permission(Permission.ADMIN_ONLY)(f)
 
 
 def log_moderation_action(db, listing_id, action, reason=None):
@@ -104,9 +265,22 @@ def _cutoff_datetime(hours: int) -> str:
     return (datetime.datetime.utcnow() - datetime.timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def parse_pagination(args, *, default_limit=50, max_limit=200):
+    try:
+        limit = int(args.get("limit", default_limit))
+        offset = int(args.get("offset", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("limit and offset must be integers") from exc
+    if limit < 1 or limit > max_limit:
+        raise ValueError(f"limit must be between 1 and {max_limit}")
+    if offset < 0 or offset > 1_000_000:
+        raise ValueError("offset must be between 0 and 1000000")
+    return limit, offset
+
+
 def parse_csv_row(row, row_number):
     required = ["title", "city", "district", "price", "rooms", "area"]
-    missing = [field for field in required if not str(row.get(field, "")).strip()]
+    missing = [field for field in required if not str(row.get(field) or "").strip()]
     if missing:
         return None, f"Row {row_number}: missing required fields: {', '.join(missing)}"
 
@@ -117,12 +291,12 @@ def parse_csv_row(row, row_number):
         floor = int(float(row.get("floor", 1) or 1))
         total_floors = int(float(row.get("total_floors", 1) or 1))
         year_built = row.get("year_built")
-        year_built = int(float(year_built)) if str(year_built).strip() else None
+        year_built = int(float(year_built)) if str(year_built or "").strip() else None
         latitude = row.get("latitude")
-        latitude = float(latitude) if str(latitude).strip() else None
+        latitude = float(latitude) if str(latitude or "").strip() else None
         longitude = row.get("longitude")
-        longitude = float(longitude) if str(longitude).strip() else None
-    except ValueError as exc:
+        longitude = float(longitude) if str(longitude or "").strip() else None
+    except (TypeError, ValueError) as exc:
         return None, f"Row {row_number}: invalid number value ({exc})"
 
     status = (row.get("status") or "draft").strip().lower()
@@ -185,12 +359,20 @@ def build_listing_filters(args, allow_ids=False):
                 raise ValueError("listing_ids must contain integers")
             if not ids:
                 raise ValueError("listing_ids cannot be empty")
+            if len(ids) > 200:
+                raise ValueError("listing_ids may contain at most 200 values")
             clauses.append(f"id IN ({','.join('?' for _ in ids)})")
             params.extend(ids)
 
     city = (args.get("city") or "").strip()
     status = (args.get("status") or "").strip()
     search = (args.get("search") or "").strip()
+    if len(city) > 100:
+        raise ValueError("city must be at most 100 characters")
+    if status and status not in {"draft", "published", "pending", "rejected", "archived"}:
+        raise ValueError("Invalid listing status")
+    if len(search) > 120:
+        raise ValueError("search must be at most 120 characters")
 
     if city:
         clauses.append("city = ?")
@@ -228,10 +410,21 @@ def admin_register():
     if existing_admin:
         return jsonify(error="Admin already exists"), 409
     
-    data = request.get_json() or {}
-    email = (data.get('email') or '').strip()
-    password = data.get('password') or ''
-    name = (data.get('name') or 'Admin').strip()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="JSON object required"), 400
+    email_value = data.get("email")
+    password_value = data.get("password")
+    name_value = data.get("name", "Admin")
+    if (
+        not isinstance(email_value, str)
+        or not isinstance(password_value, str)
+        or not isinstance(name_value, str)
+    ):
+        return jsonify(error="Invalid registration fields"), 400
+    email = email_value.strip()
+    password = password_value
+    name = name_value.strip() or "Admin"
     
     if not email or not password:
         return jsonify(error="Email and password required"), 400
@@ -265,54 +458,155 @@ def admin_register():
 
 
 @admin_bp.route("/auth/login", methods=["POST"])
+@limiter.limit("10 per minute")
 def admin_login():
-    """Admin login — returns JWT token"""
-    from app import get_db, make_token
-    import bcrypt
-    
+    """Authenticate an active staff member."""
+    from app import _password_matches, get_db, make_token
+
+    if not _request_origin_allowed():
+        return jsonify(error="Invalid request origin"), 403
     db = get_db()
-    data = request.get_json() or {}
-    email = (data.get('email') or '').strip()
-    password = data.get('password') or ''
-    
-    if not email or not password:
-        return jsonify(error="Email and password required"), 400
-    
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="Invalid credentials"), 401
+    email_value = data.get("email")
+    password_value = data.get("password")
+    if not isinstance(email_value, str) or not isinstance(password_value, str):
+        return jsonify(error="Invalid credentials"), 401
+    email = email_value.strip()
+    password = password_value
+
     user = db.execute(
-        "SELECT id, password_hash, role, auth_token_version, status FROM users WHERE email = ?",
+        """
+        SELECT id, name, email, password, password_hash, role,
+               auth_token_version, status
+        FROM users WHERE email = ?
+        """,
         (email,)
     ).fetchone()
-    
-    if not user:
-        return jsonify(error="User not found"), 404
-    
-    if user['role'] != 'admin':
-        return jsonify(error="User is not an admin"), 403
-    if user['status'] != 'active':
-        return jsonify(error="Account inactive"), 401
-    
-    # Check password
-    if not bcrypt.checkpw(password.encode(), user['password_hash'].encode()):
-        return jsonify(error="Invalid password"), 401
-    
-    # Generate token
-    token = make_token(user['id'], email, user['auth_token_version'])
-    
-    return jsonify(
+    stored_password = (user["password_hash"] or user["password"]) if user else None
+    if (
+        not user
+        or user["role"] not in ROLE_PERMISSIONS
+        or user["status"] != "active"
+        or not _password_matches(password, stored_password)
+    ):
+        return jsonify(error="Invalid credentials"), 401
+
+    token = make_token(user["id"], user["email"], user["auth_token_version"])
+    csrf_token = secrets.token_urlsafe(32)
+    response = jsonify(
         ok=True,
         token=token,
-        user_id=user['id']
+        csrf_token=csrf_token,
+        staff={
+            "id": user["id"],
+            "name": user["name"],
+            "email": user["email"],
+            "role": user["role"],
+            "permissions": _staff_permissions(user["role"]),
+        },
     )
+    secure = _staff_cookie_secure()
+    response.set_cookie(
+        ADMIN_COOKIE,
+        token,
+        httponly=True,
+        secure=secure,
+        samesite="Strict",
+        max_age=JWT_EXP_HOURS_SECONDS,
+        path="/api/admin",
+    )
+    _set_csrf_cookie(response, csrf_token)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+JWT_EXP_HOURS_SECONDS = 72 * 60 * 60
+
+
+def _staff_cookie_secure():
+    local_http = request.host.split(":", 1)[0] in {"localhost", "127.0.0.1"}
+    return request.is_secure or not local_http
+
+
+def _valid_csrf_token(value):
+    return bool(
+        isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9_-]{32,128}", value)
+    )
+
+
+def _set_csrf_cookie(response, csrf_token):
+    response.set_cookie(
+        CSRF_COOKIE,
+        csrf_token,
+        httponly=True,
+        secure=_staff_cookie_secure(),
+        samesite="Strict",
+        max_age=JWT_EXP_HOURS_SECONDS,
+        path="/api/admin",
+    )
+
+
+@admin_bp.route("/auth/session", methods=["GET"])
+@require_permission(Permission.DASHBOARD_READ)
+def admin_session():
+    from app import get_db
+
+    user = get_db().execute(
+        "SELECT id, name, email, role FROM users WHERE id = ?",
+        (g.user_id,),
+    ).fetchone()
+    csrf_token = request.cookies.get(CSRF_COOKIE, "")
+    if not _valid_csrf_token(csrf_token):
+        csrf_token = secrets.token_urlsafe(32)
+    response = jsonify(
+        csrf_token=csrf_token,
+        staff={
+            "id": user["id"],
+            "name": user["name"],
+            "email": user["email"],
+            "role": user["role"],
+            "permissions": g.staff_permissions,
+        }
+    )
+    _set_csrf_cookie(response, csrf_token)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@admin_bp.route("/auth/logout", methods=["POST"])
+@require_permission(Permission.DASHBOARD_READ)
+def admin_logout():
+    from app import get_db
+
+    db = get_db()
+    db.execute(
+        "UPDATE users SET auth_token_version = auth_token_version + 1 WHERE id = ?",
+        (g.user_id,),
+    )
+    db.commit()
+    response = jsonify(ok=True)
+    response.delete_cookie(ADMIN_COOKIE, path="/api/admin")
+    response.delete_cookie(CSRF_COOKIE, path="/api/admin")
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 # ─── Admin Dashboard ─────────────────────────────────────────────────
 
+@admin_bp.route("/dashboard/overview", methods=["GET"])
 @admin_bp.route("/dashboard/stats", methods=["GET"])
-@require_auth_admin
+@require_permission(Permission.DASHBOARD_READ)
 def dashboard_stats():
     """Get dashboard statistics"""
     from app import get_db
-    
+
+    period = (request.args.get("period") or "30d").strip().lower()
+    period_days = {"7d": 7, "30d": 30, "90d": 90}.get(period)
+    if period_days is None:
+        return jsonify(error="period must be one of: 7d, 30d, 90d"), 400
     db = get_db()
     
     total_listings = db.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
@@ -339,7 +633,39 @@ def dashboard_stats():
         "SELECT id, title, city, price, created_at FROM listings "
         "ORDER BY created_at DESC LIMIT 5"
     ).fetchall()
-    
+
+    backlog = {
+        "moderation": int(db.execute(
+            """
+            SELECT COUNT(*) FROM listings
+            WHERE status IN ('draft', 'pending')
+               OR moderation_status IN ('pending_review', 'in_review', 'changes_requested')
+            """
+        ).fetchone()[0] or 0),
+        "verifications": int(db.execute(
+            """
+            SELECT COUNT(*) FROM listings
+            WHERE listing_verification_status = 'pending'
+               OR owner_verification_status = 'pending'
+               OR phone_verification_status = 'pending'
+            """
+        ).fetchone()[0] or 0),
+        "reports": int(db.execute(
+            "SELECT COUNT(*) FROM listing_reports WHERE status = 'pending'"
+        ).fetchone()[0] or 0),
+    }
+    cutoff = _cutoff_date(period_days)
+    trend_rows = db.execute(
+        """
+        SELECT SUBSTR(created_at, 1, 10) AS day, COUNT(*) AS listings_created
+        FROM listings
+        WHERE created_at >= ?
+        GROUP BY SUBSTR(created_at, 1, 10)
+        ORDER BY day ASC
+        """,
+        (cutoff,),
+    ).fetchall()
+
     return jsonify(
         total_listings=total_listings,
         published_listings=published_listings,
@@ -347,14 +673,24 @@ def dashboard_stats():
         total_agents=total_agents,
         avg_price=int(avg_price),
         by_city=[dict(row) for row in by_city],
-        recent_listings=[dict(row) for row in recent]
+        recent_listings=[dict(row) for row in recent],
+        period=period,
+        kpis={
+            "total_listings": int(total_listings),
+            "published_listings": int(published_listings),
+            "total_users": int(total_users),
+            "total_agents": int(total_agents),
+            "avg_price": int(avg_price),
+        },
+        backlog=backlog,
+        trends={"listings_created": [dict(row) for row in trend_rows]},
     )
 
 
 # ─── Admin Listings Management ──────────────────────────────────────────
 
 @admin_bp.route("/listings", methods=["GET"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_READ)
 def admin_get_listings():
     """Get all listings with filters for admin"""
     from app import get_db
@@ -362,8 +698,10 @@ def admin_get_listings():
     db = get_db()
     args = request.args
     
-    limit = min(int(args.get('limit', 50)), 200)
-    offset = max(int(args.get('offset', 0)), 0)
+    try:
+        limit, offset = parse_pagination(args)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     
     query = """
         SELECT id, title, city, district, price, rooms, area, status, 
@@ -371,7 +709,10 @@ def admin_get_listings():
                property_type, condition_type, listing_status, source, has_photo_tour, has_video_tour
         FROM listings WHERE 1=1
     """
-    clauses, params = build_listing_filters(args)
+    try:
+        clauses, params = build_listing_filters(args)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     for clause in clauses:
         query += f" AND {clause}"
     
@@ -395,16 +736,18 @@ def admin_get_listings():
 
 
 @admin_bp.route("/listings", methods=["POST"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_WRITE)
 def admin_create_listing():
     """Create new listing as admin"""
     from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
     
     db = get_db()
-    data = request.get_json() or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="JSON object required"), 400
     
     required = ['title', 'city', 'district', 'price', 'rooms', 'area']
-    if not all(k in data for k in required):
+    if not all(str(data.get(key) or "").strip() for key in required):
         return jsonify(error=f"Missing required fields: {required}"), 400
     
     try:
@@ -413,13 +756,18 @@ def admin_create_listing():
         area = float(data['area'])
     except (ValueError, TypeError):
         return jsonify(error="Price/rooms/area must be numbers"), 400
+    if price <= 0 or rooms < 0 or area <= 0:
+        return jsonify(error="Price and area must be positive; rooms cannot be negative"), 400
+    for field, maximum in (("title", 200), ("city", 100), ("district", 100)):
+        if len(str(data[field]).strip()) > maximum:
+            return jsonify(error=f"{field} is too long"), 400
     
     status = str(data.get('status') or 'draft').strip().lower()
     if status not in {'draft', 'published', 'pending', 'rejected', 'archived'}:
-        status = 'draft'
+        return jsonify(error="Invalid listing status"), 400
     listing_status = str(data.get('listing_status') or data.get('listingStatus') or 'active').strip().lower()
     if listing_status not in {'active', 'sold', 'removed'}:
-        listing_status = 'active'
+        return jsonify(error="Invalid listing lifecycle status"), 400
     now = datetime.datetime.utcnow().isoformat(timespec='seconds')
 
     cur = db.execute("""
@@ -468,7 +816,7 @@ def admin_create_listing():
 
 
 @admin_bp.route("/listings/<int:listing_id>", methods=["GET"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_READ)
 def admin_get_listing(listing_id):
     """Get single listing details"""
     from app import get_db
@@ -500,18 +848,41 @@ def admin_get_listing(listing_id):
 
 
 @admin_bp.route("/listings/<int:listing_id>", methods=["PUT"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_WRITE)
 def admin_update_listing(listing_id):
     """Update listing"""
     from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
     
     db = get_db()
-    data = request.get_json() or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="JSON object required"), 400
     now = datetime.datetime.utcnow().isoformat(timespec='seconds')
     
     existing = db.execute("SELECT id, status FROM listings WHERE id = ?", (listing_id,)).fetchone()
     if not existing:
         return jsonify(error="Listing not found"), 404
+    if "status" in data and str(data.get("status") or "").strip().lower() not in {
+        "draft", "published", "pending", "rejected", "archived"
+    }:
+        return jsonify(error="Invalid listing status"), 400
+    if "listing_status" in data and str(data.get("listing_status") or "").strip().lower() not in {
+        "active", "sold", "removed"
+    }:
+        return jsonify(error="Invalid listing lifecycle status"), 400
+    for field in ("price", "area"):
+        if field in data:
+            try:
+                if float(data[field]) <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return jsonify(error=f"{field} must be a positive number"), 400
+    if "rooms" in data:
+        try:
+            if int(data["rooms"]) < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify(error="rooms must be a non-negative integer"), 400
     
     # Build update query
     updates = []
@@ -570,7 +941,7 @@ def admin_update_listing(listing_id):
 
 
 @admin_bp.route("/listings/<int:listing_id>", methods=["DELETE"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_WRITE)
 def admin_delete_listing(listing_id):
     """Delete listing"""
     from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
@@ -596,7 +967,7 @@ def admin_delete_listing(listing_id):
 
 
 @admin_bp.route("/listings/<int:listing_id>/duplicate", methods=["POST"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_WRITE)
 def admin_duplicate_listing(listing_id):
     from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
     import os
@@ -673,10 +1044,7 @@ def admin_duplicate_listing(listing_id):
         new_image_rows.append((new_listing_id, image_url, image["image_order"]))
 
     for row in new_image_rows:
-        db.execute(
-            "INSERT INTO listing_images (listing_id, image_url, 'order') VALUES (?, ?, ?)",
-            row
-        )
+        db.execute(LISTING_IMAGE_INSERT_SQL, row)
 
     db.commit()
     _refresh_listing_city_summary(db)
@@ -685,7 +1053,7 @@ def admin_duplicate_listing(listing_id):
 
 
 @admin_bp.route("/listings/<int:listing_id>/publish", methods=["POST"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_WRITE)
 def admin_publish_listing(listing_id):
     """Publish/unpublish listing"""
     from app import _refresh_listing_city_summary, cache_delete_prefix, db_now_expr, get_db
@@ -726,7 +1094,7 @@ def admin_publish_listing(listing_id):
 
 
 @admin_bp.route("/import/csv", methods=["POST"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_WRITE)
 def admin_import_csv():
     from app import _refresh_listing_city_summary, cache_delete_prefix, db_now_expr, get_db
 
@@ -800,21 +1168,42 @@ def admin_import_csv():
 
 
 @admin_bp.route("/moderation/queue", methods=["GET"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_MODERATE)
 def admin_moderation_queue():
     from app import get_db
 
     db = get_db()
+    try:
+        limit, offset = parse_pagination(request.args)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    search = (request.args.get("search") or "").strip()
+    if len(search) > 120:
+        return jsonify(error="search must be at most 120 characters"), 400
+    term = f"%{search}%"
+    pending_where = """
+        (status IN ('draft', 'pending', 'rejected')
+         OR moderation_status IN ('in_review', 'changes_requested')
+         OR owner_verification_status = 'pending'
+         OR phone_verification_status = 'pending'
+         OR listing_verification_status = 'pending')
+    """
+    params = []
+    if search:
+        pending_where += " AND (title LIKE ? OR city LIKE ? OR district LIKE ?)"
+        params.extend([term, term, term])
+    total = db.execute(
+        f"SELECT COUNT(*) FROM listings WHERE {pending_where}",
+        params,
+    ).fetchone()[0]
     rows = db.execute(
-        """
+        f"""
         SELECT id, title, city, district, price, rooms, area, status, created_at,
                moderation_status, moderation_reason,
-               owner_verification_status, phone_verification_status
+               owner_verification_status, phone_verification_status,
+               listing_verification_status
         FROM listings
-        WHERE status IN ('draft', 'pending', 'rejected')
-           OR moderation_status IN ('in_review', 'changes_requested')
-           OR owner_verification_status = 'pending'
-           OR phone_verification_status = 'pending'
+        WHERE {pending_where}
         ORDER BY
             CASE
                 WHEN owner_verification_status = 'pending' OR phone_verification_status = 'pending' THEN 0
@@ -824,34 +1213,66 @@ def admin_moderation_queue():
                 ELSE 4
             END,
             created_at ASC
-        """
+        LIMIT ? OFFSET ?
+        """,
+        params + [limit, offset],
     ).fetchall()
-    return jsonify(queue=[dict(row) for row in rows])
+    return jsonify(
+        queue=[dict(row) for row in rows],
+        total=int(total),
+        limit=limit,
+        offset=offset,
+    )
 
 
 @admin_bp.route("/moderation/logs", methods=["GET"])
-@require_auth_admin
+@require_permission(Permission.AUDIT_READ)
 def admin_moderation_logs():
     from app import get_db
 
     db = get_db()
+    try:
+        limit, offset = parse_pagination(request.args)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    listing_id = request.args.get("listing_id")
+    params = []
+    where = ""
+    if listing_id not in (None, ""):
+        try:
+            listing_id = int(listing_id)
+        except ValueError:
+            return jsonify(error="listing_id must be an integer"), 400
+        where = "WHERE ml.listing_id = ?"
+        params.append(listing_id)
+    total = db.execute(
+        f"SELECT COUNT(*) FROM moderation_log ml {where}",
+        params,
+    ).fetchone()[0]
     rows = db.execute(
-        """
+        f"""
         SELECT ml.id, ml.listing_id, ml.action, ml.reason, ml.created_at,
                l.title, l.city,
                u.name AS admin_name
         FROM moderation_log ml
         JOIN listings l ON l.id = ml.listing_id
         LEFT JOIN users u ON u.id = ml.admin_id
-        ORDER BY ml.created_at DESC
-        LIMIT 50
-        """
+        {where}
+        ORDER BY ml.created_at DESC, ml.id DESC
+        LIMIT ? OFFSET ?
+        """,
+        params + [limit, offset],
     ).fetchall()
-    return jsonify(logs=[dict(row) for row in rows])
+    return jsonify(
+        logs=[dict(row) for row in rows],
+        total=int(total),
+        limit=limit,
+        offset=offset,
+    )
 
 
 @admin_bp.route("/listings/<int:listing_id>/moderate", methods=["POST"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_MODERATE)
 def admin_moderate_listing(listing_id):
     from app import (
         _refresh_listing_city_summary,
@@ -861,9 +1282,13 @@ def admin_moderate_listing(listing_id):
     )
 
     db = get_db()
-    data = request.get_json() or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="JSON object required"), 400
     action = (data.get("action") or "").strip().lower()
-    reason = (data.get("reason") or "").strip() or None
+    reason = str(data.get("reason") or "").strip() or None
+    if reason and len(reason) > 1000:
+        return jsonify(error="reason must be at most 1000 characters"), 400
     owner_verification_status = (data.get("owner_verification_status") or "").strip().lower() or None
     phone_verification_status = (data.get("phone_verification_status") or "").strip().lower() or None
 
@@ -939,7 +1364,7 @@ def admin_moderate_listing(listing_id):
 
 
 @admin_bp.route("/listings/bulk-moderate", methods=["POST"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_MODERATE)
 def admin_bulk_moderate():
     from app import (
         _refresh_listing_city_summary,
@@ -949,13 +1374,19 @@ def admin_bulk_moderate():
     )
 
     db = get_db()
-    data = request.get_json() or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="JSON object required"), 400
     action = (data.get("action") or "").strip().lower()
-    reason = (data.get("reason") or "").strip() or None
+    reason = str(data.get("reason") or "").strip() or None
+    if reason and len(reason) > 1000:
+        return jsonify(error="reason must be at most 1000 characters"), 400
     listing_ids = data.get("listing_ids") or []
 
     if not isinstance(listing_ids, list) or not listing_ids:
         return jsonify(error="listing_ids must be a non-empty array"), 400
+    if len(listing_ids) > 200:
+        return jsonify(error="listing_ids may contain at most 200 values"), 400
 
     try:
         ids = [int(item) for item in listing_ids]
@@ -1003,16 +1434,20 @@ def admin_bulk_moderate():
 
 
 @admin_bp.route("/listings/bulk-delete", methods=["POST"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_WRITE)
 def admin_bulk_delete():
     from app import _refresh_listing_city_summary, cache_delete_prefix, get_db
 
     db = get_db()
-    data = request.get_json() or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="JSON object required"), 400
     listing_ids = data.get("listing_ids") or []
 
     if not isinstance(listing_ids, list) or not listing_ids:
         return jsonify(error="listing_ids must be a non-empty array"), 400
+    if len(listing_ids) > 200:
+        return jsonify(error="listing_ids may contain at most 200 values"), 400
 
     try:
         ids = [int(item) for item in listing_ids]
@@ -1041,7 +1476,7 @@ def admin_bulk_delete():
 
 
 @admin_bp.route("/export/csv", methods=["GET"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_WRITE)
 def admin_export_csv():
     from app import get_db
 
@@ -1109,7 +1544,7 @@ def admin_export_csv():
 # ─── Image Management ────────────────────────────────────────────────
 
 @admin_bp.route("/listings/<int:listing_id>/images", methods=["POST"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_WRITE)
 def admin_upload_image(listing_id):
     """Upload image for listing"""
     from app import get_db
@@ -1151,10 +1586,7 @@ def admin_upload_image(listing_id):
     # Save to DB
     image_url = f"/images/listings/{listing_id}/{filename}"
     
-    db.execute(
-        "INSERT INTO listing_images (listing_id, image_url, 'order') VALUES (?, ?, ?)",
-        (listing_id, image_url, 0)
-    )
+    db.execute(LISTING_IMAGE_INSERT_SQL, (listing_id, image_url, 0))
     current_images_row = db.execute(
         "SELECT images FROM listings WHERE id = ?",
         (listing_id,)
@@ -1186,7 +1618,7 @@ def admin_upload_image(listing_id):
 
 
 @admin_bp.route("/listings/<int:listing_id>/images/<int:image_id>", methods=["DELETE"])
-@require_auth_admin
+@require_permission(Permission.LISTINGS_WRITE)
 def admin_delete_image(listing_id, image_id):
     """Delete image"""
     from app import get_db
@@ -1232,7 +1664,7 @@ def admin_delete_image(listing_id, image_id):
 # ─── User Management ────────────────────────────────────────────────
 
 @admin_bp.route("/users", methods=["GET"])
-@require_auth_admin
+@require_permission(Permission.USERS_MANAGE)
 def admin_get_users():
     """Get all users"""
     from app import get_db
@@ -1240,9 +1672,16 @@ def admin_get_users():
     db = get_db()
     args = request.args
     
-    role = (args.get('role') or '').strip()
-    limit = min(int(args.get('limit', 50)), 200)
-    offset = max(int(args.get('offset', 0)), 0)
+    role = (args.get("role") or "").strip().lower()
+    search = (args.get("search") or "").strip()
+    if role and role not in {"user", "agent", "admin", "moderator"}:
+        return jsonify(error="Invalid role filter"), 400
+    if len(search) > 120:
+        return jsonify(error="search must be at most 120 characters"), 400
+    try:
+        limit, offset = parse_pagination(args)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     
     query = "SELECT id, name, email, role, status, created_at FROM users WHERE 1=1"
     params = []
@@ -1250,6 +1689,13 @@ def admin_get_users():
     if role:
         query += " AND role = ?"
         params.append(role)
+    if search:
+        query += " AND (name LIKE ? OR email LIKE ?)"
+        term = f"%{search}%"
+        params.extend([term, term])
+
+    total_query = "SELECT COUNT(*) FROM (" + query + ") filtered_users"
+    total = db.execute(total_query, params).fetchone()[0]
     
     query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
@@ -1258,24 +1704,27 @@ def admin_get_users():
     
     return jsonify(
         users=[dict(row) for row in rows],
+        total=total,
         limit=limit,
         offset=offset
     )
 
 
 @admin_bp.route("/users/<int:user_id>", methods=["PUT"])
-@require_auth_admin
+@require_permission(Permission.USERS_MANAGE)
 def admin_update_user(user_id):
     """Update user role/status"""
     from app import get_db
     
     db = get_db()
-    data = request.get_json() or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="JSON object required"), 400
     
     if 'role' not in data and 'status' not in data:
         return jsonify(error="No updates provided"), 400
 
-    allowed_roles = {'user', 'agent', 'admin'}
+    allowed_roles = {'user', 'agent', 'admin', 'moderator'}
     allowed_statuses = {'active', 'inactive', 'suspended'}
     role = str(data.get('role') or '').strip().lower() if 'role' in data else None
     status = str(data.get('status') or '').strip().lower() if 'status' in data else None
@@ -1285,11 +1734,43 @@ def admin_update_user(user_id):
         return jsonify(error=f"Invalid status. Allowed: {sorted(allowed_statuses)}"), 400
 
     existing = db.execute(
-        "SELECT role, status FROM users WHERE id = ?",
+        "SELECT id, role, status FROM users WHERE id = ?",
         (user_id,),
     ).fetchone()
     if not existing:
         return jsonify(error="User not found"), 404
+
+    resulting_role = role if role is not None else existing["role"]
+    resulting_status = status if status is not None else existing["status"]
+    removes_admin_access = (
+        existing["role"] == StaffRole.ADMIN.value
+        and (
+            resulting_role != StaffRole.ADMIN.value
+            or resulting_status != "active"
+        )
+    )
+    if existing["id"] == g.user_id and (
+        resulting_role != StaffRole.ADMIN.value or resulting_status != "active"
+    ):
+        return jsonify(error="You cannot remove your own admin access"), 409
+    if removes_admin_access:
+        if getattr(db, "_is_postgres", False):
+            active_admins = len(
+                db.execute(
+                    """
+                    SELECT id FROM users
+                    WHERE role = 'admin' AND status = 'active'
+                    ORDER BY id
+                    FOR UPDATE
+                    """
+                ).fetchall()
+            )
+        else:
+            active_admins = db.execute(
+                "SELECT COUNT(*) FROM users WHERE role = 'admin' AND status = 'active'"
+            ).fetchone()[0]
+        if int(active_admins or 0) <= 1:
+            return jsonify(error="At least one active admin is required"), 409
 
     updates = []
     params = []
@@ -1300,6 +1781,7 @@ def admin_update_user(user_id):
         updates.append("status = ?")
         params.append(status)
     if not updates:
+        db.rollback()
         return jsonify(ok=True)
 
     updates.append("auth_token_version = auth_token_version + 1")
@@ -1310,6 +1792,611 @@ def admin_update_user(user_id):
     db.commit()
     
     return jsonify(ok=True)
+
+
+# ─── Staff operations contracts ──────────────────────────────────────
+
+REPORT_STATUSES = {"pending", "reviewing", "resolved", "dismissed"}
+REPORT_TRANSITIONS = {
+    "pending": {"pending", "reviewing", "resolved", "dismissed"},
+    "reviewing": {"reviewing", "resolved", "dismissed"},
+    "resolved": {"resolved"},
+    "dismissed": {"dismissed"},
+}
+LEAD_STATUSES = {"new", "viewed", "responded", "closed"}
+LEAD_TRANSITIONS = {
+    "new": LEAD_STATUSES,
+    "viewed": {"viewed", "responded", "closed"},
+    "responded": {"responded", "closed"},
+    "closed": {"closed"},
+}
+VERIFICATION_STATUSES = {"unverified", "pending", "verified", "rejected"}
+
+
+def _serialize_listing_report(row):
+    return {
+        "id": int(row["id"]),
+        "listing_id": int(row["listing_id"]),
+        "listing_title": row["listing_title"],
+        "reason_code": row["reason_code"],
+        "details": row["details"] or "",
+        "status": row["status"],
+        "created_at": row["created_at"],
+    }
+
+
+@admin_bp.route("/reports/listings", methods=["GET"])
+@admin_bp.route("/listing-reports", methods=["GET"])
+@require_permission(Permission.REPORTS_MANAGE)
+def admin_listing_reports():
+    from app import get_db
+
+    try:
+        limit, offset = parse_pagination(request.args, max_limit=100)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    status = (request.args.get("status") or "").strip().lower()
+    search = (request.args.get("search") or "").strip()
+    if status and status not in REPORT_STATUSES:
+        return jsonify(error="Invalid report status"), 400
+    if len(search) > 120:
+        return jsonify(error="search must be at most 120 characters"), 400
+    clauses, params = [], []
+    if status:
+        clauses.append("lr.status = ?")
+        params.append(status)
+    if search:
+        clauses.append("(l.title LIKE ? OR lr.reason_code LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%"])
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    db = get_db()
+    total = db.execute(
+        f"SELECT COUNT(*) FROM listing_reports lr JOIN listings l ON l.id = lr.listing_id{where}",
+        params,
+    ).fetchone()[0]
+    rows = db.execute(
+        f"""
+        SELECT lr.id, lr.listing_id, l.title AS listing_title, lr.reason_code,
+               lr.details, lr.status, lr.created_at
+        FROM listing_reports lr
+        JOIN listings l ON l.id = lr.listing_id
+        {where}
+        ORDER BY CASE lr.status WHEN 'pending' THEN 0 WHEN 'reviewing' THEN 1 ELSE 2 END,
+                 lr.created_at ASC, lr.id ASC
+        LIMIT ? OFFSET ?
+        """,
+        params + [limit, offset],
+    ).fetchall()
+    return jsonify(
+        reports=[_serialize_listing_report(row) for row in rows],
+        total=int(total),
+        limit=limit,
+        offset=offset,
+    )
+
+
+@admin_bp.route("/reports/listings/<int:report_id>", methods=["GET"])
+@admin_bp.route("/listing-reports/<int:report_id>", methods=["GET"])
+@require_permission(Permission.REPORTS_MANAGE)
+def admin_listing_report_detail(report_id):
+    from app import get_db
+
+    row = get_db().execute(
+        """
+        SELECT lr.id, lr.listing_id, l.title AS listing_title, lr.reason_code,
+               lr.details, lr.status, lr.created_at
+        FROM listing_reports lr
+        JOIN listings l ON l.id = lr.listing_id
+        WHERE lr.id = ?
+        """,
+        (report_id,),
+    ).fetchone()
+    if not row:
+        return jsonify(error="Report not found"), 404
+    return jsonify(report=_serialize_listing_report(row))
+
+
+@admin_bp.route("/reports/listings/<int:report_id>", methods=["PATCH"])
+@admin_bp.route("/listing-reports/<int:report_id>", methods=["PATCH"])
+@require_permission(Permission.REPORTS_MANAGE)
+def admin_update_listing_report(report_id):
+    from app import get_db
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="JSON object required"), 400
+    status = str(data.get("status") or "").strip().lower()
+    if status not in REPORT_STATUSES:
+        return jsonify(error="Invalid report status"), 400
+    db = get_db()
+    existing = db.execute(
+        "SELECT status FROM listing_reports WHERE id = ?", (report_id,)
+    ).fetchone()
+    if not existing:
+        return jsonify(error="Report not found"), 404
+    if status not in REPORT_TRANSITIONS.get(existing["status"], set()):
+        return jsonify(error="Invalid report status transition"), 409
+    transition = db.execute(
+        "UPDATE listing_reports SET status = ? WHERE id = ? AND status = ?",
+        (status, report_id, existing["status"]),
+    )
+    if transition.rowcount != 1:
+        db.rollback()
+        return jsonify(error="Report status changed; refresh and try again"), 409
+    db.commit()
+    return jsonify(ok=True, status=status)
+
+
+@admin_bp.route("/verifications", methods=["GET"])
+@require_permission(Permission.VERIFICATIONS_MANAGE)
+def admin_verification_queue():
+    from app import get_db
+
+    try:
+        limit, offset = parse_pagination(request.args, max_limit=100)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    status = (request.args.get("status") or "pending").strip().lower()
+    if status not in VERIFICATION_STATUSES:
+        return jsonify(error="Invalid verification status"), 400
+    params = [status, status, status]
+    where = """
+        WHERE listing_verification_status = ?
+           OR owner_verification_status = ?
+           OR phone_verification_status = ?
+    """
+    db = get_db()
+    total = db.execute(f"SELECT COUNT(*) FROM listings {where}", params).fetchone()[0]
+    rows = db.execute(
+        f"""
+        SELECT id, title, city, status, listing_verification_status,
+               owner_verification_status, phone_verification_status, created_at
+        FROM listings {where}
+        ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?
+        """,
+        params + [limit, offset],
+    ).fetchall()
+    return jsonify(
+        verifications=[dict(row) for row in rows],
+        total=int(total),
+        limit=limit,
+        offset=offset,
+    )
+
+
+@admin_bp.route("/verifications/<int:listing_id>", methods=["PATCH"])
+@require_permission(Permission.VERIFICATIONS_MANAGE)
+def admin_update_verification(listing_id):
+    from app import (
+        cache_delete_prefix,
+        get_db,
+        log_field_change,
+        log_listing_event,
+    )
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="JSON object required"), 400
+    fields = {
+        "listing_verification_status": "listing_verification_status",
+        "owner_verification_status": "owner_verification_status",
+        "phone_verification_status": "phone_verification_status",
+    }
+    supplied = {key: str(data[key]).strip().lower() for key in fields if key in data}
+    if not supplied:
+        return jsonify(error="No verification status provided"), 400
+    if any(value not in VERIFICATION_STATUSES for value in supplied.values()):
+        return jsonify(error="Invalid verification status"), 400
+    db = get_db()
+    listing = db.execute(
+        """
+        SELECT id, listing_verification_status, owner_verification_status,
+               phone_verification_status
+        FROM listings WHERE id = ?
+        """,
+        (listing_id,),
+    ).fetchone()
+    if not listing:
+        return jsonify(error="Listing not found"), 404
+    updates, params = [], []
+    for field, value in supplied.items():
+        updates.append(f"{field} = ?")
+        params.append(value)
+        if field == "listing_verification_status":
+            log_field_change(db, listing_id, field, listing[field], value, "admin")
+    if "owner_verification_status" in supplied:
+        updates.append("verified_owner = ?")
+        params.append(int(supplied["owner_verification_status"] == "verified"))
+    if "phone_verification_status" in supplied:
+        updates.append("verified_phone = ?")
+        params.append(int(supplied["phone_verification_status"] == "verified"))
+    params.append(listing_id)
+    db.execute(f"UPDATE listings SET {', '.join(updates)} WHERE id = ?", params)
+    log_listing_event(db, listing_id, "verification_updated", admin_id=g.user_id)
+    db.commit()
+    cache_delete_prefix("public:listings:")
+    return jsonify(ok=True, listing_id=listing_id, **supplied)
+
+
+def _serialize_admin_lead(row):
+    return {
+        "id": int(row["id"]),
+        "lead_type": row["lead_type"],
+        "source": row["source"],
+        "name": row["name"],
+        "phone": row["phone"],
+        "email": row["email"],
+        "preferred_channel": row["preferred_channel"] or "phone",
+        "listing_id": row["listing_id"],
+        "listing_title": row["listing_title"],
+        "city": row["city"],
+        "district": row["district"],
+        "message": row["message"] or "",
+        "status": row["status"] or "new",
+        "response_message": row["response_message"] or "",
+        "responded_at": row["responded_at"],
+        "created_at": row["created_at"],
+    }
+
+
+def _admin_lead_select():
+    return """
+        SELECT lr.id, lr.lead_type, lr.source, lr.name, lr.phone, lr.email,
+               lr.preferred_channel, lr.listing_id, l.title AS listing_title,
+               lr.city, lr.district, lr.message, lr.status,
+               lr.response_message, lr.responded_at, lr.created_at
+        FROM lead_requests lr
+        LEFT JOIN listings l ON l.id = lr.listing_id
+    """
+
+
+@admin_bp.route("/leads", methods=["GET"])
+@require_permission(Permission.LEADS_MANAGE)
+def admin_leads():
+    from app import get_db
+
+    try:
+        limit, offset = parse_pagination(request.args, max_limit=100)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    status = (request.args.get("status") or "").strip().lower()
+    search = (request.args.get("search") or "").strip()
+    if status and status not in LEAD_STATUSES:
+        return jsonify(error="Invalid lead status"), 400
+    if len(search) > 120:
+        return jsonify(error="search must be at most 120 characters"), 400
+    clauses, params = [], []
+    if status:
+        clauses.append("lr.status = ?")
+        params.append(status)
+    if search:
+        clauses.append("(lr.name LIKE ? OR lr.email LIKE ? OR lr.phone LIKE ?)")
+        params.extend([f"%{search}%"] * 3)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    db = get_db()
+    total = db.execute(f"SELECT COUNT(*) FROM lead_requests lr{where}", params).fetchone()[0]
+    rows = db.execute(
+        _admin_lead_select() + where
+        + " ORDER BY lr.created_at DESC, lr.id DESC LIMIT ? OFFSET ?",
+        params + [limit, offset],
+    ).fetchall()
+    return jsonify(
+        leads=[_serialize_admin_lead(row) for row in rows],
+        total=int(total),
+        limit=limit,
+        offset=offset,
+    )
+
+
+@admin_bp.route("/leads/<int:lead_id>", methods=["GET"])
+@require_permission(Permission.LEADS_MANAGE)
+def admin_lead_detail(lead_id):
+    from app import get_db
+
+    row = get_db().execute(
+        _admin_lead_select() + " WHERE lr.id = ?", (lead_id,)
+    ).fetchone()
+    if not row:
+        return jsonify(error="Lead not found"), 404
+    return jsonify(lead=_serialize_admin_lead(row))
+
+
+@admin_bp.route("/leads/<int:lead_id>", methods=["PATCH"])
+@require_permission(Permission.LEADS_MANAGE)
+def admin_update_lead(lead_id):
+    from app import cache_delete_prefix, get_db
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error="JSON object required"), 400
+    status = str(data.get("status") or "").strip().lower()
+    response_message = str(data.get("response_message") or "").strip()[:1200]
+    if status not in LEAD_STATUSES:
+        return jsonify(error="Invalid lead status"), 400
+    db = get_db()
+    row = db.execute(
+        "SELECT status FROM lead_requests WHERE id = ?", (lead_id,)
+    ).fetchone()
+    if not row:
+        return jsonify(error="Lead not found"), 404
+    current_status = row["status"] or "new"
+    if status not in LEAD_TRANSITIONS.get(current_status, set()):
+        return jsonify(error="Invalid lead status transition"), 409
+    if status == "responded" and not response_message:
+        return jsonify(error="response_message is required when responding"), 400
+    responded_at = (
+        datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ")
+        if status == "responded" else None
+    )
+    transition = db.execute(
+        """
+        UPDATE lead_requests
+        SET status = ?, response_message = CASE WHEN ? = '' THEN response_message ELSE ? END,
+            responded_at = COALESCE(?, responded_at)
+        WHERE id = ? AND COALESCE(status, 'new') = ?
+        """,
+        (
+            status,
+            response_message,
+            response_message,
+            responded_at,
+            lead_id,
+            current_status,
+        ),
+    )
+    if transition.rowcount != 1:
+        db.rollback()
+        return jsonify(error="Lead status changed; refresh and try again"), 409
+    db.commit()
+    cache_delete_prefix("admin:reports:lead-funnel:")
+    return jsonify(ok=True, status=status, responded_at=responded_at)
+
+
+@admin_bp.route("/agencies", methods=["GET"])
+@require_permission(Permission.AGENCIES_MANAGE)
+def admin_agencies():
+    from app import _agency_metrics, get_db
+
+    try:
+        limit, offset = parse_pagination(request.args, default_limit=30, max_limit=100)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    search = (request.args.get("search") or "").strip()
+    if len(search) > 120:
+        return jsonify(error="search must be at most 120 characters"), 400
+    where, params = "", ()
+    if search:
+        where = "WHERE ap.name LIKE ? OR ap.slug LIKE ? OR ap.city LIKE ?"
+        params = (f"%{search}%",) * 3
+    db = get_db()
+    total = db.execute(
+        "SELECT COUNT(*) FROM agency_profiles ap "
+        + (where if where else ""),
+        params,
+    ).fetchone()[0]
+    agencies = _agency_metrics(
+        db, where_sql=where, where_params=params, limit=limit + offset
+    )[offset:offset + limit]
+    return jsonify(agencies=agencies, total=int(total), limit=limit, offset=offset)
+
+
+@admin_bp.route("/agencies/<string:slug>", methods=["GET"])
+@require_permission(Permission.AGENCIES_MANAGE)
+def admin_agency_detail(slug):
+    from app import _agency_metrics, get_db
+
+    rows = _agency_metrics(
+        get_db(), where_sql="WHERE ap.slug = ?", where_params=(slug,), limit=1
+    )
+    if not rows:
+        return jsonify(error="Agency not found"), 404
+    return jsonify(agency=rows[0])
+
+
+def _validate_agency_payload(data, *, creating=False):
+    if not isinstance(data, dict):
+        raise ValueError("JSON object required")
+    values = {}
+    if creating or "slug" in data:
+        slug = str(data.get("slug") or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug) or len(slug) > 80:
+            raise ValueError("Invalid agency slug")
+        values["slug"] = slug
+    for field, maximum in (("name", 160), ("city", 120), ("specialization", 500)):
+        if creating or field in data:
+            value = str(data.get(field) or "").strip()
+            if (field != "specialization" and not value) or len(value) > maximum:
+                raise ValueError(f"Invalid {field}")
+            values[field] = value
+    if creating or "kind" in data:
+        kind = str(data.get("kind") or "agency").strip().lower()
+        if kind not in {"agency", "developer"}:
+            raise ValueError("kind must be agency or developer")
+        values["kind"] = kind
+    for field in ("avg_response_minutes", "team_size", "completed_deals"):
+        if field in data:
+            try:
+                value = int(data[field])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{field} must be an integer") from exc
+            if value < 0 or value > 1_000_000:
+                raise ValueError(f"Invalid {field}")
+            values[field] = value
+    return values
+
+
+@admin_bp.route("/agencies", methods=["POST"])
+@require_permission(Permission.AGENCIES_MANAGE)
+def admin_create_agency():
+    from app import get_db
+
+    try:
+        values = _validate_agency_payload(request.get_json(silent=True), creating=True)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    db = get_db()
+    if db.execute("SELECT 1 FROM agency_profiles WHERE slug = ?", (values["slug"],)).fetchone():
+        return jsonify(error="Agency slug already exists"), 409
+    cursor = db.execute(
+        """
+        INSERT INTO agency_profiles (
+            slug, name, kind, city, specialization,
+            avg_response_minutes, team_size, completed_deals
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            values["slug"], values["name"], values["kind"], values["city"],
+            values["specialization"], values.get("avg_response_minutes"),
+            values.get("team_size"), values.get("completed_deals", 0),
+        ),
+    )
+    db.commit()
+    return jsonify(ok=True, id=cursor.lastrowid, slug=values["slug"]), 201
+
+
+@admin_bp.route("/agencies/<string:slug>", methods=["PATCH"])
+@require_permission(Permission.AGENCIES_MANAGE)
+def admin_update_agency(slug):
+    from app import get_db
+
+    try:
+        values = _validate_agency_payload(request.get_json(silent=True))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    values.pop("slug", None)
+    if not values:
+        return jsonify(error="No agency fields provided"), 400
+    db = get_db()
+    if not db.execute("SELECT 1 FROM agency_profiles WHERE slug = ?", (slug,)).fetchone():
+        return jsonify(error="Agency not found"), 404
+    db.execute(
+        f"UPDATE agency_profiles SET {', '.join(f'{key} = ?' for key in values)} WHERE slug = ?",
+        list(values.values()) + [slug],
+    )
+    db.commit()
+    return jsonify(ok=True, slug=slug)
+
+
+@admin_bp.route("/agencies/<string:slug>/verify", methods=["POST"])
+@require_permission(Permission.AGENCIES_MANAGE)
+def admin_verify_agency(slug):
+    from app import db_now_expr, get_db
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("verified"), bool):
+        return jsonify(error="verified must be a boolean"), 400
+    db = get_db()
+    if not db.execute("SELECT 1 FROM agency_profiles WHERE slug = ?", (slug,)).fetchone():
+        return jsonify(error="Agency not found"), 404
+    db.execute(
+        f"""
+        UPDATE agency_profiles
+        SET is_verified = ?,
+            last_verified_at = CASE WHEN ? = 1 THEN {db_now_expr()} ELSE NULL END
+        WHERE slug = ?
+        """,
+        (int(data["verified"]), int(data["verified"]), slug),
+    )
+    db.commit()
+    return jsonify(ok=True, slug=slug, is_verified=data["verified"])
+
+
+@admin_bp.route("/listings/<int:listing_id>/history", methods=["GET"])
+@require_permission(Permission.LISTINGS_READ)
+def admin_listing_history(listing_id):
+    from app import get_db, public_field_history
+
+    try:
+        limit, offset = parse_pagination(request.args, default_limit=50, max_limit=50)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    if offset:
+        return jsonify(error="offset is not supported for listing history"), 400
+    db = get_db()
+    if not db.execute("SELECT 1 FROM listings WHERE id = ?", (listing_id,)).fetchone():
+        return jsonify(error="Listing not found"), 404
+    history = public_field_history(db, listing_id, limit)
+    return jsonify(
+        listing_id=listing_id,
+        history=history,
+        price_history=[row for row in history if row["field_name"] == "price"],
+    )
+
+
+@admin_bp.route("/audit", methods=["GET"])
+@require_permission(Permission.AUDIT_READ)
+def admin_audit():
+    from app import get_db
+
+    try:
+        limit, offset = parse_pagination(request.args, max_limit=100)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    clauses, params = [], []
+    for argument, column in (
+        ("actor_id", "aal.actor_id"),
+        ("action", "aal.action"),
+        ("permission", "aal.permission"),
+        ("resource_type", "aal.resource_type"),
+        ("resource_id", "aal.resource_id"),
+    ):
+        value = (request.args.get(argument) or "").strip()
+        if value:
+            if len(value) > 120:
+                return jsonify(error=f"{argument} is too long"), 400
+            if argument == "actor_id":
+                try:
+                    value = int(value)
+                except ValueError:
+                    return jsonify(error="actor_id must be an integer"), 400
+            clauses.append(f"{column} = ?")
+            params.append(value)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    db = get_db()
+    total = db.execute(f"SELECT COUNT(*) FROM admin_audit_log aal{where}", params).fetchone()[0]
+    rows = db.execute(
+        f"""
+        SELECT aal.id, aal.actor_id, aal.actor_role, u.name AS actor_name,
+               aal.action, aal.permission, aal.resource_type, aal.resource_id,
+               aal.metadata_json, aal.request_id, aal.created_at
+        FROM admin_audit_log aal
+        LEFT JOIN users u ON u.id = aal.actor_id
+        {where}
+        ORDER BY aal.created_at DESC, aal.id DESC LIMIT ? OFFSET ?
+        """,
+        params + [limit, offset],
+    ).fetchall()
+    entries = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        except json.JSONDecodeError:
+            item["metadata"] = {}
+        entries.append(item)
+    return jsonify(audit=entries, total=int(total), limit=limit, offset=offset)
+
+
+@admin_bp.route("/system/health", methods=["GET"])
+@require_permission(Permission.SYSTEM_READ)
+def admin_system_health():
+    from app import get_db
+
+    db = get_db()
+    db.execute("SELECT 1").fetchone()
+    return jsonify(
+        status="ok",
+        database="ok",
+        counts={
+            "users": int(db.execute("SELECT COUNT(*) FROM users").fetchone()[0]),
+            "listings": int(db.execute("SELECT COUNT(*) FROM listings").fetchone()[0]),
+            "pending_reports": int(db.execute(
+                "SELECT COUNT(*) FROM listing_reports WHERE status = 'pending'"
+            ).fetchone()[0]),
+        },
+        request_id=getattr(g, "request_id", None),
+    )
 
 
 # ─── Reports ────────────────────────────────────────────────────────
@@ -1461,6 +2548,8 @@ def admin_report_observability():
         hours_int = int(hours)
     except ValueError:
         return jsonify(error="hours must be integer"), 400
+    if hours_int < 1 or hours_int > 168:
+        return jsonify(error="hours must be between 1 and 168"), 400
     return jsonify(_build_observability_report(db, hours_int))
 
 
@@ -1714,7 +2803,8 @@ def admin_report_lead_funnel():
         days_int = int(days)
     except ValueError:
         return jsonify(error="days must be integer"), 400
-    days_int = max(1, min(days_int, 180))
+    if days_int < 1 or days_int > 180:
+        return jsonify(error="days must be between 1 and 180"), 400
     return jsonify(_build_lead_funnel_report(db, days_int))
 
 
@@ -1729,7 +2819,8 @@ def admin_report_lead_funnel_csv():
         days_int = int(days)
     except ValueError:
         return jsonify(error="days must be integer"), 400
-    days_int = max(1, min(days_int, 180))
+    if days_int < 1 or days_int > 180:
+        return jsonify(error="days must be between 1 and 180"), 400
 
     report = _build_lead_funnel_report(db, days_int)
     buffer = io.StringIO()

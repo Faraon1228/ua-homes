@@ -109,6 +109,10 @@ Railway має вбудовану PostgreSQL і Redis.
 - `NETLIFY_SITE_ID` (опціонально)
 - `UA_HOMES_API` (встановити після Railway)
 
+Repository variables для monitoring:
+- `UA_HOMES_DATABASE_ENGINE=postgresql`
+- `UA_HOMES_ADMIN_URL=https://<admin-domain>` для synthetic check login shell
+
 ---
 
 ## 🧪 Тестування

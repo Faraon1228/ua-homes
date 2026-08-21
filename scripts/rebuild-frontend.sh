@@ -86,6 +86,28 @@ if [ "$CATALOG_BYTES" -gt 130000 ] || [ "$SELLER_BYTES" -gt 135000 ]; then
   exit 1
 fi
 
+# ── staff admin panel: self-hosted vendor copy + JSX bundles ──
+# The admin panel is deployed as its own Netlify site rooted at web/admin
+# (see web/admin/netlify.toml), so it cannot reach web/vendor via a relative
+# "../" URL — the pinned React/ReactDOM UMD builds are copied in verbatim on
+# every build instead of being duplicated by hand.
+echo "🔐 Compiling admin panel bundles ..."
+mkdir -p "$WEB_DIR/admin/vendor"
+cp "$WEB_DIR/vendor/react.production.min.js" "$WEB_DIR/admin/vendor/react.production.min.js"
+cp "$WEB_DIR/vendor/react-dom.production.min.js" "$WEB_DIR/admin/vendor/react-dom.production.min.js"
+
+rm -rf "$WEB_DIR/admin/chunks"
+"$ESBUILD" "$WEB_DIR/admin/src/admin-entry.jsx" 2>/dev/null \
+  --bundle --format=esm --splitting --jsx=transform --jsx-factory=React.createElement \
+  --jsx-fragment=React.Fragment --target=es2020 --minify \
+  --charset=utf8 --outdir="$WEB_DIR/admin" --entry-names=admin-app \
+  --chunk-names=chunks/[name]-[hash] && echo "   ✅ admin-app.js compiled ($(wc -c < "$WEB_DIR/admin/admin-app.js" | tr -d ' ') bytes)"
+
+"$ESBUILD" "$WEB_DIR/admin/src/login-entry.jsx" 2>/dev/null \
+  --bundle --format=esm --jsx=transform --jsx-factory=React.createElement \
+  --jsx-fragment=React.Fragment --target=es2020 --minify \
+  --charset=utf8 --outfile="$WEB_DIR/admin/login-app.js" && echo "   ✅ login-app.js compiled ($(wc -c < "$WEB_DIR/admin/login-app.js" | tr -d ' ') bytes)"
+
 # ── generate purged Tailwind CSS ──
 echo "🎨 Generating purged ua-homes.css ..."
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ua-dim-frontend.XXXXXX")"
@@ -106,7 +128,6 @@ module.exports = {
     '${WEB_DIR}/real-estate-demo.html',
     '${WEB_DIR}/real-estate-app.js',
     '${WEB_DIR}/RealEstateApp.jsx',
-    '${WEB_DIR}/admin/dashboard.html',
   ],
   theme: { extend: {} },
   plugins: [],
