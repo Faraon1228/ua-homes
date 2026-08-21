@@ -58,14 +58,17 @@ def main():
 
     cli_versions = re.findall(r"netlify-cli@([0-9]+\.[0-9]+\.[0-9]+)", deploy_job)
     require(cli_versions == ["27.1.2"], "Netlify CLI must be pinned exactly once")
+    require("--prod" in deploy_job, "--prod must remain the production deploy selector")
     for flag in (
-        "--prod",
-        "--context=production",
         "--no-build",
         "--dir=web",
         '--site="${NETLIFY_SITE_ID}"',
     ):
         require(flag in deploy_job, f"Netlify deploy is missing {flag}")
+    require(
+        not ("--no-build" in deploy_job and "--context" in deploy_job),
+        "Netlify CLI does not allow --context together with --no-build",
+    )
     require("--auth" not in deploy_job, "auth token must be read from the environment, not argv")
     require("test -f netlify.toml" in deploy_job, "deploy must require the root Netlify config")
     require(
