@@ -40,7 +40,10 @@ from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
-from backend.monitoring import bind_request_context, initialize_sentry, monitoring_state
+if __package__:
+    from .monitoring import bind_request_context, initialize_sentry, monitoring_state
+else:
+    from monitoring import bind_request_context, initialize_sentry, monitoring_state
 
 # Optional: Image optimization (Pillow)
 try:
