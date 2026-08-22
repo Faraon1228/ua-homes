@@ -120,13 +120,32 @@ Production email verification now returns a clear 503 if neither SendGrid nor SM
 
 Saved alerts delivery uses the same email provider settings (`SENDGRID_API_KEY` or SMTP vars).
 
-## Saved alerts delivery / dispatch (optional but recommended)
+## Saved alerts delivery / dispatch
 
-| Variable | Description |
-|---|---|
-| `UA_HOMES_ALERTS_DISPATCH_KEY` | Shared secret for `POST /api/alerts/dispatch` (header: `X-Alerts-Dispatch-Key`) |
-| `UA_HOMES_ALERTS_PUSH_WEBHOOK_URL` | Webhook URL for push delivery payloads (`saved_alert_match`) |
-| `UA_HOMES_ALERTS_PUSH_WEBHOOK_BEARER` | Optional bearer token for push webhook authorization |
+| Variable | Required | Description |
+|---|---|---|
+| `UA_HOMES_FIREBASE_SERVICE_ACCOUNT_BASE64` | Production push | Base64-encoded Firebase Admin service-account JSON for project `ua-dim-production`. Store only in Railway; never expose it to mobile builds or GitHub logs. |
+| `UA_HOMES_ALERTS_DISPATCH_KEY` | Recommended | Shared secret for `POST /api/alerts/dispatch` (header: `X-Alerts-Dispatch-Key`) |
+| `UA_HOMES_ALERTS_PUSH_WEBHOOK_URL` | Optional fallback | Existing webhook URL for push delivery payloads (`saved_alert_match`) |
+| `UA_HOMES_ALERTS_PUSH_WEBHOOK_BEARER` | Optional fallback | Authorization credential sent to the push webhook |
+
+Firebase Admin is the production delivery path when
+`UA_HOMES_FIREBASE_SERVICE_ACCOUNT_BASE64` is configured. The webhook is called
+only when Firebase is unconfigured or unavailable before an FCM request starts.
+It is never called after an FCM request, including transient or partial failures,
+because retrying through another provider could duplicate notifications.
+Firebase responses that identify invalid, unregistered, or sender-mismatched
+tokens deactivate those rows in `push_devices`.
+
+Generate the Railway value without copying JSON into source control:
+
+```bash
+base64 < ua-dim-production-service-account.json | tr -d '\n'
+```
+
+Use a dedicated service account in `ua-dim-production` with only the Firebase
+Cloud Messaging API Admin role. Keep the downloaded key out of Git, mobile build
+secrets, and logs; rotate it through Railway when required.
 
 Dispatch endpoints:
 - `POST/GET /api/alerts/dispatch` — run matching + delivery (`listing_id`, `dry_run`, `trigger` supported).

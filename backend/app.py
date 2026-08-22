@@ -14,6 +14,7 @@ Environment variables:
                         If absent, falls back to in-process memory (dev only).
 """
 import base64
+import binascii
 import hashlib
 import hmac
 import ipaddress
@@ -26,11 +27,13 @@ import secrets
 import statistics
 import datetime
 import tempfile
+import threading
 import time
 import sys
 from decimal import Decimal, InvalidOperation
 from html import escape
 from functools import wraps
+from typing import NamedTuple
 from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import bcrypt
@@ -1422,6 +1425,14 @@ limiter = Limiter(
 ALERTS_DISPATCH_KEY = os.environ.get("UA_HOMES_ALERTS_DISPATCH_KEY", "").strip()
 ALERTS_PUSH_WEBHOOK_URL = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_URL", "").strip()
 ALERTS_PUSH_WEBHOOK_BEARER = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_BEARER", "").strip()
+FIREBASE_SERVICE_ACCOUNT_BASE64 = os.environ.get(
+    "UA_HOMES_FIREBASE_SERVICE_ACCOUNT_BASE64", ""
+).strip()
+FIREBASE_PROJECT_ID = "ua-dim-production"
+_FIREBASE_APP_NAME = "ua-homes-alerts"
+_firebase_app = None
+_firebase_init_failed = False
+_firebase_init_lock = threading.Lock()
 
 def _cache_control_for_request() -> str | None:
     if request.method != "GET":
@@ -3540,7 +3551,183 @@ def send_alert_listing_email(
     return True
 
 
-def send_alert_push_payload(payload: dict) -> bool:
+class _FirebasePushResult(NamedTuple):
+    configured: bool
+    attempted: bool
+    success: bool
+    invalid_tokens: tuple[str, ...] = ()
+
+
+def _get_firebase_app():
+    global _firebase_app, _firebase_init_failed
+    if not FIREBASE_SERVICE_ACCOUNT_BASE64 or _firebase_init_failed:
+        return None
+    if _firebase_app is not None:
+        return _firebase_app
+
+    with _firebase_init_lock:
+        if _firebase_app is not None or _firebase_init_failed:
+            return _firebase_app
+        try:
+            import firebase_admin
+            from firebase_admin import credentials
+
+            decoded = base64.b64decode(
+                FIREBASE_SERVICE_ACCOUNT_BASE64.encode("ascii"),
+                validate=True,
+            )
+            service_account = json.loads(decoded.decode("utf-8"))
+            if not isinstance(service_account, dict):
+                raise ValueError("service account JSON must be an object")
+            if service_account.get("type") != "service_account":
+                raise ValueError("credential is not a service account")
+            if service_account.get("project_id") != FIREBASE_PROJECT_ID:
+                raise ValueError("credential belongs to an unexpected Firebase project")
+            _firebase_app = firebase_admin.initialize_app(
+                credentials.Certificate(service_account),
+                {"projectId": FIREBASE_PROJECT_ID},
+                name=_FIREBASE_APP_NAME,
+            )
+        except (
+            ImportError,
+            UnicodeEncodeError,
+            UnicodeDecodeError,
+            binascii.Error,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            _firebase_init_failed = True
+            app.logger.error(
+                "Firebase Admin initialization failed for %s (%s); "
+                "verify that it contains base64-encoded service-account JSON for project %s",
+                "UA_HOMES_FIREBASE_SERVICE_ACCOUNT_BASE64",
+                type(exc).__name__,
+                FIREBASE_PROJECT_ID,
+            )
+            return None
+    return _firebase_app
+
+
+def _firebase_notification(payload: dict) -> tuple[str, str, dict[str, str]]:
+    listing = payload.get("listing") if isinstance(payload.get("listing"), dict) else {}
+    event = str(payload.get("event") or "saved_alert_match")
+    if event == "saved_alert_price_change":
+        title = "Ціна оголошення змінилася"
+    else:
+        title = "Нове оголошення за вашим пошуком"
+    body = str(listing.get("title") or payload.get("name") or "Відкрийте UA-Dim, щоб переглянути")
+    city = str(listing.get("city") or "").strip()
+    if city and city.lower() not in body.lower():
+        body = f"{body} · {city}"
+    data = {
+        "event": event,
+        "alert_id": str(payload.get("alert_id") or ""),
+        "listing_id": str(listing.get("id") or ""),
+        "url": str(listing.get("url") or ""),
+    }
+    return title, body, data
+
+
+def _is_permanent_fcm_token_error(error, messaging, firebase_exceptions) -> bool:
+    return isinstance(
+        error,
+        (
+            messaging.UnregisteredError,
+            messaging.SenderIdMismatchError,
+            firebase_exceptions.InvalidArgumentError,
+        ),
+    )
+
+
+def _send_alert_push_via_firebase(payload: dict) -> _FirebasePushResult:
+    if not FIREBASE_SERVICE_ACCOUNT_BASE64:
+        return _FirebasePushResult(configured=False, attempted=False, success=False)
+
+    firebase_app = _get_firebase_app()
+    if firebase_app is None:
+        return _FirebasePushResult(configured=True, attempted=False, success=False)
+
+    tokens = [
+        token
+        for token in payload.get("device_tokens", [])
+        if isinstance(token, str) and token
+    ]
+    if not tokens:
+        app.logger.info("Firebase push skipped because the alert has no active device tokens")
+        return _FirebasePushResult(configured=True, attempted=False, success=False)
+
+    from firebase_admin import exceptions as firebase_exceptions
+    from firebase_admin import messaging
+
+    title, body, data = _firebase_notification(payload)
+    notification = messaging.Notification(title=title, body=body)
+    android = messaging.AndroidConfig(
+        priority="high",
+        notification=messaging.AndroidNotification(
+            sound="default",
+            click_action="FLUTTER_NOTIFICATION_CLICK",
+        ),
+    )
+    apns = messaging.APNSConfig(
+        payload=messaging.APNSPayload(aps=messaging.Aps(sound="default")),
+    )
+    messages = [
+        messaging.Message(
+            token=token,
+            notification=notification,
+            data=data,
+            android=android,
+            apns=apns,
+        )
+        for token in tokens
+    ]
+    try:
+        response = messaging.send_each(messages, app=firebase_app)
+    except (firebase_exceptions.FirebaseError, OSError, TimeoutError) as exc:
+        app.logger.error(
+            "Firebase push request failed before a response (%s); webhook fallback suppressed",
+            type(exc).__name__,
+        )
+        return _FirebasePushResult(configured=True, attempted=True, success=False)
+
+    invalid_tokens = tuple(
+        token
+        for token, send_response in zip(tokens, response.responses)
+        if not send_response.success
+        and _is_permanent_fcm_token_error(
+            send_response.exception,
+            messaging,
+            firebase_exceptions,
+        )
+    )
+    if response.failure_count:
+        app.logger.warning(
+            "Firebase push completed with success=%s failure=%s invalid_tokens=%s",
+            response.success_count,
+            response.failure_count,
+            len(invalid_tokens),
+        )
+    return _FirebasePushResult(
+        configured=True,
+        attempted=True,
+        success=response.success_count > 0,
+        invalid_tokens=invalid_tokens,
+    )
+
+
+def _deactivate_push_tokens(db, tokens: tuple[str, ...]) -> None:
+    if not tokens:
+        return
+    placeholders = ", ".join("?" for _ in tokens)
+    db.execute(
+        f"UPDATE push_devices SET is_active = 0 WHERE token IN ({placeholders})",
+        tokens,
+    )
+    app.logger.info("Deactivated %s permanently invalid Firebase push token(s)", len(tokens))
+
+
+def _send_alert_push_webhook(payload: dict) -> bool:
     if not ALERTS_PUSH_WEBHOOK_URL:
         return False
     try:
@@ -3555,6 +3742,21 @@ def send_alert_push_payload(payload: dict) -> bool:
     except Exception as e:
         app.logger.error("Alerts push webhook error: %s", e)
         return False
+
+
+def send_alert_push_payload(payload: dict, *, db=None) -> bool:
+    firebase_result = _send_alert_push_via_firebase(payload)
+    if db is not None:
+        _deactivate_push_tokens(db, firebase_result.invalid_tokens)
+    if firebase_result.attempted:
+        return firebase_result.success
+    if ALERTS_PUSH_WEBHOOK_URL:
+        if firebase_result.configured:
+            app.logger.warning(
+                "Firebase push was unavailable before delivery; using configured webhook fallback"
+            )
+        return _send_alert_push_webhook(payload)
+    return False
 
 
 def _listing_matches_alert_filters(listing: dict, filters: dict) -> bool:
@@ -3737,7 +3939,8 @@ def dispatch_saved_alerts(
                         "district": candidate_listing.get("district"),
                         "url": f"{PUBLIC_SITE_URL or 'http://localhost:8080'}/listing/{candidate_listing['id']}",
                     },
-                }
+                },
+                db=db,
             )
             if push_ok:
                 push_sent += 1

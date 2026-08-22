@@ -19,3 +19,5 @@ Pillow>=10.0.0
 pillow-heif>=0.14.0
 # Backend error reporting and API performance traces (enabled only with SENTRY_DSN)
 sentry-sdk[flask]>=2.0.0
+# Direct Firebase Cloud Messaging delivery for saved alerts
+firebase-admin>=6.5.0,<8.0.0
