@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 const String _apiKey = String.fromEnvironment('UA_DIM_FIREBASE_API_KEY');
@@ -14,6 +15,7 @@ const String _messagingSenderId = String.fromEnvironment(
 );
 const String _projectId = String.fromEnvironment('UA_DIM_FIREBASE_PROJECT_ID');
 const String _pushApiUrl = 'https://ua-dim.com/api/push/devices';
+const MethodChannel _nativeChannel = MethodChannel('com.uadim.app/native');
 
 bool get hasFirebaseConfiguration =>
     _apiKey.isNotEmpty &&
@@ -31,11 +33,16 @@ class MobilePushService {
   String? _authToken;
   String? _deviceToken;
   void Function(Uri uri)? _onOpenUri;
+  Future<void> Function(String token)? _onAuthRejected;
   bool _initialized = false;
   Future<void> _authTransition = Future<void>.value();
 
-  Future<void> initialize({required void Function(Uri uri) onOpenUri}) async {
+  Future<void> initialize({
+    required void Function(Uri uri) onOpenUri,
+    required Future<void> Function(String token) onAuthRejected,
+  }) async {
     _onOpenUri = onOpenUri;
+    _onAuthRejected = onAuthRejected;
     if (_initialized || kIsWeb || !hasFirebaseConfiguration) return;
     _initialized = true;
 
@@ -50,6 +57,9 @@ class MobilePushService {
       );
       final messaging = FirebaseMessaging.instance;
       await messaging.requestPermission(alert: true, badge: true, sound: true);
+      if (Platform.isIOS) {
+        await _nativeChannel.invokeMethod<bool>('syncPushRegistration');
+      }
       _tokenSubscription = messaging.onTokenRefresh.listen((token) {
         _deviceToken = token;
         unawaited(_registerCurrentDevice());
@@ -57,7 +67,14 @@ class MobilePushService {
       _messageOpenSubscription = FirebaseMessaging.onMessageOpenedApp.listen(
         _openMessage,
       );
-      final initialMessage = await messaging.getInitialMessage();
+      RemoteMessage? initialMessage;
+      try {
+        initialMessage = await messaging.getInitialMessage().timeout(
+          const Duration(seconds: 3),
+        );
+      } on TimeoutException {
+        debugPrint('UA-Dim initial FCM message lookup timed out');
+      }
       if (initialMessage != null) _openMessage(initialMessage);
       if (Platform.isIOS && !await _waitForApnsToken(messaging)) {
         debugPrint('UA-Dim APNs token is not available yet');
@@ -65,6 +82,7 @@ class MobilePushService {
       }
       try {
         _deviceToken = await messaging.getToken();
+        await _registerCurrentDevice();
       } on FirebaseException catch (error) {
         debugPrint('UA-Dim FCM token unavailable: ${error.code}');
       }
@@ -123,6 +141,15 @@ class MobilePushService {
         debugPrint(
           'UA-Dim push registration failed with HTTP ${response.statusCode}',
         );
+        if (response.statusCode == HttpStatus.unauthorized &&
+            authToken == _authToken) {
+          final onAuthRejected = _onAuthRejected;
+          if (onAuthRejected != null) {
+            unawaited(onAuthRejected(authToken));
+          }
+        }
+      } else {
+        debugPrint('UA-Dim push registration succeeded');
       }
     } on http.ClientException catch (error) {
       debugPrint('UA-Dim push registration unavailable: $error');
@@ -147,6 +174,8 @@ class MobilePushService {
         debugPrint(
           'UA-Dim push unregistration failed with HTTP ${response.statusCode}',
         );
+      } else {
+        debugPrint('UA-Dim push unregistration succeeded');
       }
     } on http.ClientException catch (error) {
       debugPrint('UA-Dim push unregistration unavailable: $error');
@@ -158,5 +187,6 @@ class MobilePushService {
   Future<void> dispose() async {
     await _tokenSubscription?.cancel();
     await _messageOpenSubscription?.cancel();
+    _onAuthRejected = null;
   }
 }

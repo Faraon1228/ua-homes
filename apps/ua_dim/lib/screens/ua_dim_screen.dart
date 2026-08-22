@@ -134,13 +134,32 @@ class _UaDimScreenState extends State<UaDimScreen> {
 
   Future<void> _initializeMobileSession() async {
     _storedAuthToken = await _secureStorage.read(key: 'uaDim.authToken');
-    await MobilePushService.instance.initialize(onOpenUri: _openInternalUri);
-    await MobilePushService.instance.setAuthToken(_storedAuthToken);
+    unawaited(_initializeMobilePush());
     final initialUri = await _configureDeepLinks();
     await _configureConnectivity();
     if (!mounted) return;
     _currentUri = initialUri ?? Uri.parse(uaDimProductionUrl);
     await _controller.loadRequest(_currentUri);
+  }
+
+  Future<void> _initializeMobilePush() async {
+    await MobilePushService.instance.initialize(
+      onOpenUri: _openInternalUri,
+      onAuthRejected: _handleRejectedAuthToken,
+    );
+    await MobilePushService.instance.setAuthToken(_storedAuthToken);
+  }
+
+  Future<void> _handleRejectedAuthToken(String rejectedToken) async {
+    if (_storedAuthToken != rejectedToken) return;
+    _storedAuthToken = null;
+    await _secureStorage.delete(key: 'uaDim.authToken');
+    await _controller.runJavaScript('''
+      window.sessionStorage.removeItem('uaDim.authToken');
+      window.localStorage.removeItem('uaDim.authToken');
+      window.localStorage.removeItem('uaDim.currentUser');
+    ''');
+    await _controller.reload();
   }
 
   Future<Uri?> _configureDeepLinks() async {
@@ -169,9 +188,23 @@ class _UaDimScreenState extends State<UaDimScreen> {
   }
 
   Future<bool> _restoreAuthTokenIfNeeded() async {
-    final token = _storedAuthToken;
-    if (_restoredAuthForPage || token == null || token.isEmpty) return false;
+    if (_restoredAuthForPage) return false;
     _restoredAuthForPage = true;
+    final token = _storedAuthToken;
+    if (token == null || token.isEmpty) {
+      final clearedStaleUser = await _controller.runJavaScriptReturningResult(
+        '''
+        (() => {
+          if (!window.localStorage.getItem('uaDim.currentUser')) return false;
+          window.localStorage.removeItem('uaDim.currentUser');
+          return true;
+        })();
+      ''',
+      );
+      if (!isJavaScriptTrue(clearedStaleUser)) return false;
+      await _controller.reload();
+      return true;
+    }
     final encodedToken = jsonEncode(token);
     final changed = await _controller.runJavaScriptReturningResult('''
       (() => {
