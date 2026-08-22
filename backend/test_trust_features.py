@@ -1435,6 +1435,181 @@ class TrustFeatureTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(active, 0)
 
+    def test_firebase_push_sends_notification_and_deep_link_data(self):
+        responses = [
+            mock.Mock(success=True, exception=None),
+            mock.Mock(success=True, exception=None),
+        ]
+        firebase_response = mock.Mock(
+            success_count=2,
+            failure_count=0,
+            responses=responses,
+        )
+        payload = {
+            "event": "saved_alert_match",
+            "alert_id": 7,
+            "device_tokens": ["token-one", "token-two"],
+            "listing": {
+                "id": self.target_id,
+                "title": "Target",
+                "city": "Київ",
+                "url": f"https://ua-dim.com/listing/{self.target_id}",
+            },
+        }
+        with mock.patch.object(
+            app_module,
+            "FIREBASE_SERVICE_ACCOUNT_BASE64",
+            "configured",
+        ), mock.patch.object(
+            app_module,
+            "_get_firebase_app",
+            return_value=mock.sentinel.firebase_app,
+        ), mock.patch(
+            "firebase_admin.messaging.send_each",
+            return_value=firebase_response,
+        ) as send:
+            result = app_module._send_alert_push_via_firebase(payload)
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.attempted)
+        self.assertEqual(result.invalid_tokens, ())
+        messages = send.call_args.args[0]
+        self.assertEqual([message.token for message in messages], ["token-one", "token-two"])
+        self.assertEqual(messages[0].data["listing_id"], str(self.target_id))
+        self.assertEqual(messages[0].data["url"], payload["listing"]["url"])
+        self.assertIs(send.call_args.kwargs["app"], mock.sentinel.firebase_app)
+
+    def test_firebase_transient_failure_does_not_fall_back_to_webhook(self):
+        payload = {"device_tokens": ["token-one"], "listing": {"id": self.target_id}}
+        with mock.patch.object(
+            app_module,
+            "FIREBASE_SERVICE_ACCOUNT_BASE64",
+            "configured",
+        ), mock.patch.object(
+            app_module,
+            "ALERTS_PUSH_WEBHOOK_URL",
+            "https://push.example.test",
+        ), mock.patch.object(
+            app_module,
+            "_get_firebase_app",
+            return_value=mock.sentinel.firebase_app,
+        ), mock.patch(
+            "firebase_admin.messaging.send_each",
+            side_effect=OSError("temporary network failure"),
+        ), mock.patch.object(
+            app_module,
+            "_send_alert_push_webhook",
+        ) as webhook:
+            self.assertFalse(app_module.send_alert_push_payload(payload))
+
+        webhook.assert_not_called()
+
+    def test_firebase_permanent_token_failure_deactivates_device(self):
+        from firebase_admin import exceptions as firebase_exceptions
+        from firebase_admin import messaging
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.executemany(
+                """
+                INSERT INTO push_devices (user_id, token, platform)
+                VALUES (?, ?, 'android')
+                """,
+                (
+                    (self.owner_id, "invalid-device-token"),
+                    (self.owner_id, "unregistered-device-token"),
+                ),
+            )
+            db.commit()
+            firebase_response = mock.Mock(
+                success_count=0,
+                failure_count=2,
+                responses=[
+                    mock.Mock(
+                        success=False,
+                        exception=firebase_exceptions.InvalidArgumentError("invalid token"),
+                    ),
+                    mock.Mock(
+                        success=False,
+                        exception=messaging.UnregisteredError("unregistered token"),
+                    ),
+                ],
+            )
+            payload = {
+                "device_tokens": [
+                    "invalid-device-token",
+                    "unregistered-device-token",
+                ],
+                "listing": {"id": self.target_id},
+            }
+            with mock.patch.object(
+                app_module,
+                "FIREBASE_SERVICE_ACCOUNT_BASE64",
+                "configured",
+            ), mock.patch.object(
+                app_module,
+                "_get_firebase_app",
+                return_value=mock.sentinel.firebase_app,
+            ), mock.patch(
+                "firebase_admin.messaging.send_each",
+                return_value=firebase_response,
+            ), mock.patch.object(
+                app_module,
+                "_send_alert_push_webhook",
+            ) as webhook:
+                self.assertFalse(app_module.send_alert_push_payload(payload, db=db))
+            db.commit()
+            active_devices = db.execute(
+                """
+                SELECT COUNT(*)
+                FROM push_devices
+                WHERE token IN ('invalid-device-token', 'unregistered-device-token')
+                  AND is_active = 1
+                """
+            ).fetchone()[0]
+
+        self.assertEqual(active_devices, 0)
+        webhook.assert_not_called()
+
+    def test_firebase_push_is_disabled_cleanly_when_unconfigured(self):
+        with mock.patch.object(
+            app_module,
+            "FIREBASE_SERVICE_ACCOUNT_BASE64",
+            "",
+        ), mock.patch.object(
+            app_module,
+            "ALERTS_PUSH_WEBHOOK_URL",
+            "",
+        ), mock.patch.object(
+            app_module,
+            "_get_firebase_app",
+        ) as get_firebase_app:
+            self.assertFalse(
+                app_module.send_alert_push_payload(
+                    {"device_tokens": ["token-one"], "listing": {"id": self.target_id}}
+                )
+            )
+
+        get_firebase_app.assert_not_called()
+
+    def test_unconfigured_firebase_uses_existing_webhook_once(self):
+        payload = {"device_tokens": ["token-one"], "listing": {"id": self.target_id}}
+        with mock.patch.object(
+            app_module,
+            "FIREBASE_SERVICE_ACCOUNT_BASE64",
+            "",
+        ), mock.patch.object(
+            app_module,
+            "ALERTS_PUSH_WEBHOOK_URL",
+            "https://push.example.test",
+        ), mock.patch.object(
+            app_module,
+            "_send_alert_push_webhook",
+            return_value=True,
+        ) as webhook:
+            self.assertTrue(app_module.send_alert_push_payload(payload))
+
+        webhook.assert_called_once_with(payload)
+
     def test_alert_dispatch_advances_same_timestamp_matches_and_marks_price_changes(self):
         with sqlite3.connect(TEST_DB) as db:
             db.execute(
