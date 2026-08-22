@@ -1,4 +1,6 @@
 import Flutter
+import FirebaseCore
+import FirebaseMessaging
 import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
@@ -8,12 +10,51 @@ import UniformTypeIdentifiers
   private var pendingPhotoPickerResult: FlutterResult?
   private var pendingPhotoProviders: [NSItemProvider] = []
   private var isReadingPhoto = false
+  private var apnsDeviceToken: Data?
 
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+    let launched = super.application(
+      application,
+      didFinishLaunchingWithOptions: launchOptions
+    )
+    application.registerForRemoteNotifications()
+    return launched
+  }
+
+  override func application(
+    _ application: UIApplication,
+    didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+  ) {
+    apnsDeviceToken = deviceToken
+    if FirebaseApp.app() != nil {
+      Messaging.messaging().apnsToken = deviceToken
+    }
+    super.application(
+      application,
+      didRegisterForRemoteNotificationsWithDeviceToken: deviceToken
+    )
+  }
+
+  private func syncPushRegistration() -> Bool {
+    guard let apnsDeviceToken else {
+      UIApplication.shared.registerForRemoteNotifications()
+      return false
+    }
+    Messaging.messaging().apnsToken = apnsDeviceToken
+    return true
+  }
+
+  override func application(
+    _ application: UIApplication,
+    didFailToRegisterForRemoteNotificationsWithError error: Error
+  ) {
+    super.application(
+      application,
+      didFailToRegisterForRemoteNotificationsWithError: error
+    )
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
@@ -23,6 +64,10 @@ import UniformTypeIdentifiers
       binaryMessenger: engineBridge.applicationRegistrar.messenger()
     )
     channel.setMethodCallHandler { [weak self] call, result in
+      if call.method == "syncPushRegistration" {
+        result(self?.syncPushRegistration() ?? false)
+        return
+      }
       if call.method == "supportsPhotoPicker" {
         if #available(iOS 14.5, *) {
           result(true)
