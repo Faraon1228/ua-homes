@@ -1107,6 +1107,13 @@ function getStored(key, fallback) {
   return value ?? fallback;
 }
 
+function formatUaDimAuthBridgeMessage(authToken) {
+  return JSON.stringify({
+    type: "auth",
+    token: authToken || null,
+  });
+}
+
 function hasActivePwaDismissal() {
   if (typeof window === "undefined") return false;
   const dismissedUntil = Number(window.localStorage.getItem(PWA_DISMISS_KEY));
@@ -2173,7 +2180,7 @@ export default function RealEstateApp() {
         window.sessionStorage.removeItem("uaDim.authToken");
       }
       window.localStorage.removeItem("uaDim.authToken");
-      window.UaDimAuth.postMessage(authToken || "");
+      window.UaDimAuth.postMessage(formatUaDimAuthBridgeMessage(authToken));
     } else if (authToken) {
       window.localStorage.setItem("uaDim.authToken", authToken);
     } else {

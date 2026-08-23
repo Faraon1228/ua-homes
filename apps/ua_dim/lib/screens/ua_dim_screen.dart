@@ -43,6 +43,24 @@ Uri? parseUaDimNativeUri(Object? value) {
 bool isJavaScriptTrue(Object? value) =>
     value == true || value == 'true' || value == 1;
 
+String? parseUaDimAuthBridgeToken(String message) {
+  final trimmed = message.trim();
+  if (trimmed.isEmpty) return null;
+  if (trimmed.startsWith('{')) {
+    try {
+      final decoded = jsonDecode(trimmed);
+      if (decoded is Map && decoded['type'] == 'auth') {
+        final token = decoded['token'];
+        if (token is String && token.trim().isNotEmpty) return token.trim();
+        return null;
+      }
+    } on FormatException {
+      // Fall back to treating legacy non-JSON payloads as raw tokens.
+    }
+  }
+  return trimmed;
+}
+
 class UaDimScreen extends StatefulWidget {
   const UaDimScreen({super.key});
 
@@ -153,6 +171,7 @@ class _UaDimScreenState extends State<UaDimScreen> {
   Future<void> _handleRejectedAuthToken(String rejectedToken) async {
     if (_storedAuthToken != rejectedToken) return;
     _storedAuthToken = null;
+    await MobilePushService.instance.setAuthToken(null);
     await _secureStorage.delete(key: 'uaDim.authToken');
     await _controller.runJavaScript('''
       window.sessionStorage.removeItem('uaDim.authToken');
@@ -229,9 +248,13 @@ class _UaDimScreenState extends State<UaDimScreen> {
           const token = window.sessionStorage.getItem('uaDim.authToken')
             || window.localStorage.getItem('uaDim.authToken')
             || '';
-          if (token === previous) return;
-          previous = token;
-          UaDimAuth.postMessage(token);
+          const payload = JSON.stringify({
+            type: 'auth',
+            token: token || null,
+          });
+          if (payload === previous) return;
+          previous = payload;
+          UaDimAuth.postMessage(payload);
         };
         window.addEventListener('storage', syncAuth);
         window.setInterval(syncAuth, 1500);
@@ -241,15 +264,18 @@ class _UaDimScreenState extends State<UaDimScreen> {
   }
 
   Future<void> _handleAuthTokenMessage(JavaScriptMessage message) async {
-    final token = message.message.trim();
-    if (token == (_storedAuthToken ?? '')) return;
-    _storedAuthToken = token.isEmpty ? null : token;
-    if (token.isEmpty) {
-      await _secureStorage.delete(key: 'uaDim.authToken');
-    } else {
-      await _secureStorage.write(key: 'uaDim.authToken', value: token);
+    final token = parseUaDimAuthBridgeToken(message.message);
+    final previousToken = _storedAuthToken;
+    if (token == previousToken && token != null) return;
+    _storedAuthToken = token;
+    if (token != previousToken) {
+      if (token == null) {
+        await _secureStorage.delete(key: 'uaDim.authToken');
+      } else {
+        await _secureStorage.write(key: 'uaDim.authToken', value: token);
+      }
     }
-    await MobilePushService.instance.setAuthToken(_storedAuthToken);
+    await MobilePushService.instance.setAuthToken(token);
   }
 
   Future<void> _configureIosPhotoLibrary() async {

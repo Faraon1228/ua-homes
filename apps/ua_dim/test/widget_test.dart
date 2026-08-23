@@ -60,6 +60,20 @@ void main() {
     expect(isJavaScriptTrue('false'), isFalse);
     expect(isJavaScriptTrue(null), isFalse);
   });
+
+  test(
+    'UA-Dim parses auth bridge payloads without relying on empty messages',
+    () {
+      expect(parseUaDimAuthBridgeToken('token-123'), 'token-123');
+      expect(
+        parseUaDimAuthBridgeToken('{"type":"auth","token":" token-123 "}'),
+        'token-123',
+      );
+      expect(parseUaDimAuthBridgeToken('{"type":"auth","token":null}'), isNull);
+      expect(parseUaDimAuthBridgeToken('   '), isNull);
+    },
+  );
+
   test('Sentry configuration is disabled without a DSN', () {
     const config = UaDimSentryConfig(
       dsn: '',
