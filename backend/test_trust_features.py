@@ -2942,6 +2942,26 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertNotIn("googletagmanager.com/ns.html", launch_shell)
         self.assertIn("!analyticsAllowed()", analytics_loader)
 
+    def test_static_shell_asset_versions_are_hash_based_and_in_sync(self):
+        web_dir = os.path.join(os.path.dirname(BACKEND_DIR), "web")
+        with open(os.path.join(web_dir, "app-loader.js"), encoding="utf-8") as handle:
+            loader = handle.read()
+        with open(os.path.join(web_dir, "real-estate-demo.html"), encoding="utf-8") as handle:
+            app_shell = handle.read()
+        with open(os.path.join(web_dir, "smart-search.html"), encoding="utf-8") as handle:
+            smart_search_shell = handle.read()
+
+        loader_versions = set(re.findall(r"perf-[0-9a-f]{12}", loader))
+        app_shell_versions = set(re.findall(r"perf-[0-9a-f]{12}", app_shell))
+        smart_search_versions = set(re.findall(r"perf-[0-9a-f]{12}", smart_search_shell))
+
+        self.assertEqual(len(loader_versions), 1)
+        self.assertEqual(loader_versions, app_shell_versions)
+        self.assertEqual(loader_versions, smart_search_versions)
+        self.assertNotIn("perf-20260820-1", loader)
+        self.assertNotIn("perf-20260820-1", app_shell)
+        self.assertNotIn("perf-20260820-1", smart_search_shell)
+
     def test_service_worker_precaches_the_offline_app_shell(self):
         web_dir = os.path.join(os.path.dirname(BACKEND_DIR), "web")
         with open(os.path.join(web_dir, "sw.js"), encoding="utf-8") as handle:

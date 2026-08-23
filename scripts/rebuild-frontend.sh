@@ -164,6 +164,21 @@ JS
 
 echo "   ✅ ua-homes.css ($(wc -c < "$WEB_DIR/ua-homes.css" | tr -d ' ') bytes)"
 
+ASSET_VERSION=$(
+  {
+    cat "$WEB_DIR/real-estate-app.js" "$WEB_DIR/seller-app.js" "$WEB_DIR/ua-homes.css" "$WEB_DIR/monitoring.js"
+    find "$WEB_DIR/chunks" -type f -name '*.js' -print |
+      sort |
+      while IFS= read -r chunk; do
+        cat "$chunk"
+      done
+  } | shasum -a 256 | cut -c1-12
+)
+perl -0pi -e "s/perf-[0-9A-Za-z-]+/perf-$ASSET_VERSION/g" \
+  "$WEB_DIR/app-loader.js" \
+  "$WEB_DIR/real-estate-demo.html" \
+  "$WEB_DIR/smart-search.html"
+
 BUILD_ID=$(
   {
     cat "$WEB_DIR/app-loader.js" "$WEB_DIR/real-estate-app.js" \
