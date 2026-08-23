@@ -43,22 +43,86 @@ Uri? parseUaDimNativeUri(Object? value) {
 bool isJavaScriptTrue(Object? value) =>
     value == true || value == 'true' || value == 1;
 
-String? parseUaDimAuthBridgeToken(String message) {
-  final trimmed = message.trim();
-  if (trimmed.isEmpty) return null;
-  if (trimmed.startsWith('{')) {
+String? normalizeUaDimAuthToken(String? token) {
+  final trimmed = token?.trim();
+  return trimmed == null || trimmed.isEmpty ? null : trimmed;
+}
+
+Object? _decodeUaDimJsonEnvelope(String message) {
+  Object? decoded = message.trim();
+  for (var attempt = 0; attempt < 2 && decoded is String; attempt += 1) {
+    final candidate = decoded.trim();
+    if (candidate.isEmpty) return null;
+    final looksJsonEnvelope =
+        candidate.startsWith('{') ||
+        candidate.startsWith('[') ||
+        candidate.startsWith('"');
+    if (!looksJsonEnvelope) break;
     try {
-      final decoded = jsonDecode(trimmed);
-      if (decoded is Map && decoded['type'] == 'auth') {
-        final token = decoded['token'];
-        if (token is String && token.trim().isNotEmpty) return token.trim();
-        return null;
-      }
+      decoded = jsonDecode(candidate);
     } on FormatException {
-      // Fall back to treating legacy non-JSON payloads as raw tokens.
+      break;
     }
   }
-  return trimmed;
+  return decoded;
+}
+
+String? parseUaDimAuthBridgeToken(String message) {
+  final decoded = _decodeUaDimJsonEnvelope(message);
+  if (decoded is Map && decoded['type'] == 'auth') {
+    return normalizeUaDimAuthToken(decoded['token']?.toString());
+  }
+  if (decoded is String) {
+    final normalized = normalizeUaDimAuthToken(decoded);
+    if (normalized?.startsWith('{') == true) return null;
+    return normalized;
+  }
+  return null;
+}
+
+class UaDimAuthRestorePlan {
+  const UaDimAuthRestorePlan({
+    required this.shouldReload,
+    required this.sessionToken,
+    required this.localToken,
+    required this.clearCurrentUser,
+  });
+
+  final bool shouldReload;
+  final String? sessionToken;
+  final String? localToken;
+  final bool clearCurrentUser;
+}
+
+UaDimAuthRestorePlan planUaDimAuthRestore({
+  required String? storedToken,
+  required String? sessionToken,
+  required String? localToken,
+  required bool hasCurrentUser,
+}) {
+  final normalizedStoredToken = normalizeUaDimAuthToken(storedToken);
+  final normalizedSessionToken = normalizeUaDimAuthToken(sessionToken);
+  final normalizedLocalToken = normalizeUaDimAuthToken(localToken);
+
+  if (normalizedStoredToken != null) {
+    return UaDimAuthRestorePlan(
+      shouldReload: normalizedLocalToken != normalizedStoredToken,
+      sessionToken: normalizedStoredToken,
+      localToken: normalizedStoredToken,
+      clearCurrentUser: false,
+    );
+  }
+
+  final hasStaleAuthState =
+      normalizedSessionToken != null ||
+      normalizedLocalToken != null ||
+      hasCurrentUser;
+  return UaDimAuthRestorePlan(
+    shouldReload: hasStaleAuthState,
+    sessionToken: null,
+    localToken: null,
+    clearCurrentUser: hasCurrentUser,
+  );
 }
 
 class UaDimScreen extends StatefulWidget {
@@ -209,31 +273,49 @@ class _UaDimScreenState extends State<UaDimScreen> {
   Future<bool> _restoreAuthTokenIfNeeded() async {
     if (_restoredAuthForPage) return false;
     _restoredAuthForPage = true;
-    final token = _storedAuthToken;
-    if (token == null || token.isEmpty) {
-      final clearedStaleUser = await _controller.runJavaScriptReturningResult(
-        '''
-        (() => {
-          if (!window.localStorage.getItem('uaDim.currentUser')) return false;
-          window.localStorage.removeItem('uaDim.currentUser');
-          return true;
-        })();
-      ''',
-      );
-      if (!isJavaScriptTrue(clearedStaleUser)) return false;
-      await _controller.reload();
-      return true;
-    }
-    final encodedToken = jsonEncode(token);
-    final changed = await _controller.runJavaScriptReturningResult('''
+    final snapshotRaw = await _controller.runJavaScriptReturningResult('''
       (() => {
-        if (window.sessionStorage.getItem('uaDim.authToken') === $encodedToken) return false;
-        window.sessionStorage.setItem('uaDim.authToken', $encodedToken);
-        window.localStorage.removeItem('uaDim.authToken');
-        return true;
+        return JSON.stringify({
+          sessionToken: window.sessionStorage.getItem('uaDim.authToken'),
+          localToken: window.localStorage.getItem('uaDim.authToken'),
+          hasCurrentUser: Boolean(window.localStorage.getItem('uaDim.currentUser')),
+        });
       })();
     ''');
-    if (!isJavaScriptTrue(changed)) return false;
+    final snapshotMessage = snapshotRaw is String
+        ? snapshotRaw
+        : snapshotRaw?.toString() ?? '';
+    final decodedSnapshot = _decodeUaDimJsonEnvelope(snapshotMessage);
+    final snapshot = decodedSnapshot is Map
+        ? decodedSnapshot
+        : const <String, Object?>{};
+    final plan = planUaDimAuthRestore(
+      storedToken: _storedAuthToken,
+      sessionToken: snapshot['sessionToken']?.toString(),
+      localToken: snapshot['localToken']?.toString(),
+      hasCurrentUser: snapshot['hasCurrentUser'] == true,
+    );
+    await _controller.runJavaScript('''
+      (() => {
+        const sessionToken = ${jsonEncode(plan.sessionToken)};
+        const localToken = ${jsonEncode(plan.localToken)};
+        const clearCurrentUser = ${plan.clearCurrentUser ? 'true' : 'false'};
+        if (sessionToken) {
+          window.sessionStorage.setItem('uaDim.authToken', sessionToken);
+        } else {
+          window.sessionStorage.removeItem('uaDim.authToken');
+        }
+        if (localToken) {
+          window.localStorage.setItem('uaDim.authToken', localToken);
+        } else {
+          window.localStorage.removeItem('uaDim.authToken');
+        }
+        if (clearCurrentUser) {
+          window.localStorage.removeItem('uaDim.currentUser');
+        }
+      })();
+    ''');
+    if (!plan.shouldReload) return false;
     await _controller.reload();
     return true;
   }
@@ -266,7 +348,7 @@ class _UaDimScreenState extends State<UaDimScreen> {
   Future<void> _handleAuthTokenMessage(JavaScriptMessage message) async {
     final token = parseUaDimAuthBridgeToken(message.message);
     final previousToken = _storedAuthToken;
-    if (token == previousToken && token != null) return;
+    if (token == previousToken) return;
     _storedAuthToken = token;
     if (token != previousToken) {
       if (token == null) {
