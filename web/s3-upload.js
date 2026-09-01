@@ -46,6 +46,16 @@ class S3Uploader {
   }
 
   /**
+   * Read the auth token from either storage (WebView keeps it in sessionStorage).
+   */
+  getAuthToken() {
+    if (typeof window === 'undefined') return '';
+    return window.sessionStorage.getItem('uaDim.authToken')
+      || window.localStorage.getItem('uaDim.authToken')
+      || '';
+  }
+
+  /**
    * Request presigned URL from backend
    */
   async requestPresignedUrl(file) {
@@ -53,7 +63,7 @@ class S3Uploader {
     if (errors) throw new Error(errors.join('; '));
 
     try {
-     const authToken = typeof window !== 'undefined' ? window.localStorage.getItem('uaDim.authToken') || '' : '';
+     const authToken = this.getAuthToken();
      const response = await fetch(`${this.apiUrl}/images/presigned-url`, {
        method: 'POST',
        headers: {
@@ -159,7 +169,7 @@ class S3Uploader {
    */
   async confirmUpload(presignedData, uploadResult) {
    try {
-     const authToken = typeof window !== 'undefined' ? window.localStorage.getItem('uaDim.authToken') || '' : '';
+     const authToken = this.getAuthToken();
      const response = await fetch(`${this.apiUrl}/images/confirm-upload`, {
        method: 'POST',
        headers: {
