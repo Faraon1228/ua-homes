@@ -876,6 +876,25 @@ function ensureLeafletLoaded() {
   return leafletLoader;
 }
 
+let leafletDivIcon = null;
+
+function getMarkerDivIcon(Leaflet) {
+  // CSP blocks Leaflet's default marker PNGs from unpkg.com — use an inline SVG divIcon instead.
+  if (!leafletDivIcon) {
+    leafletDivIcon = Leaflet.divIcon({
+      className: "",
+      html:
+        '<svg xmlns="http://www.w3.org/2000/svg" width="28" height="40" viewBox="0 0 28 40" aria-hidden="true">' +
+        '<path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 26 14 26s14-15.5 14-26C28 6.3 21.7 0 14 0z" fill="#1d4ed8"/>' +
+        '<circle cx="14" cy="14" r="6" fill="#ffffff"/></svg>',
+      iconSize: [28, 40],
+      iconAnchor: [14, 40],
+      popupAnchor: [0, -36],
+    });
+  }
+  return leafletDivIcon;
+}
+
 function hasMapCoordinates(property) {
   const latitude = Number(property?.latitude);
   const longitude = Number(property?.longitude);
@@ -938,6 +957,7 @@ function ListingsMapView({ properties, onShowList }) {
     mappedProperties.forEach((property) => {
       const point = [Number(property.latitude), Number(property.longitude)];
       const marker = Leaflet.marker(point, {
+        icon: getMarkerDivIcon(Leaflet),
         title: property.title,
         alt: `${property.title}, ${property.city}, ${property.district}`,
         keyboard: false,

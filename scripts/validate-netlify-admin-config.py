@@ -134,7 +134,12 @@ def main():
     require(directives.get("style-src") == ["'self'"], "admin styles must be self-hosted")
     require(
         directives.get("connect-src")
-        == ["'self'", "https://*.ingest.sentry.io", "https://*.ingest.us.sentry.io"],
+        == [
+            "'self'",
+            "https://*.ingest.sentry.io",
+            "https://*.ingest.us.sentry.io",
+            "https://*.ingest.de.sentry.io",
+        ],
         "admin connections must be limited to same-origin and Sentry ingestion",
     )
     require(directives.get("object-src") == ["'none'"], "admin objects must be disabled")
