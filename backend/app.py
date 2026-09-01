@@ -2082,9 +2082,9 @@ SUBSCRIPTION_PLANS: dict[str, dict] = {
         "name": "Базовий",
         "audience": "owner",
         "price": 0,
-        "listing_limit": 1,
+        "listing_limit": 5,
         "duration_days": 30,
-        "features": ["1 оголошення", "30 днів активності", "Стандартна позиція"],
+        "features": ["5 оголошень на місяць", "30 днів активності", "Стандартна позиція"],
     },
     "standard": {
         "name": "Стандарт",
@@ -2106,9 +2106,9 @@ SUBSCRIPTION_PLANS: dict[str, dict] = {
         "name": "Ріелтор Базовий",
         "audience": "realtor",
         "price": 0,
-        "listing_limit": 3,
+        "listing_limit": 50,
         "duration_days": 30,
-        "features": ["3 оголошення", "30 днів активності", "Профіль ріелтора"],
+        "features": ["50 оголошень на місяць", "30 днів активності", "Профіль ріелтора"],
     },
     "realtor_start": {
         "name": "Ріелтор Старт",
@@ -2138,9 +2138,9 @@ SUBSCRIPTION_PLANS: dict[str, dict] = {
         "name": "Забудовник Базовий",
         "audience": "developer",
         "price": 0,
-        "listing_limit": 3,
+        "listing_limit": 20,
         "duration_days": 30,
-        "features": ["3 оголошення", "30 днів активності", "Профіль забудовника", "Новобудови в каталозі"],
+        "features": ["20 оголошень на місяць", "30 днів активності", "Профіль забудовника", "Новобудови в каталозі"],
     },
 }
 
