@@ -1,0 +1,13 @@
+{
+  "name": "ua-dim-quality-gates",
+  "private": true,
+  "scripts": {
+    "test:admin": "playwright test"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.62.1",
+    "@sentry/browser": "10.70.0",
+    "@sentry/cli": "3.6.2"
+  }
+}

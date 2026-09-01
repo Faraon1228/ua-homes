@@ -46,10 +46,10 @@ self.addEventListener('fetch', e => {
   if (e.request.url.includes('/api/') || e.request.url.includes('/api-backend/')) return;
 
   const url = new URL(e.request.url);
-  const sameOrigin = url.origin === self.location.origin;
-  const coreAsset =
-    sameOrigin &&
-    ['script', 'style', 'worker'].includes(e.request.destination);
+  // Let the browser enforce the page's CSP for CDN assets. Fetching them from
+  // the worker would instead apply the worker's connect-src policy.
+  if (url.origin !== self.location.origin) return;
+  const coreAsset = ['script', 'style', 'worker'].includes(e.request.destination);
 
   if (e.request.method === 'GET' && coreAsset) {
     e.respondWith(
@@ -97,7 +97,9 @@ self.addEventListener('fetch', e => {
       .catch(() =>
         caches.match(e.request, { ignoreSearch: true }).then(cached =>
           cached || (e.request.mode === 'navigate'
-            ? caches.match('/real-estate-demo.html')
+            ? caches.match('/app').then(appShell =>
+                appShell || caches.match('/real-estate-demo.html')
+              )
             : Response.error())
         )
       )

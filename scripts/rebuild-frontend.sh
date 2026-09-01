@@ -63,6 +63,11 @@ if [ ! -x "$TAILWIND" ]; then
 fi
 
 # ── compile source JSX ──
+SOURCEMAP_ARGS=""
+if [ "${SENTRY_GENERATE_SOURCEMAPS:-0}" = "1" ]; then
+  SOURCEMAP_ARGS="--sourcemap=external --sources-content=false"
+fi
+
 echo "🔨 Compiling JSX → real-estate-app.js + lazy chunks ..."
 rm -rf "$WEB_DIR/chunks"
 "$ESBUILD" "$WEB_DIR/RealEstateApp.jsx" 2>/dev/null \
@@ -70,14 +75,14 @@ rm -rf "$WEB_DIR/chunks"
   --jsx-fragment=React.Fragment --target=es2020 --minify \
   --define:__UA_SELLER_BUILD__=false \
   --charset=utf8 --outdir="$WEB_DIR" --entry-names=real-estate-app \
-  --chunk-names=chunks/[name]-[hash] && echo "   ✅ real-estate-app.js compiled ($(wc -c < "$WEB_DIR/real-estate-app.js" | tr -d ' ') bytes)"
+  --chunk-names=chunks/[name]-[hash] $SOURCEMAP_ARGS && echo "   ✅ real-estate-app.js compiled ($(wc -c < "$WEB_DIR/real-estate-app.js" | tr -d ' ') bytes)"
 
 "$ESBUILD" "$WEB_DIR/RealEstateApp.jsx" 2>/dev/null \
   --bundle --format=esm --splitting --jsx=transform --jsx-factory=React.createElement \
   --jsx-fragment=React.Fragment --target=es2020 --minify \
   --define:__UA_SELLER_BUILD__=true \
   --charset=utf8 --outdir="$WEB_DIR" --entry-names=seller-app \
-  --chunk-names=chunks/[name]-[hash] && echo "   ✅ seller-app.js compiled ($(wc -c < "$WEB_DIR/seller-app.js" | tr -d ' ') bytes)"
+  --chunk-names=chunks/[name]-[hash] $SOURCEMAP_ARGS && echo "   ✅ seller-app.js compiled ($(wc -c < "$WEB_DIR/seller-app.js" | tr -d ' ') bytes)"
 
 CATALOG_BYTES=$(wc -c < "$WEB_DIR/real-estate-app.js" | tr -d ' ')
 SELLER_BYTES=$(wc -c < "$WEB_DIR/seller-app.js" | tr -d ' ')
@@ -86,9 +91,51 @@ if [ "$CATALOG_BYTES" -gt 130000 ] || [ "$SELLER_BYTES" -gt 135000 ]; then
   exit 1
 fi
 
+# ── staff admin panel: self-hosted vendor copy + JSX bundles ──
+# The admin panel is deployed as its own Netlify site rooted at web/admin
+# (see web/admin/netlify.toml), so it cannot reach web/vendor via a relative
+# "../" URL — the pinned React/ReactDOM UMD builds are copied in verbatim on
+# every build instead of being duplicated by hand.
+echo "🔐 Compiling admin panel bundles ..."
+mkdir -p "$WEB_DIR/admin/vendor"
+cp "$WEB_DIR/vendor/react.production.min.js" "$WEB_DIR/admin/vendor/react.production.min.js"
+cp "$WEB_DIR/vendor/react-dom.production.min.js" "$WEB_DIR/admin/vendor/react-dom.production.min.js"
+
+rm -rf "$WEB_DIR/admin/chunks"
+"$ESBUILD" "$WEB_DIR/admin/src/admin-entry.jsx" 2>/dev/null \
+  --bundle --format=esm --splitting --jsx=transform --jsx-factory=React.createElement \
+  --jsx-fragment=React.Fragment --target=es2020 --minify \
+  --charset=utf8 --outdir="$WEB_DIR/admin" --entry-names=admin-app \
+  --chunk-names=chunks/[name]-[hash] $SOURCEMAP_ARGS && echo "   ✅ admin-app.js compiled ($(wc -c < "$WEB_DIR/admin/admin-app.js" | tr -d ' ') bytes)"
+
+"$ESBUILD" "$WEB_DIR/admin/src/login-entry.jsx" 2>/dev/null \
+  --bundle --format=esm --jsx=transform --jsx-factory=React.createElement \
+  --jsx-fragment=React.Fragment --target=es2020 --minify \
+  --charset=utf8 --outfile="$WEB_DIR/admin/login-app.js" $SOURCEMAP_ARGS && echo "   ✅ login-app.js compiled ($(wc -c < "$WEB_DIR/admin/login-app.js" | tr -d ' ') bytes)"
+
+# ── self-hosted Sentry browser SDK (disabled while DSN placeholders remain) ──
+"$ESBUILD" "$WEB_DIR/monitoring/sentry.js" 2>/dev/null \
+  --bundle --format=esm --target=es2020 --minify --charset=utf8 \
+  --define:__SENTRY_DSN__='"__UA_HOMES_SENTRY_WEB_DSN__"' \
+  --define:__SENTRY_ENVIRONMENT__='"__UA_HOMES_SENTRY_ENVIRONMENT__"' \
+  --define:__SENTRY_RELEASE__='"__UA_HOMES_SENTRY_RELEASE__"' \
+  --define:__SENTRY_TRACES_SAMPLE_RATE__='"__UA_HOMES_SENTRY_WEB_TRACES_SAMPLE_RATE__"' \
+  --define:__SENTRY_PROJECT__='"public-web"' \
+  --outfile="$WEB_DIR/monitoring.js" $SOURCEMAP_ARGS
+"$ESBUILD" "$WEB_DIR/monitoring/sentry.js" 2>/dev/null \
+  --bundle --format=esm --target=es2020 --minify --charset=utf8 \
+  --define:__SENTRY_DSN__='"__UA_HOMES_SENTRY_ADMIN_DSN__"' \
+  --define:__SENTRY_ENVIRONMENT__='"__UA_HOMES_SENTRY_ENVIRONMENT__"' \
+  --define:__SENTRY_RELEASE__='"__UA_HOMES_SENTRY_RELEASE__"' \
+  --define:__SENTRY_TRACES_SAMPLE_RATE__='"__UA_HOMES_SENTRY_ADMIN_TRACES_SAMPLE_RATE__"' \
+  --define:__SENTRY_PROJECT__='"admin-web"' \
+  --outfile="$WEB_DIR/admin/monitoring.js" $SOURCEMAP_ARGS
+echo "   ✅ self-hosted monitoring bundles compiled"
+
 # ── generate purged Tailwind CSS ──
 echo "🎨 Generating purged ua-homes.css ..."
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ua-dim-frontend.XXXXXX")"
+TMP_DIR="$REPO_DIR/.frontend-build-tmp.$$"
+mkdir -p "$TMP_DIR"
 trap 'rm -rf "$TMP_DIR"' EXIT
 TW_INPUT="$TMP_DIR/input.css"
 TW_CONFIG="$TMP_DIR/config.js"
@@ -106,7 +153,6 @@ module.exports = {
     '${WEB_DIR}/real-estate-demo.html',
     '${WEB_DIR}/real-estate-app.js',
     '${WEB_DIR}/RealEstateApp.jsx',
-    '${WEB_DIR}/admin/dashboard.html',
   ],
   theme: { extend: {} },
   plugins: [],
@@ -118,6 +164,21 @@ JS
 
 echo "   ✅ ua-homes.css ($(wc -c < "$WEB_DIR/ua-homes.css" | tr -d ' ') bytes)"
 
+ASSET_VERSION=$(
+  {
+    cat "$WEB_DIR/real-estate-app.js" "$WEB_DIR/seller-app.js" "$WEB_DIR/ua-homes.css" "$WEB_DIR/monitoring.js"
+    find "$WEB_DIR/chunks" -type f -name '*.js' -print |
+      sort |
+      while IFS= read -r chunk; do
+        cat "$chunk"
+      done
+  } | shasum -a 256 | cut -c1-12
+)
+perl -0pi -e "s/perf-[0-9A-Za-z-]+/perf-$ASSET_VERSION/g" \
+  "$WEB_DIR/app-loader.js" \
+  "$WEB_DIR/real-estate-demo.html" \
+  "$WEB_DIR/smart-search.html"
+
 BUILD_ID=$(
   {
     cat "$WEB_DIR/app-loader.js" "$WEB_DIR/real-estate-app.js" \
@@ -125,7 +186,7 @@ BUILD_ID=$(
       "$WEB_DIR/real-estate-demo.html" "$WEB_DIR/ua-homes-manifest.json" \
       "$WEB_DIR/privacy.html" "$WEB_DIR/terms.html" "$WEB_DIR/cookie-policy.html" \
       "$WEB_DIR/privacy-consent.css" "$WEB_DIR/privacy-consent.js" \
-      "$WEB_DIR/vendor/react.production.min.js" \
+      "$WEB_DIR/monitoring.js" "$WEB_DIR/vendor/react.production.min.js" \
       "$WEB_DIR/vendor/react-dom.production.min.js"
     find "$WEB_DIR/chunks" -type f -name '*.js' -print |
       sort |
@@ -138,8 +199,11 @@ BUILD_ID=$(
   printf "self.__UA_BUILD_ID = '%s';\n" "$BUILD_ID"
   printf 'self.__UA_PRECACHE_ASSETS = [\n'
   printf "  '/precache-manifest.js',\n"
+  printf "  '/',\n"
+  printf "  '/app',\n"
   printf "  '/real-estate-demo.html',\n"
   printf "  '/app-loader.js',\n"
+  printf "  '/monitoring.js',\n"
   printf "  '/real-estate-app.js',\n"
   printf "  '/seller-app.js',\n"
   printf "  '/ua-homes.css',\n"

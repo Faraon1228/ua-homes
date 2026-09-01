@@ -15,7 +15,7 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 import '../services/mobile_push_service.dart';
 
 const String uaDimProductionUrl =
-    'https://ua-dim.com/real-estate-demo.html'
+    'https://ua-dim.com/app'
     '?source=ua-dim-app&release=20260820-photo-library';
 const MethodChannel _nativeChannel = MethodChannel('com.uadim.app/native');
 
@@ -42,6 +42,24 @@ Uri? parseUaDimNativeUri(Object? value) {
 
 bool isJavaScriptTrue(Object? value) =>
     value == true || value == 'true' || value == 1;
+
+String? parseUaDimAuthBridgeToken(String message) {
+  final trimmed = message.trim();
+  if (trimmed.isEmpty) return null;
+  if (trimmed.startsWith('{')) {
+    try {
+      final decoded = jsonDecode(trimmed);
+      if (decoded is Map && decoded['type'] == 'auth') {
+        final token = decoded['token'];
+        if (token is String && token.trim().isNotEmpty) return token.trim();
+        return null;
+      }
+    } on FormatException {
+      // Fall back to treating legacy non-JSON payloads as raw tokens.
+    }
+  }
+  return trimmed;
+}
 
 class UaDimScreen extends StatefulWidget {
   const UaDimScreen({super.key});
@@ -134,13 +152,33 @@ class _UaDimScreenState extends State<UaDimScreen> {
 
   Future<void> _initializeMobileSession() async {
     _storedAuthToken = await _secureStorage.read(key: 'uaDim.authToken');
-    await MobilePushService.instance.initialize(onOpenUri: _openInternalUri);
-    await MobilePushService.instance.setAuthToken(_storedAuthToken);
+    unawaited(_initializeMobilePush());
     final initialUri = await _configureDeepLinks();
     await _configureConnectivity();
     if (!mounted) return;
     _currentUri = initialUri ?? Uri.parse(uaDimProductionUrl);
     await _controller.loadRequest(_currentUri);
+  }
+
+  Future<void> _initializeMobilePush() async {
+    await MobilePushService.instance.initialize(
+      onOpenUri: _openInternalUri,
+      onAuthRejected: _handleRejectedAuthToken,
+    );
+    await MobilePushService.instance.setAuthToken(_storedAuthToken);
+  }
+
+  Future<void> _handleRejectedAuthToken(String rejectedToken) async {
+    if (_storedAuthToken != rejectedToken) return;
+    _storedAuthToken = null;
+    await MobilePushService.instance.setAuthToken(null);
+    await _secureStorage.delete(key: 'uaDim.authToken');
+    await _controller.runJavaScript('''
+      window.sessionStorage.removeItem('uaDim.authToken');
+      window.localStorage.removeItem('uaDim.authToken');
+      window.localStorage.removeItem('uaDim.currentUser');
+    ''');
+    await _controller.reload();
   }
 
   Future<Uri?> _configureDeepLinks() async {
@@ -169,9 +207,23 @@ class _UaDimScreenState extends State<UaDimScreen> {
   }
 
   Future<bool> _restoreAuthTokenIfNeeded() async {
-    final token = _storedAuthToken;
-    if (_restoredAuthForPage || token == null || token.isEmpty) return false;
+    if (_restoredAuthForPage) return false;
     _restoredAuthForPage = true;
+    final token = _storedAuthToken;
+    if (token == null || token.isEmpty) {
+      final clearedStaleUser = await _controller.runJavaScriptReturningResult(
+        '''
+        (() => {
+          if (!window.localStorage.getItem('uaDim.currentUser')) return false;
+          window.localStorage.removeItem('uaDim.currentUser');
+          return true;
+        })();
+      ''',
+      );
+      if (!isJavaScriptTrue(clearedStaleUser)) return false;
+      await _controller.reload();
+      return true;
+    }
     final encodedToken = jsonEncode(token);
     final changed = await _controller.runJavaScriptReturningResult('''
       (() => {
@@ -196,9 +248,13 @@ class _UaDimScreenState extends State<UaDimScreen> {
           const token = window.sessionStorage.getItem('uaDim.authToken')
             || window.localStorage.getItem('uaDim.authToken')
             || '';
-          if (token === previous) return;
-          previous = token;
-          UaDimAuth.postMessage(token);
+          const payload = JSON.stringify({
+            type: 'auth',
+            token: token || null,
+          });
+          if (payload === previous) return;
+          previous = payload;
+          UaDimAuth.postMessage(payload);
         };
         window.addEventListener('storage', syncAuth);
         window.setInterval(syncAuth, 1500);
@@ -208,15 +264,18 @@ class _UaDimScreenState extends State<UaDimScreen> {
   }
 
   Future<void> _handleAuthTokenMessage(JavaScriptMessage message) async {
-    final token = message.message.trim();
-    if (token == (_storedAuthToken ?? '')) return;
-    _storedAuthToken = token.isEmpty ? null : token;
-    if (token.isEmpty) {
-      await _secureStorage.delete(key: 'uaDim.authToken');
-    } else {
-      await _secureStorage.write(key: 'uaDim.authToken', value: token);
+    final token = parseUaDimAuthBridgeToken(message.message);
+    final previousToken = _storedAuthToken;
+    if (token == previousToken && token != null) return;
+    _storedAuthToken = token;
+    if (token != previousToken) {
+      if (token == null) {
+        await _secureStorage.delete(key: 'uaDim.authToken');
+      } else {
+        await _secureStorage.write(key: 'uaDim.authToken', value: token);
+      }
     }
-    await MobilePushService.instance.setAuthToken(_storedAuthToken);
+    await MobilePushService.instance.setAuthToken(token);
   }
 
   Future<void> _configureIosPhotoLibrary() async {

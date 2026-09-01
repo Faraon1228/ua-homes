@@ -58,6 +58,12 @@
 
 # /app → main SPA
 [[redirects]]
+  from = "/real-estate-demo.html"
+  to = "/"
+  status = 301
+  force = true
+
+[[redirects]]
   from = "/app"
   to = "/real-estate-demo.html"
   status = 200
@@ -169,6 +175,20 @@ status = 301
     Strict-Transport-Security = "max-age=31536000; includeSubDomains"
     Content-Security-Policy = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self' https://www.liqpay.ua; img-src 'self' data: blob: https://res.cloudinary.com https://*.amazonaws.com https://*.cloudfront.net https://images.unsplash.com https://picsum.photos https://fastly.picsum.photos https://*.tile.openstreetmap.org https://www.google-analytics.com https://www.googletagmanager.com; media-src 'self' blob: https://res.cloudinary.com https://*.amazonaws.com https://*.cloudfront.net; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.tailwindcss.com https://www.googletagmanager.com https://www.google-analytics.com https://ssl.google-analytics.com; style-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com https://fonts.googleapis.com; connect-src 'self' https://*.ingest.sentry.io https://*.ingest.us.sentry.io https://*.ingest.de.sentry.io https://api.cloudinary.com https://res.cloudinary.com https://*.amazonaws.com https://*.cloudfront.net https://*.railway.app https://*.netlify.app https://ua-dim.com https://www.ua-dim.com https://ua-dom.com https://www.ua-dom.com https://www.google-analytics.com https://region1.google-analytics.com https://analytics.google.com https://www.googletagmanager.com; font-src 'self' data: https://fonts.gstatic.com; worker-src 'self' blob:; manifest-src 'self'; frame-src 'none';"
     Cache-Control = "public, max-age=3600"
+
+[[headers]]
+  for = "/admin/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    X-Permitted-Cross-Domain-Policies = "none"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+    Cross-Origin-Opener-Policy = "same-origin"
+    Cross-Origin-Resource-Policy = "same-origin"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    Content-Security-Policy = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https://res.cloudinary.com https://images.unsplash.com; script-src 'self'; style-src 'self'; connect-src 'self' https://*.ingest.sentry.io https://*.ingest.us.sentry.io https://*.ingest.de.sentry.io; font-src 'self'; manifest-src 'self';"
+    Cache-Control = "no-store"
 
 [[headers]]
   for = "/launch.html"

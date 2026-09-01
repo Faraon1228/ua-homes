@@ -12,6 +12,32 @@ const LazyListingsMapView = React.lazy(() =>
 );
 const LazyTrustDialog = React.lazy(() => import("./features/TrustDialog.jsx"));
 
+class RootErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error, info) {
+    window.uaSentryCaptureException?.(error, { component_stack: info.componentStack });
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <p role="alert" className="m-6 rounded-2xl bg-rose-50 p-5 font-bold text-rose-800">
+          Не вдалося відкрити застосунок. Оновіть сторінку та спробуйте ще раз.
+        </p>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 class LazyFeatureBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -1101,6 +1127,13 @@ function getStored(key, fallback) {
   return value ?? fallback;
 }
 
+function formatUaDimAuthBridgeMessage(authToken) {
+  return JSON.stringify({
+    type: "auth",
+    token: authToken || null,
+  });
+}
+
 function hasActivePwaDismissal() {
   if (typeof window === "undefined") return false;
   const dismissedUntil = Number(window.localStorage.getItem(PWA_DISMISS_KEY));
@@ -1222,7 +1255,7 @@ function SmartSearchPage({
       <header className="sticky top-0 z-50 border-b border-slate-200 bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-4">
           <a
-            href="real-estate-demo.html"
+            href={getCatalogHref()}
             className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-100"
           >
             ← Повернутися
@@ -1234,7 +1267,7 @@ function SmartSearchPage({
             <div className="text-xs font-semibold text-blue-700">Розумний пошук</div>
           </div>
           <a
-            href="real-estate-demo.html"
+            href={getCatalogHref()}
             className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
           >
             Повний каталог
@@ -1377,7 +1410,7 @@ function SmartSearchPage({
             </h2>
           </div>
           <a
-            href="real-estate-demo.html"
+            href={getCatalogHref()}
             className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-bold text-white transition hover:bg-blue-700"
           >
             Відкрити повний каталог
@@ -2167,7 +2200,7 @@ export default function RealEstateApp() {
         window.sessionStorage.removeItem("uaDim.authToken");
       }
       window.localStorage.removeItem("uaDim.authToken");
-      window.UaDimAuth.postMessage(authToken || "");
+      window.UaDimAuth.postMessage(formatUaDimAuthBridgeMessage(authToken));
     } else if (authToken) {
       window.localStorage.setItem("uaDim.authToken", authToken);
     } else {
@@ -5674,7 +5707,9 @@ if (typeof document !== "undefined") {
     const renderApp = () => {
       if (root.dataset.mounted === "true") return;
       root.dataset.mounted = "true";
-      window.ReactDOM.createRoot(root).render(React.createElement(RealEstateApp));
+      window.ReactDOM.createRoot(root).render(
+        React.createElement(RootErrorBoundary, null, React.createElement(RealEstateApp)),
+      );
     };
     const sellerPage =
       /^\/seller\/?$/.test(window.location.pathname) ||

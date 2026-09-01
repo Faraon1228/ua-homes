@@ -3,10 +3,12 @@ import importlib
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
 import unittest
+from html import escape as html_escape
 from unittest import mock
 
 import bcrypt
@@ -39,6 +41,7 @@ class TrustFeatureTests(unittest.TestCase):
         with sqlite3.connect(TEST_DB) as db:
             db.execute("PRAGMA foreign_keys=ON")
             for table in (
+                "admin_audit_log",
                 "client_observability_events",
                 "lead_funnel_events",
                 "lead_requests",
@@ -100,7 +103,10 @@ class TrustFeatureTests(unittest.TestCase):
                     " AND name NOT LIKE 'listings_fts%'"
                 )
             }
-        self.assertEqual(set(postgres_migration.TABLE_ORDER), application_tables)
+        self.assertEqual(
+            set(postgres_migration.TABLE_ORDER),
+            application_tables,
+        )
         self.assertEqual(
             postgres_migration.normalize_value("users", "email", " Admin@Example.COM "),
             "admin@example.com",
@@ -580,6 +586,8 @@ class TrustFeatureTests(unittest.TestCase):
             "area": 48,
             "floor": 3,
             "totalFloors": 7,
+            "latitude": 49.84,
+            "longitude": 24.03,
             "publishNow": True,
             "images": ["https://res.cloudinary.com/demo/image/upload/example.jpg"],
             "videos": [
@@ -627,6 +635,9 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertIn(b"<video controls playsinline", detail_page.data)
         self.assertIn(b"/video/upload/example.mp4", detail_page.data)
         detail_html = detail_page.get_data(as_text=True)
+        self.assertIn('id="gallery" tabindex="0"', detail_html)
+        self.assertIn('aria-label="Галерея фотографій"', detail_html)
+        self.assertIn('title:"Місцезнаходження:', detail_html)
         self.assertLess(detail_html.index('id="listing-price"'), detail_html.index('id="gallery"'))
 
         fast_publish = self.client.post(
@@ -660,6 +671,81 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/listings/{listing['id']}").status_code, 404)
         catalog_after_delete = self.client.get("/api/listings?status=published&limit=100").get_json()["listings"]
         self.assertNotIn(listing["id"], [item["id"] for item in catalog_after_delete])
+
+    def test_listing_map_popup_escapes_html_before_script_encoding(self):
+        titles = (
+            "<img src=x onerror=alert(1)>",
+            "</script><script>alert(1)</script>",
+            'Квартира & "центр" \'Львова\'',
+            "&lt;img src=x onerror=alert(2)&gt;",
+        )
+
+        for title in titles:
+            with self.subTest(title=title):
+                with sqlite3.connect(TEST_DB) as db:
+                    db.execute(
+                        "UPDATE listings SET title = ?, latitude = ?, longitude = ? WHERE id = ?",
+                        (title, 50.45, 30.52, self.target_id),
+                    )
+                    db.commit()
+
+                page = self.client.get(f"/listing/{self.target_id}").get_data(as_text=True)
+                map_script_match = re.search(
+                    r"<script>\s+var m=L\.map.*?</script>",
+                    page,
+                    flags=re.DOTALL,
+                )
+                self.assertIsNotNone(map_script_match)
+                map_script = map_script_match.group(0)
+
+                popup_match = re.search(
+                    r"\.bindPopup\((.+)\)\.openPopup\(\);",
+                    map_script,
+                )
+                self.assertIsNotNone(popup_match)
+                popup_text = json.loads(popup_match.group(1))
+                self.assertEqual(popup_text, html_escape(title, quote=True))
+                self.assertNotIn("<", popup_text)
+                self.assertNotIn(">", popup_text)
+
+                marker_match = re.search(
+                    r"title:(.+?)\}\)\.addTo\(m\)\.bindPopup",
+                    map_script,
+                )
+                self.assertIsNotNone(marker_match)
+                self.assertEqual(
+                    json.loads(marker_match.group(1)),
+                    f"Місцезнаходження: {title}",
+                )
+
+                self.assertNotIn("<script>alert(1)</script>", page)
+                self.assertNotIn("<img src=x onerror=", page)
+                self.assertNotIn("</script><script", map_script)
+                json_ld_blocks = re.findall(
+                    r'<script type="application/ld\+json">(.*?)</script>',
+                    page,
+                    flags=re.DOTALL,
+                )
+                self.assertEqual(len(json_ld_blocks), 5)
+                for block in json_ld_blocks:
+                    json.loads(block)
+
+        normal_title = "Затишна квартира у Львові"
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE listings SET title = ? WHERE id = ?",
+                (normal_title, self.target_id),
+            )
+            db.commit()
+        normal_page = self.client.get(f"/listing/{self.target_id}").get_data(as_text=True)
+        self.assertIn(
+            f'<h1 id="listing-title" style="color:#fff;margin-top:14px">{normal_title}</h1>',
+            normal_page,
+        )
+        self.assertIn(
+            f".bindPopup({json.dumps(normal_title, ensure_ascii=False)}).openPopup();",
+            normal_page,
+        )
 
     def test_seller_cannot_spoof_agency_attribution(self):
         response = self.client.patch(
@@ -733,12 +819,65 @@ class TrustFeatureTests(unittest.TestCase):
             self.assertEqual(dispatch.call_args.kwargs["listing_id"], self.target_id)
 
     def test_media_upload_validation_rejects_unsafe_or_oversized_files(self):
+        self.assertEqual(
+            app_module.normalize_media_content_type("IMG_2008.HEIC", "image/heic"),
+            ("image/heic", "image"),
+        )
+        self.assertEqual(
+            app_module.normalize_media_content_type("IMG_2008.HEIF", "image/heif"),
+            ("image/heif", "image"),
+        )
+        self.assertEqual(
+            app_module.normalize_media_content_type("IMG_2008.JPG", "image/jpeg"),
+            ("image/jpeg", "image"),
+        )
+        self.assertEqual(
+            app_module.normalize_media_content_type("IMG_2008.PNG", "image/png"),
+            ("image/png", "image"),
+        )
+        self.assertEqual(
+            app_module.normalize_media_content_type("IMG_2008.HEIC", "image/jpeg"),
+            ("image/jpeg", "image"),
+        )
+
+        with mock.patch.object(
+            app_module,
+            "generate_presigned_upload_url",
+            return_value={
+                "storage": "cloudinary",
+                "method": "POST",
+                "uploadUrl": "https://api.cloudinary.com/v1_1/test-cloud/image/upload",
+            },
+        ):
+            maximum_heic = self.client.post(
+                "/api/media/presigned-url",
+                json={
+                    "filename": "IMG_LARGE.HEIC",
+                    "contentType": "image/heic",
+                    "size": app_module.MAX_UPLOAD_SIZE,
+                },
+                headers=self._auth(self.owner_token),
+            )
+        self.assertEqual(maximum_heic.status_code, 200)
+        self.assertEqual(maximum_heic.get_json()["contentType"], "image/heic")
+
         svg = self.client.post(
             "/api/media/presigned-url",
             json={"filename": "unsafe.svg", "contentType": "image/svg+xml", "size": 1024},
             headers=self._auth(self.owner_token),
         )
         self.assertEqual(svg.status_code, 400)
+
+        oversized_heic = self.client.post(
+            "/api/media/presigned-url",
+            json={
+                "filename": "IMG_TOO_LARGE.HEIC",
+                "contentType": "image/heic",
+                "size": app_module.MAX_UPLOAD_SIZE + 1,
+            },
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(oversized_heic.status_code, 413)
 
         oversized_video = self.client.post(
             "/api/media/presigned-url",
@@ -757,6 +896,93 @@ class TrustFeatureTests(unittest.TestCase):
             headers=self._auth(self.owner_token),
         )
         self.assertEqual(arbitrary_url.status_code, 400)
+
+    def test_phone_library_media_persists_through_listing_create_and_edit(self):
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE users SET plan_id = 'premium', plan_expires_at = NULL WHERE id = ?",
+                (self.owner_id,),
+            )
+            db.commit()
+
+        heic_public_id = f"listings/{self.owner_id}/ios/IMG_2008"
+        jpeg_public_id = f"listings/{self.owner_id}/ios/IMG_2009"
+        heic_url = (
+            "https://res.cloudinary.com/test-cloud/image/upload/"
+            f"{heic_public_id}.heic"
+        )
+        jpeg_url = (
+            "https://res.cloudinary.com/test-cloud/image/upload/"
+            f"{jpeg_public_id}.jpg"
+        )
+        confirmed_urls = []
+        for public_id, url in ((heic_public_id, heic_url), (jpeg_public_id, jpeg_url)):
+            confirmed = self.client.post(
+                "/api/media/confirm-upload",
+                json={
+                    "publicId": public_id,
+                    "resourceType": "image",
+                    "url": url,
+                },
+                headers=self._auth(self.owner_token),
+            )
+            self.assertEqual(confirmed.status_code, 200, confirmed.get_json())
+            confirmed_urls.append(confirmed.get_json()["url"])
+
+        payload = {
+            "title": "iPhone photo create",
+            "city": "Київ",
+            "district": "Печерський",
+            "propertyType": "квартира",
+            "conditionType": "вторинка",
+            "listingType": "sale",
+            "price": 100_000,
+            "rooms": 2,
+            "area": 50,
+            "floor": 1,
+            "totalFloors": 9,
+            "listingStatus": "active",
+            "description": "",
+            "images": [confirmed_urls[0]],
+        }
+        created = self.client.post(
+            "/api/listings",
+            json=payload,
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(created.status_code, 201, created.get_json())
+        listing_id = created.get_json()["listing"]["id"]
+        self.assertEqual(created.get_json()["listing"]["images"], [heic_url])
+
+        edited = self.client.patch(
+            f"/api/listings/{listing_id}",
+            json={
+                **payload,
+                "title": "iPhone photo edit",
+                "images": confirmed_urls,
+            },
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(edited.status_code, 200, edited.get_json())
+        self.assertEqual(edited.get_json()["listing"]["images"], [heic_url, jpeg_url])
+
+        without_new_photo = self.client.patch(
+            f"/api/listings/{listing_id}",
+            json={
+                **payload,
+                "title": "iPhone photo edit without replacement",
+                "images": confirmed_urls,
+            },
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(without_new_photo.status_code, 200, without_new_photo.get_json())
+        self.assertEqual(without_new_photo.get_json()["listing"]["images"], [heic_url, jpeg_url])
+        with sqlite3.connect(TEST_DB) as db:
+            stored_images = db.execute(
+                "SELECT images FROM listings WHERE id = ?",
+                (listing_id,),
+            ).fetchone()[0]
+        self.assertEqual(json.loads(stored_images), [heic_url, jpeg_url])
 
     def test_legacy_base64_listing_photos_are_rejected_and_not_serialized(self):
         data_uri = "data:image/jpeg;base64," + base64.b64encode(b"legacy-photo").decode("ascii")
@@ -1209,6 +1435,181 @@ class TrustFeatureTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(active, 0)
 
+    def test_firebase_push_sends_notification_and_deep_link_data(self):
+        responses = [
+            mock.Mock(success=True, exception=None),
+            mock.Mock(success=True, exception=None),
+        ]
+        firebase_response = mock.Mock(
+            success_count=2,
+            failure_count=0,
+            responses=responses,
+        )
+        payload = {
+            "event": "saved_alert_match",
+            "alert_id": 7,
+            "device_tokens": ["token-one", "token-two"],
+            "listing": {
+                "id": self.target_id,
+                "title": "Target",
+                "city": "Київ",
+                "url": f"https://ua-dim.com/listing/{self.target_id}",
+            },
+        }
+        with mock.patch.object(
+            app_module,
+            "FIREBASE_SERVICE_ACCOUNT_BASE64",
+            "configured",
+        ), mock.patch.object(
+            app_module,
+            "_get_firebase_app",
+            return_value=mock.sentinel.firebase_app,
+        ), mock.patch(
+            "firebase_admin.messaging.send_each",
+            return_value=firebase_response,
+        ) as send:
+            result = app_module._send_alert_push_via_firebase(payload)
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.attempted)
+        self.assertEqual(result.invalid_tokens, ())
+        messages = send.call_args.args[0]
+        self.assertEqual([message.token for message in messages], ["token-one", "token-two"])
+        self.assertEqual(messages[0].data["listing_id"], str(self.target_id))
+        self.assertEqual(messages[0].data["url"], payload["listing"]["url"])
+        self.assertIs(send.call_args.kwargs["app"], mock.sentinel.firebase_app)
+
+    def test_firebase_transient_failure_does_not_fall_back_to_webhook(self):
+        payload = {"device_tokens": ["token-one"], "listing": {"id": self.target_id}}
+        with mock.patch.object(
+            app_module,
+            "FIREBASE_SERVICE_ACCOUNT_BASE64",
+            "configured",
+        ), mock.patch.object(
+            app_module,
+            "ALERTS_PUSH_WEBHOOK_URL",
+            "https://push.example.test",
+        ), mock.patch.object(
+            app_module,
+            "_get_firebase_app",
+            return_value=mock.sentinel.firebase_app,
+        ), mock.patch(
+            "firebase_admin.messaging.send_each",
+            side_effect=OSError("temporary network failure"),
+        ), mock.patch.object(
+            app_module,
+            "_send_alert_push_webhook",
+        ) as webhook:
+            self.assertFalse(app_module.send_alert_push_payload(payload))
+
+        webhook.assert_not_called()
+
+    def test_firebase_permanent_token_failure_deactivates_device(self):
+        from firebase_admin import exceptions as firebase_exceptions
+        from firebase_admin import messaging
+
+        with sqlite3.connect(TEST_DB) as db:
+            db.executemany(
+                """
+                INSERT INTO push_devices (user_id, token, platform)
+                VALUES (?, ?, 'android')
+                """,
+                (
+                    (self.owner_id, "invalid-device-token"),
+                    (self.owner_id, "unregistered-device-token"),
+                ),
+            )
+            db.commit()
+            firebase_response = mock.Mock(
+                success_count=0,
+                failure_count=2,
+                responses=[
+                    mock.Mock(
+                        success=False,
+                        exception=firebase_exceptions.InvalidArgumentError("invalid token"),
+                    ),
+                    mock.Mock(
+                        success=False,
+                        exception=messaging.UnregisteredError("unregistered token"),
+                    ),
+                ],
+            )
+            payload = {
+                "device_tokens": [
+                    "invalid-device-token",
+                    "unregistered-device-token",
+                ],
+                "listing": {"id": self.target_id},
+            }
+            with mock.patch.object(
+                app_module,
+                "FIREBASE_SERVICE_ACCOUNT_BASE64",
+                "configured",
+            ), mock.patch.object(
+                app_module,
+                "_get_firebase_app",
+                return_value=mock.sentinel.firebase_app,
+            ), mock.patch(
+                "firebase_admin.messaging.send_each",
+                return_value=firebase_response,
+            ), mock.patch.object(
+                app_module,
+                "_send_alert_push_webhook",
+            ) as webhook:
+                self.assertFalse(app_module.send_alert_push_payload(payload, db=db))
+            db.commit()
+            active_devices = db.execute(
+                """
+                SELECT COUNT(*)
+                FROM push_devices
+                WHERE token IN ('invalid-device-token', 'unregistered-device-token')
+                  AND is_active = 1
+                """
+            ).fetchone()[0]
+
+        self.assertEqual(active_devices, 0)
+        webhook.assert_not_called()
+
+    def test_firebase_push_is_disabled_cleanly_when_unconfigured(self):
+        with mock.patch.object(
+            app_module,
+            "FIREBASE_SERVICE_ACCOUNT_BASE64",
+            "",
+        ), mock.patch.object(
+            app_module,
+            "ALERTS_PUSH_WEBHOOK_URL",
+            "",
+        ), mock.patch.object(
+            app_module,
+            "_get_firebase_app",
+        ) as get_firebase_app:
+            self.assertFalse(
+                app_module.send_alert_push_payload(
+                    {"device_tokens": ["token-one"], "listing": {"id": self.target_id}}
+                )
+            )
+
+        get_firebase_app.assert_not_called()
+
+    def test_unconfigured_firebase_uses_existing_webhook_once(self):
+        payload = {"device_tokens": ["token-one"], "listing": {"id": self.target_id}}
+        with mock.patch.object(
+            app_module,
+            "FIREBASE_SERVICE_ACCOUNT_BASE64",
+            "",
+        ), mock.patch.object(
+            app_module,
+            "ALERTS_PUSH_WEBHOOK_URL",
+            "https://push.example.test",
+        ), mock.patch.object(
+            app_module,
+            "_send_alert_push_webhook",
+            return_value=True,
+        ) as webhook:
+            self.assertTrue(app_module.send_alert_push_payload(payload))
+
+        webhook.assert_called_once_with(payload)
+
     def test_alert_dispatch_advances_same_timestamp_matches_and_marks_price_changes(self):
         with sqlite3.connect(TEST_DB) as db:
             db.execute(
@@ -1654,6 +2055,56 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(row["id"], 42)
         self.assertEqual(dict(row), {"id": 42, "title": "Test listing"})
 
+    def test_postgres_text_timestamp_expression_matches_text_schema(self):
+        with mock.patch.object(app_module, "_is_postgres", return_value=True):
+            self.assertEqual(
+                app_module.db_text_timestamp_expr(),
+                "CAST(CURRENT_TIMESTAMP AS TEXT)",
+            )
+            self.assertEqual(
+                app_module.db_text_timestamp_expr(offset_days=1),
+                "CAST(CURRENT_TIMESTAMP - INTERVAL '1 day' AS TEXT)",
+            )
+            self.assertEqual(
+                app_module.db_timestamp_column_expr("published_at"),
+                "published_at::timestamptz",
+            )
+
+    def test_lead_funnel_upserts_qualify_postgres_counter_columns(self):
+        class Result:
+            @staticmethod
+            def fetchone():
+                return None
+
+        class RecordingDatabase:
+            def __init__(self):
+                self.queries = []
+
+            def execute(self, query, params=()):
+                self.queries.append(query)
+                return Result()
+
+        database = RecordingDatabase()
+        app_module._upsert_lead_funnel_summary(
+            database,
+            day="2026-08-21",
+            source="listing",
+            listing_type="sale",
+            event="lead_submit",
+            listing_id=42,
+            created_at="2026-08-21 12:00:00",
+            session_id=None,
+        )
+
+        self.assertIn(
+            "lead_funnel_daily_metrics.event_count + 1",
+            database.queries[0],
+        )
+        self.assertIn(
+            "lead_funnel_listing_metrics.event_count + 1",
+            database.queries[1],
+        )
+
     def test_postgres_cursor_exposes_captured_lastval_with_savepoint(self):
         class FakeCursor:
             lastrowid = None
@@ -2067,7 +2518,7 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(payload["sandbox"], 1)
         self.assertEqual(
             payload["result_url"],
-            f"https://ua-dim.example/real-estate-demo.html?payment=return&order_id={result['order_id']}",
+            f"https://ua-dim.example/?payment=return&order_id={result['order_id']}",
         )
         self.assertEqual(
             payload["server_url"],
@@ -2490,6 +2941,64 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertNotIn("googletagmanager.com/ns.html", app_shell)
         self.assertNotIn("googletagmanager.com/ns.html", launch_shell)
         self.assertIn("!analyticsAllowed()", analytics_loader)
+
+    def test_static_shell_asset_versions_are_hash_based_and_in_sync(self):
+        web_dir = os.path.join(os.path.dirname(BACKEND_DIR), "web")
+        with open(os.path.join(web_dir, "app-loader.js"), encoding="utf-8") as handle:
+            loader = handle.read()
+        with open(os.path.join(web_dir, "real-estate-demo.html"), encoding="utf-8") as handle:
+            app_shell = handle.read()
+        with open(os.path.join(web_dir, "smart-search.html"), encoding="utf-8") as handle:
+            smart_search_shell = handle.read()
+
+        loader_versions = set(re.findall(r"perf-[0-9a-f]{12}", loader))
+        app_shell_versions = set(re.findall(r"perf-[0-9a-f]{12}", app_shell))
+        smart_search_versions = set(re.findall(r"perf-[0-9a-f]{12}", smart_search_shell))
+
+        self.assertEqual(len(loader_versions), 1)
+        self.assertEqual(loader_versions, app_shell_versions)
+        self.assertEqual(loader_versions, smart_search_versions)
+        self.assertNotIn("perf-20260820-1", loader)
+        self.assertNotIn("perf-20260820-1", app_shell)
+        self.assertNotIn("perf-20260820-1", smart_search_shell)
+
+    def test_service_worker_precaches_the_offline_app_shell(self):
+        web_dir = os.path.join(os.path.dirname(BACKEND_DIR), "web")
+        with open(os.path.join(web_dir, "sw.js"), encoding="utf-8") as handle:
+            service_worker = handle.read()
+        with open(
+            os.path.join(web_dir, "precache-manifest.js"),
+            encoding="utf-8",
+        ) as handle:
+            precache_manifest = handle.read()
+
+        self.assertIn("caches.match('/app')", service_worker)
+        self.assertIn("url.origin !== self.location.origin", service_worker)
+        self.assertIn("'/app'", precache_manifest)
+        self.assertIn("'/real-estate-demo.html'", precache_manifest)
+
+    def test_production_entrypoints_do_not_expose_demo_urls(self):
+        web_dir = os.path.join(os.path.dirname(BACKEND_DIR), "web")
+        with open(os.path.join(web_dir, "index.html"), encoding="utf-8") as handle:
+            index_shell = handle.read()
+        with open(os.path.join(web_dir, "ua-homes-manifest.json"), encoding="utf-8") as handle:
+            manifest = handle.read()
+        with open(
+            os.path.join(
+                os.path.dirname(BACKEND_DIR),
+                "apps",
+                "ua_dim",
+                "lib",
+                "screens",
+                "ua_dim_screen.dart",
+            ),
+            encoding="utf-8",
+        ) as handle:
+            mobile_shell = handle.read()
+
+        self.assertNotIn("real-estate-demo", index_shell)
+        self.assertNotIn("real-estate-demo", manifest)
+        self.assertNotIn("real-estate-demo", mobile_shell)
 
 
 if __name__ == "__main__":

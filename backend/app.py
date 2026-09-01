@@ -14,6 +14,7 @@ Environment variables:
                         If absent, falls back to in-process memory (dev only).
 """
 import base64
+import binascii
 import hashlib
 import hmac
 import ipaddress
@@ -26,11 +27,13 @@ import secrets
 import statistics
 import datetime
 import tempfile
+import threading
 import time
 import sys
 from decimal import Decimal, InvalidOperation
 from html import escape
 from functools import wraps
+from typing import NamedTuple
 from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import bcrypt
@@ -39,6 +42,11 @@ from flask import Flask, Response, g, jsonify, request, send_file
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+
+if __package__:
+    from .monitoring import bind_request_context, initialize_sentry, monitoring_state
+else:
+    from monitoring import bind_request_context, initialize_sentry, monitoring_state
 
 # Optional: Image optimization (Pillow)
 try:
@@ -304,24 +312,16 @@ def _bootstrap_admin_user(db) -> None:
     email = BOOTSTRAP_ADMIN_EMAIL
     password = BOOTSTRAP_ADMIN_PASSWORD
     name = BOOTSTRAP_ADMIN_NAME
+    # Bootstrap credentials are only for creating the configured account once.
+    # Never use an environment variable to reset or re-elevate an established
+    # account during every process start.
+    if db.execute("SELECT 1 FROM users WHERE email = ? LIMIT 1", (email,)).fetchone():
+        return
+
     password_hash = bcrypt.hashpw(
         password.encode("utf-8"),
         bcrypt.gensalt(rounds=12),
     ).decode("utf-8")
-
-    if db.execute("SELECT 1 FROM users WHERE email = ? LIMIT 1", (email,)).fetchone():
-        db.execute(
-            "UPDATE users SET name = ?, password = ?, password_hash = ?, role = 'admin', status = 'active' WHERE email = ?",
-            (
-                name,
-                password_hash,
-                password_hash,
-                email,
-            ),
-        )
-        db.commit()
-        return
-
     db.execute(
         "INSERT INTO users (name, email, password, password_hash, role, status) VALUES (?, ?, ?, ?, 'admin', 'active')",
         (name, email, password_hash, password_hash),
@@ -652,7 +652,7 @@ def _upsert_lead_funnel_summary(db, *, day: str, source: str, listing_type: str,
         INSERT INTO lead_funnel_daily_metrics (day, source, listing_type, event, event_count)
         VALUES (?, ?, ?, ?, 1)
         ON CONFLICT(day, source, listing_type, event)
-        DO UPDATE SET event_count = event_count + 1
+        DO UPDATE SET event_count = lead_funnel_daily_metrics.event_count + 1
         """,
         (day, source, listing_type, event),
     )
@@ -662,7 +662,7 @@ def _upsert_lead_funnel_summary(db, *, day: str, source: str, listing_type: str,
             INSERT INTO lead_funnel_listing_metrics (day, listing_id, event, event_count)
             VALUES (?, ?, ?, 1)
             ON CONFLICT(day, listing_id, event)
-            DO UPDATE SET event_count = event_count + 1
+            DO UPDATE SET event_count = lead_funnel_listing_metrics.event_count + 1
             """,
             (day, listing_id, event),
         )
@@ -734,6 +734,17 @@ def db_now_expr(offset_days: int | None = None) -> str:
     return f"datetime('now', '{sign}{abs(offset_days)} days')"
 
 
+def db_text_timestamp_expr(offset_days: int | None = None) -> str:
+    """Return the current timestamp with the TEXT type used by the shared schema."""
+    expression = db_now_expr(offset_days)
+    return f"CAST({expression} AS TEXT)" if _is_postgres() else expression
+
+
+def db_timestamp_column_expr(column: str) -> str:
+    """Return a TEXT timestamp column converted for chronological comparison."""
+    return f"{column}::timestamptz" if _is_postgres() else column
+
+
 def _is_db_integrity_error(exc: Exception) -> bool:
     if isinstance(exc, sqlite3.IntegrityError):
         return True
@@ -742,7 +753,44 @@ def _is_db_integrity_error(exc: Exception) -> bool:
     return pgcode in {"23505", "23503", "23502"} or sqlstate in {"23505", "23503", "23502"}
 
 
+def _is_db_unique_error(exc: Exception) -> bool:
+    if isinstance(exc, sqlite3.IntegrityError):
+        return (
+            getattr(exc, "sqlite_errorcode", None) in {1555, 2067}
+            or str(exc).startswith("UNIQUE constraint failed:")
+        )
+    return getattr(exc, "pgcode", None) == "23505" or getattr(exc, "sqlstate", None) == "23505"
+
+
 _PG_MIGRATION_LOCK_ID = 8_140_713_559_001
+
+
+def _migrate_postgres_agency_profiles(cur) -> None:
+    text_now_expr = db_text_timestamp_expr()
+    cur.execute("""
+        ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+        ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE agency_profiles ADD COLUMN IF NOT EXISTS updated_at TEXT;
+    """)
+    cur.execute(
+        f"""
+        UPDATE agency_profiles
+        SET status = CASE WHEN status IN ('active', 'suspended') THEN status ELSE 'active' END,
+            revision = CASE WHEN revision > 0 THEN revision ELSE 1 END,
+            updated_at = COALESCE(updated_at, created_at, {text_now_expr})
+        """
+    )
+    cur.execute(
+        "ALTER TABLE agency_profiles ALTER COLUMN updated_at"
+        f" SET DEFAULT {text_now_expr}"
+    )
+    cur.execute(
+        "ALTER TABLE agency_profiles ALTER COLUMN updated_at SET NOT NULL"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agency_profiles_kind_status"
+        " ON agency_profiles(kind, status)"
+    )
 
 
 def _init_postgres_db():
@@ -994,11 +1042,14 @@ def _init_postgres_db():
                 city                  TEXT    NOT NULL,
                 specialization        TEXT    NOT NULL DEFAULT '',
                 is_verified           INTEGER NOT NULL DEFAULT 0,
+                status                TEXT    NOT NULL DEFAULT 'active',
                 avg_response_minutes  INTEGER,
                 team_size             INTEGER,
                 completed_deals       INTEGER NOT NULL DEFAULT 0,
                 last_verified_at      TEXT,
-                created_at            TEXT    NOT NULL DEFAULT ({db_now_expr()})
+                revision              INTEGER NOT NULL DEFAULT 1,
+                created_at            TEXT    NOT NULL DEFAULT ({db_text_timestamp_expr()}),
+                updated_at            TEXT    NOT NULL DEFAULT ({db_text_timestamp_expr()})
             );
 
             CREATE TABLE IF NOT EXISTS premium_orders (
@@ -1041,6 +1092,19 @@ def _init_postgres_db():
                 new_value  TEXT,
                 actor_type TEXT    NOT NULL DEFAULT 'system',
                 created_at TEXT    NOT NULL DEFAULT ({db_now_expr()})
+            );
+
+            CREATE TABLE IF NOT EXISTS admin_audit_log (
+                id            INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                actor_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                actor_role    TEXT NOT NULL,
+                action        TEXT NOT NULL,
+                permission    TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                resource_id   TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{{}}',
+                request_id    TEXT NOT NULL,
+                created_at    TEXT NOT NULL DEFAULT ({db_now_expr()})
             );
 
             CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC);
@@ -1100,6 +1164,9 @@ def _init_postgres_db():
             CREATE INDEX IF NOT EXISTS idx_listing_reports_status ON listing_reports(status);
             CREATE INDEX IF NOT EXISTS idx_listing_reports_dedupe ON listing_reports(listing_id, reporter_fingerprint, reason_code, created_at);
             CREATE INDEX IF NOT EXISTS idx_listing_change_history_listing ON listing_change_history(listing_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_admin_audit_created ON admin_audit_log(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_admin_audit_actor ON admin_audit_log(actor_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_admin_audit_resource ON admin_audit_log(resource_type, resource_id, created_at DESC);
         """)
 
         # Backward-compatible migration for databases created before subscriptions.
@@ -1141,6 +1208,7 @@ def _init_postgres_db():
             ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS responded_at TEXT;
             ALTER TABLE listing_alerts ADD COLUMN IF NOT EXISTS last_sent_listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL;
         """)
+        _migrate_postgres_agency_profiles(cur)
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_lead_requests_listing_status
                 ON lead_requests(listing_id, status, created_at DESC);
@@ -1276,25 +1344,15 @@ def _seed_postgres(cur):
 
 
 def _bootstrap_postgres_admin(cur):
-    """Create or refresh the configured production administrator."""
+    """Create the configured production administrator once."""
     if BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD:
-        password_hash = bcrypt.hashpw(
-            BOOTSTRAP_ADMIN_PASSWORD.encode("utf-8"),
-            bcrypt.gensalt(rounds=12),
-        ).decode("utf-8")
         cur.execute("SELECT id FROM users WHERE email = %s LIMIT 1", (BOOTSTRAP_ADMIN_EMAIL,))
         existing = cur.fetchone()
-        if existing:
-            cur.execute(
-                "UPDATE users SET name = %s, password = %s, password_hash = %s, role = 'admin', status = 'active' WHERE email = %s",
-                (
-                    BOOTSTRAP_ADMIN_NAME,
-                    password_hash,
-                    password_hash,
-                    BOOTSTRAP_ADMIN_EMAIL,
-                ),
-            )
-        else:
+        if not existing:
+            password_hash = bcrypt.hashpw(
+                BOOTSTRAP_ADMIN_PASSWORD.encode("utf-8"),
+                bcrypt.gensalt(rounds=12),
+            ).decode("utf-8")
             cur.execute(
                 "INSERT INTO users (name, email, password, password_hash, role, status) VALUES (%s, %s, %s, %s, 'admin', 'active')",
                 (
@@ -1308,30 +1366,9 @@ def _bootstrap_postgres_admin(cur):
 
 # ─── App setup ───────────────────────────────────────────────────────────────
 
+SENTRY_ENABLED = initialize_sentry()
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": _cors_origins()}}, supports_credentials=True, vary_header=True)
-
-SENTRY_DSN = os.environ.get("SENTRY_DSN", "").strip()
-if SENTRY_DSN:
-    import sentry_sdk
-
-    try:
-        traces_sample_rate = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1"))
-    except ValueError as exc:
-        raise RuntimeError("SENTRY_TRACES_SAMPLE_RATE must be a number between 0 and 1") from exc
-    if not 0 <= traces_sample_rate <= 1:
-        raise RuntimeError("SENTRY_TRACES_SAMPLE_RATE must be between 0 and 1")
-    sentry_sdk.init(
-        dsn=SENTRY_DSN,
-        environment=(
-            os.environ.get("RAILWAY_ENVIRONMENT_NAME")
-            or os.environ.get("ENVIRONMENT")
-            or "development"
-        ),
-        release=os.environ.get("RAILWAY_GIT_COMMIT_SHA") or None,
-        send_default_pii=False,
-        traces_sample_rate=traces_sample_rate,
-    )
 
 # Configure Cloudinary early so api_sign_request has credentials
 if CLOUDINARY_URL:
@@ -1347,6 +1384,11 @@ def assign_request_id():
         g.request_id = incoming_request_id
     else:
         g.request_id = secrets.token_hex(12)
+    bind_request_context(
+        g.request_id,
+        request.method,
+        request.url_rule.rule if request.url_rule else "unmatched",
+    )
 
 
 @app.before_request
@@ -1383,6 +1425,14 @@ limiter = Limiter(
 ALERTS_DISPATCH_KEY = os.environ.get("UA_HOMES_ALERTS_DISPATCH_KEY", "").strip()
 ALERTS_PUSH_WEBHOOK_URL = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_URL", "").strip()
 ALERTS_PUSH_WEBHOOK_BEARER = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_BEARER", "").strip()
+FIREBASE_SERVICE_ACCOUNT_BASE64 = os.environ.get(
+    "UA_HOMES_FIREBASE_SERVICE_ACCOUNT_BASE64", ""
+).strip()
+FIREBASE_PROJECT_ID = "ua-dim-production"
+_FIREBASE_APP_NAME = "ua-homes-alerts"
+_firebase_app = None
+_firebase_init_failed = False
+_firebase_init_lock = threading.Lock()
 
 def _cache_control_for_request() -> str | None:
     if request.method != "GET":
@@ -1595,6 +1645,18 @@ def legacy_demo_image_seed(url: str) -> str | None:
 def imgs(*ids):
     """Return a JSON array of first-party demo image URLs for deterministic seed media."""
     return json.dumps([demo_image_url(uid) for uid in ids])
+
+
+def json_for_html_script(value) -> str:
+    """Serialize JSON without allowing data to terminate an HTML script element."""
+    return (
+        json.dumps(value, ensure_ascii=False)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
 
 
 def normalize_listing_images(raw_images) -> list[str]:
@@ -2205,6 +2267,46 @@ def log_listing_event(db: sqlite3.Connection, listing_id: int, action: str, reas
     )
 
 
+def log_admin_audit(
+    db,
+    *,
+    actor_id: int,
+    actor_role: str,
+    action: str,
+    permission: str,
+    resource_type: str,
+    resource_id=None,
+    changed_fields=(),
+) -> None:
+    sensitive = {
+        "password", "password_hash", "token", "authorization", "csrf_token",
+        "reporter_fingerprint", "phone", "email", "message", "details",
+    }
+    fields = sorted({
+        str(field)[:80]
+        for field in changed_fields
+        if str(field).lower() not in sensitive
+    })[:30]
+    db.execute(
+        """
+        INSERT INTO admin_audit_log (
+            actor_id, actor_role, action, permission, resource_type,
+            resource_id, metadata_json, request_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            actor_id,
+            actor_role,
+            str(action)[:120],
+            str(permission)[:80],
+            str(resource_type)[:80],
+            None if resource_id is None else str(resource_id)[:120],
+            json.dumps({"changed_fields": fields}, separators=(",", ":")),
+            str(getattr(g, "request_id", "unknown"))[:128],
+        ),
+    )
+
+
 # ─── Trust & safety: seller type, field history, price stats, reports ───────
 
 def public_seller_type(account_type, account_agency_slug=None) -> str:
@@ -2361,6 +2463,71 @@ def _reporter_fingerprint(identity: str) -> str:
     """
     material = identity.encode("utf-8")
     return hmac.new(SECRET_KEY.encode("utf-8"), material, hashlib.sha256).hexdigest()
+
+
+def _ensure_sqlite_agency_updated_at_contract(db) -> None:
+    updated_at_column = next(
+        (
+            row
+            for row in db.execute("PRAGMA table_info(agency_profiles)").fetchall()
+            if row[1] == "updated_at"
+        ),
+        None,
+    )
+    if (
+        updated_at_column
+        and updated_at_column[3] == 1
+        and updated_at_column[4] == "datetime('now')"
+    ):
+        return
+
+    db.execute("DROP TABLE IF EXISTS agency_profiles_updated_at_migration")
+    db.execute(
+        """
+        CREATE TABLE agency_profiles_updated_at_migration (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug                  TEXT    NOT NULL UNIQUE,
+            name                  TEXT    NOT NULL,
+            kind                  TEXT    NOT NULL DEFAULT 'agency',
+            city                  TEXT    NOT NULL,
+            specialization        TEXT    NOT NULL DEFAULT '',
+            is_verified           INTEGER NOT NULL DEFAULT 0,
+            status                TEXT    NOT NULL DEFAULT 'active',
+            avg_response_minutes  INTEGER,
+            team_size             INTEGER,
+            completed_deals       INTEGER NOT NULL DEFAULT 0,
+            last_verified_at      TEXT,
+            revision              INTEGER NOT NULL DEFAULT 1,
+            created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+            updated_at            TEXT    NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO agency_profiles_updated_at_migration (
+            id, slug, name, kind, city, specialization, is_verified, status,
+            avg_response_minutes, team_size, completed_deals, last_verified_at,
+            revision, created_at, updated_at
+        )
+        SELECT
+            id, slug, name, kind, city, specialization, is_verified, status,
+            avg_response_minutes, team_size, completed_deals, last_verified_at,
+            revision, created_at, updated_at
+        FROM agency_profiles
+        """
+    )
+    db.execute("DROP TABLE agency_profiles")
+    db.execute(
+        "ALTER TABLE agency_profiles_updated_at_migration RENAME TO agency_profiles"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agency_profiles_verified"
+        " ON agency_profiles(is_verified)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agency_profiles_city ON agency_profiles(city)"
+    )
 
 
 def init_db():
@@ -2664,11 +2831,14 @@ def init_db():
             city                  TEXT    NOT NULL,
             specialization        TEXT    NOT NULL DEFAULT '',
             is_verified           INTEGER NOT NULL DEFAULT 0,
+            status                TEXT    NOT NULL DEFAULT 'active',
             avg_response_minutes  INTEGER,
             team_size             INTEGER,
             completed_deals       INTEGER NOT NULL DEFAULT 0,
             last_verified_at      TEXT,
-            created_at            TEXT    NOT NULL DEFAULT (db_now_expr())
+            revision              INTEGER NOT NULL DEFAULT 1,
+            created_at            TEXT    NOT NULL DEFAULT (db_now_expr()),
+            updated_at            TEXT    NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_agency_profiles_verified ON agency_profiles(is_verified);
         CREATE INDEX IF NOT EXISTS idx_agency_profiles_city ON agency_profiles(city);
@@ -2719,6 +2889,22 @@ def init_db():
             created_at TEXT    NOT NULL DEFAULT (db_now_expr())
         );
         CREATE INDEX IF NOT EXISTS idx_listing_change_history_listing ON listing_change_history(listing_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS admin_audit_log (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            actor_role    TEXT NOT NULL,
+            action        TEXT NOT NULL,
+            permission    TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            resource_id   TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            request_id    TEXT NOT NULL,
+            created_at    TEXT NOT NULL DEFAULT (db_now_expr())
+        );
+        CREATE INDEX IF NOT EXISTS idx_admin_audit_created ON admin_audit_log(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_admin_audit_actor ON admin_audit_log(actor_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_admin_audit_resource ON admin_audit_log(resource_type, resource_id, created_at DESC);
     """
         schema_sql = schema_sql.replace("db_now_expr()", now_expr)
         db.executescript(schema_sql)
@@ -2913,7 +3099,26 @@ def init_db():
         db.execute("ALTER TABLE agency_profiles ADD COLUMN team_size INTEGER")
     if "completed_deals" not in agency_columns:
         db.execute("ALTER TABLE agency_profiles ADD COLUMN completed_deals INTEGER NOT NULL DEFAULT 0")
-    db.execute("UPDATE agency_profiles SET completed_deals = COALESCE(completed_deals, 0)")
+    if "status" not in agency_columns:
+        db.execute("ALTER TABLE agency_profiles ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    if "revision" not in agency_columns:
+        db.execute("ALTER TABLE agency_profiles ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+    if "updated_at" not in agency_columns:
+        db.execute("ALTER TABLE agency_profiles ADD COLUMN updated_at TEXT")
+    db.execute(
+        f"""
+        UPDATE agency_profiles
+        SET completed_deals = COALESCE(completed_deals, 0),
+            status = CASE WHEN status IN ('active', 'suspended') THEN status ELSE 'active' END,
+            revision = CASE WHEN revision > 0 THEN revision ELSE 1 END,
+            updated_at = COALESCE(updated_at, created_at, {now_expr})
+        """
+    )
+    _ensure_sqlite_agency_updated_at_contract(db)
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agency_profiles_kind_status"
+        " ON agency_profiles(kind, status)"
+    )
 
     db.execute("UPDATE listings SET source = COALESCE(NULLIF(source, ''), 'owner')")
     db.execute("UPDATE listings SET listing_status = COALESCE(NULLIF(listing_status, ''), 'active')")
@@ -3346,7 +3551,183 @@ def send_alert_listing_email(
     return True
 
 
-def send_alert_push_payload(payload: dict) -> bool:
+class _FirebasePushResult(NamedTuple):
+    configured: bool
+    attempted: bool
+    success: bool
+    invalid_tokens: tuple[str, ...] = ()
+
+
+def _get_firebase_app():
+    global _firebase_app, _firebase_init_failed
+    if not FIREBASE_SERVICE_ACCOUNT_BASE64 or _firebase_init_failed:
+        return None
+    if _firebase_app is not None:
+        return _firebase_app
+
+    with _firebase_init_lock:
+        if _firebase_app is not None or _firebase_init_failed:
+            return _firebase_app
+        try:
+            import firebase_admin
+            from firebase_admin import credentials
+
+            decoded = base64.b64decode(
+                FIREBASE_SERVICE_ACCOUNT_BASE64.encode("ascii"),
+                validate=True,
+            )
+            service_account = json.loads(decoded.decode("utf-8"))
+            if not isinstance(service_account, dict):
+                raise ValueError("service account JSON must be an object")
+            if service_account.get("type") != "service_account":
+                raise ValueError("credential is not a service account")
+            if service_account.get("project_id") != FIREBASE_PROJECT_ID:
+                raise ValueError("credential belongs to an unexpected Firebase project")
+            _firebase_app = firebase_admin.initialize_app(
+                credentials.Certificate(service_account),
+                {"projectId": FIREBASE_PROJECT_ID},
+                name=_FIREBASE_APP_NAME,
+            )
+        except (
+            ImportError,
+            UnicodeEncodeError,
+            UnicodeDecodeError,
+            binascii.Error,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            _firebase_init_failed = True
+            app.logger.error(
+                "Firebase Admin initialization failed for %s (%s); "
+                "verify that it contains base64-encoded service-account JSON for project %s",
+                "UA_HOMES_FIREBASE_SERVICE_ACCOUNT_BASE64",
+                type(exc).__name__,
+                FIREBASE_PROJECT_ID,
+            )
+            return None
+    return _firebase_app
+
+
+def _firebase_notification(payload: dict) -> tuple[str, str, dict[str, str]]:
+    listing = payload.get("listing") if isinstance(payload.get("listing"), dict) else {}
+    event = str(payload.get("event") or "saved_alert_match")
+    if event == "saved_alert_price_change":
+        title = "Ціна оголошення змінилася"
+    else:
+        title = "Нове оголошення за вашим пошуком"
+    body = str(listing.get("title") or payload.get("name") or "Відкрийте UA-Dim, щоб переглянути")
+    city = str(listing.get("city") or "").strip()
+    if city and city.lower() not in body.lower():
+        body = f"{body} · {city}"
+    data = {
+        "event": event,
+        "alert_id": str(payload.get("alert_id") or ""),
+        "listing_id": str(listing.get("id") or ""),
+        "url": str(listing.get("url") or ""),
+    }
+    return title, body, data
+
+
+def _is_permanent_fcm_token_error(error, messaging, firebase_exceptions) -> bool:
+    return isinstance(
+        error,
+        (
+            messaging.UnregisteredError,
+            messaging.SenderIdMismatchError,
+            firebase_exceptions.InvalidArgumentError,
+        ),
+    )
+
+
+def _send_alert_push_via_firebase(payload: dict) -> _FirebasePushResult:
+    if not FIREBASE_SERVICE_ACCOUNT_BASE64:
+        return _FirebasePushResult(configured=False, attempted=False, success=False)
+
+    firebase_app = _get_firebase_app()
+    if firebase_app is None:
+        return _FirebasePushResult(configured=True, attempted=False, success=False)
+
+    tokens = [
+        token
+        for token in payload.get("device_tokens", [])
+        if isinstance(token, str) and token
+    ]
+    if not tokens:
+        app.logger.info("Firebase push skipped because the alert has no active device tokens")
+        return _FirebasePushResult(configured=True, attempted=False, success=False)
+
+    from firebase_admin import exceptions as firebase_exceptions
+    from firebase_admin import messaging
+
+    title, body, data = _firebase_notification(payload)
+    notification = messaging.Notification(title=title, body=body)
+    android = messaging.AndroidConfig(
+        priority="high",
+        notification=messaging.AndroidNotification(
+            sound="default",
+            click_action="FLUTTER_NOTIFICATION_CLICK",
+        ),
+    )
+    apns = messaging.APNSConfig(
+        payload=messaging.APNSPayload(aps=messaging.Aps(sound="default")),
+    )
+    messages = [
+        messaging.Message(
+            token=token,
+            notification=notification,
+            data=data,
+            android=android,
+            apns=apns,
+        )
+        for token in tokens
+    ]
+    try:
+        response = messaging.send_each(messages, app=firebase_app)
+    except (firebase_exceptions.FirebaseError, OSError, TimeoutError) as exc:
+        app.logger.error(
+            "Firebase push request failed before a response (%s); webhook fallback suppressed",
+            type(exc).__name__,
+        )
+        return _FirebasePushResult(configured=True, attempted=True, success=False)
+
+    invalid_tokens = tuple(
+        token
+        for token, send_response in zip(tokens, response.responses)
+        if not send_response.success
+        and _is_permanent_fcm_token_error(
+            send_response.exception,
+            messaging,
+            firebase_exceptions,
+        )
+    )
+    if response.failure_count:
+        app.logger.warning(
+            "Firebase push completed with success=%s failure=%s invalid_tokens=%s",
+            response.success_count,
+            response.failure_count,
+            len(invalid_tokens),
+        )
+    return _FirebasePushResult(
+        configured=True,
+        attempted=True,
+        success=response.success_count > 0,
+        invalid_tokens=invalid_tokens,
+    )
+
+
+def _deactivate_push_tokens(db, tokens: tuple[str, ...]) -> None:
+    if not tokens:
+        return
+    placeholders = ", ".join("?" for _ in tokens)
+    db.execute(
+        f"UPDATE push_devices SET is_active = 0 WHERE token IN ({placeholders})",
+        tokens,
+    )
+    app.logger.info("Deactivated %s permanently invalid Firebase push token(s)", len(tokens))
+
+
+def _send_alert_push_webhook(payload: dict) -> bool:
     if not ALERTS_PUSH_WEBHOOK_URL:
         return False
     try:
@@ -3361,6 +3742,21 @@ def send_alert_push_payload(payload: dict) -> bool:
     except Exception as e:
         app.logger.error("Alerts push webhook error: %s", e)
         return False
+
+
+def send_alert_push_payload(payload: dict, *, db=None) -> bool:
+    firebase_result = _send_alert_push_via_firebase(payload)
+    if db is not None:
+        _deactivate_push_tokens(db, firebase_result.invalid_tokens)
+    if firebase_result.attempted:
+        return firebase_result.success
+    if ALERTS_PUSH_WEBHOOK_URL:
+        if firebase_result.configured:
+            app.logger.warning(
+                "Firebase push was unavailable before delivery; using configured webhook fallback"
+            )
+        return _send_alert_push_webhook(payload)
+    return False
 
 
 def _listing_matches_alert_filters(listing: dict, filters: dict) -> bool:
@@ -3543,7 +3939,8 @@ def dispatch_saved_alerts(
                         "district": candidate_listing.get("district"),
                         "url": f"{PUBLIC_SITE_URL or 'http://localhost:8080'}/listing/{candidate_listing['id']}",
                     },
-                }
+                },
+                db=db,
             )
             if push_ok:
                 push_sent += 1
@@ -3897,7 +4294,10 @@ def public_app_base_url() -> str:
 
 
 def public_app_url() -> str:
-    return f"{public_app_base_url()}/real-estate-demo.html"
+    base = public_app_base_url()
+    if urlsplit(base).hostname in {"localhost", "127.0.0.1"}:
+        return f"{base}/real-estate-demo.html"
+    return f"{base}/"
 
 
 def public_seller_url() -> str:
@@ -4564,15 +4964,18 @@ def _seo_landing_stats(db: sqlite3.Connection, limit: int = 8):
 
 def _content_articles(db: sqlite3.Connection) -> list[dict]:
     city_rows, district_rows = _seo_landing_stats(db, limit=6)
-    agency_rows = _agency_metrics(db, sort_by="reputation", limit=4)
+    agency_rows = _agency_metrics(
+        db, where_sql="WHERE ap.status = 'active'", sort_by="reputation", limit=4
+    )
     
     # Single aggregated query instead of 5 separate COUNT queries (performance: -600ms)
+    published_at_expression = db_timestamp_column_expr("published_at")
     stats_row = db.execute(f"""
         SELECT 
           COUNT(*) as total_count,
           SUM(CASE WHEN e_oselya = 1 THEN 1 ELSE 0 END) as e_oselya_count,
           SUM(CASE WHEN listing_status = 'active' THEN 1 ELSE 0 END) as active_count,
-          SUM(CASE WHEN published_at >= {db_now_expr(-14)} THEN 1 ELSE 0 END) as freshness_count
+          SUM(CASE WHEN {published_at_expression} >= {db_now_expr(-14)} THEN 1 ELSE 0 END) as freshness_count
         FROM listings WHERE status='published'
     """).fetchone()
     
@@ -5160,7 +5563,7 @@ LISTING_SELECT = """
            ap.name AS agency_name, ap.kind AS agency_kind, ap.is_verified AS agency_verified
     FROM   listings l
     JOIN   users u ON u.id = l.user_id
-    LEFT JOIN agency_profiles ap ON ap.slug = u.agency_slug
+    LEFT JOIN agency_profiles ap ON ap.slug = u.agency_slug AND ap.status = 'active'
     LEFT JOIN (
         SELECT city, district, property_type, listing_type, rooms,
                CAST(area / 5 AS INTEGER) AS area_bucket,
@@ -5207,6 +5610,7 @@ def _agency_metrics(
     where_params: tuple = (),
     sort_by: str = "reputation",
     limit: int = 30,
+    include_management: bool = False,
 ):
     query = f"""
         SELECT
@@ -5216,10 +5620,14 @@ def _agency_metrics(
             ap.city,
             ap.specialization,
             ap.is_verified,
+            ap.status,
             ap.avg_response_minutes,
             ap.team_size,
             ap.completed_deals,
             ap.last_verified_at,
+            ap.revision,
+            ap.created_at,
+            ap.updated_at,
             COUNT(CASE WHEN l.status = 'published' THEN 1 END) AS active_listings,
             COUNT(l.id) AS total_listings,
             ROUND(AVG(
@@ -5248,7 +5656,9 @@ def _agency_metrics(
         FROM agency_profiles ap
         LEFT JOIN listings l ON l.agency_slug = ap.slug
         {where_sql}
-        GROUP BY ap.slug, ap.name, ap.kind, ap.city, ap.specialization, ap.is_verified, ap.avg_response_minutes, ap.team_size, ap.completed_deals, ap.last_verified_at
+        GROUP BY ap.slug, ap.name, ap.kind, ap.city, ap.specialization, ap.is_verified,
+                 ap.status, ap.avg_response_minutes, ap.team_size, ap.completed_deals,
+                 ap.last_verified_at, ap.revision, ap.created_at, ap.updated_at
         ORDER BY ap.is_verified DESC, active_listings DESC, ap.name ASC
         LIMIT ?
     """
@@ -5279,7 +5689,7 @@ def _agency_metrics(
         else:
             reputation_tier = "C"
 
-        metrics.append({
+        item = {
             "slug": row["slug"],
             "name": row["name"],
             "kind": row["kind"],
@@ -5299,7 +5709,15 @@ def _agency_metrics(
             "freshness_score": freshness_score,
             "reputation_score": reputation_score,
             "reputation_tier": reputation_tier,
-        })
+        }
+        if include_management:
+            item.update({
+                "status": row["status"],
+                "revision": int(row["revision"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            })
+        metrics.append(item)
 
     if sort_by == "active":
         metrics.sort(key=lambda item: (item["active_listings"], item["reputation_score"]), reverse=True)
@@ -5323,7 +5741,7 @@ def get_agencies():
     sort_by = strip(args.get("sort", "reputation"), 32).lower()
     limit = nonneg_int(args.get("limit")) or 30
     limit = min(max(limit, 1), 100)
-    filters = []
+    filters = ["ap.status = 'active'"]
     params: list = []
     if verified_only:
         filters.append("ap.is_verified = 1")
@@ -5348,7 +5766,7 @@ def agencies_catalog_page():
     verified_only = truthy_flag(request.args.get("verified_only"))
     sort_by = strip(request.args.get("sort", "reputation"), 32).lower()
     q = strip(request.args.get("q", ""), 80)
-    filters = []
+    filters = ["ap.status = 'active'"]
     params: list = []
     if verified_only:
         filters.append("ap.is_verified = 1")
@@ -5407,7 +5825,9 @@ def agencies_catalog_page():
 @app.route("/api/agencies/<slug>", methods=["GET"])
 def get_agency_profile(slug: str):
     db = get_db()
-    metrics = _agency_metrics(db, "WHERE ap.slug = ?", (slug,))
+    metrics = _agency_metrics(
+        db, "WHERE ap.slug = ? AND ap.status = 'active'", (slug,)
+    )
     if not metrics:
         return jsonify(error="Агентство/забудовника не знайдено"), 404
     profile = metrics[0]
@@ -5422,7 +5842,9 @@ def get_agency_profile(slug: str):
 @app.route("/agencies/<slug>", methods=["GET"])
 def agency_profile_page(slug: str):
     db = get_db()
-    metrics = _agency_metrics(db, "WHERE ap.slug = ?", (slug,))
+    metrics = _agency_metrics(
+        db, "WHERE ap.slug = ? AND ap.status = 'active'", (slug,)
+    )
     if not metrics:
         return Response("<h1>Профіль не знайдено</h1>", status=404, mimetype="text/html")
     profile = metrics[0]
@@ -5970,7 +6392,7 @@ def report_listing(lid: int):
             return jsonify(duplicate=True, report=_sanitized(existing_by_key)), 200
         return jsonify(error="idempotency_key вже використано для іншого запиту", code="idempotency_conflict"), 409
 
-    created_at_expression = "created_at::timestamptz" if _is_postgres() else "created_at"
+    created_at_expression = db_timestamp_column_expr("created_at")
     recent_dupe = db.execute(
         f"""
         SELECT id FROM listing_reports
@@ -6026,7 +6448,7 @@ def seller_can_fast_publish(db, user_id: int) -> bool:
         """
         SELECT 1
         FROM users u
-        LEFT JOIN agency_profiles ap ON ap.slug = u.agency_slug
+        LEFT JOIN agency_profiles ap ON ap.slug = u.agency_slug AND ap.status = 'active'
         WHERE u.id = ?
           AND (
               COALESCE(ap.is_verified, 0) = 1
@@ -6150,7 +6572,7 @@ def update_listing(listing_id: int):
     from app import _refresh_listing_city_summary, cache_delete_prefix
 
     db = get_db()
-    now_expr = db_now_expr()
+    text_now_expr = db_text_timestamp_expr()
     listing = db.execute(
         """
         SELECT id, user_id, status, published_at, moderation_status, moderation_reason,
@@ -6300,7 +6722,7 @@ def update_listing(listing_id: int):
             longitude = ?,
             description = ?,
             status = ?,
-            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, {now_expr}) ELSE published_at END,
+            published_at = CASE WHEN ? = 'published' THEN COALESCE(published_at, {text_now_expr}) ELSE published_at END,
             listing_type = ?,
             source = ?,
             agency_slug = ?,
@@ -6314,7 +6736,7 @@ def update_listing(listing_id: int):
             phone_verification_status = ?,
             moderation_status = ?,
             moderation_reason = ?,
-            moderation_updated_at = {now_expr},
+            moderation_updated_at = {text_now_expr},
             listing_verification_status = ?
         WHERE id = ?
         """,
@@ -6545,6 +6967,16 @@ def cleanup_test_listings():
                 "Тестове оголошення прибрано з публічного каталогу.",
                 admin_id=g.user_id,
             )
+        log_admin_audit(
+            db,
+            actor_id=g.user_id,
+            actor_role="admin",
+            action="post:test_listing_cleanup",
+            permission="admin/all",
+            resource_type="listings",
+            resource_id="bulk",
+            changed_fields=("status", "listing_status"),
+        )
         _refresh_listing_city_summary(db)
         db.commit()
         cache_delete_prefix("public:listings:")
@@ -6669,7 +7101,7 @@ def update_listing_verification(listing_id: int):
     if is_admin:
         if moderation_status == "approved":
             next_status = "published"
-            published_at_sql = f"COALESCE(published_at, {db_now_expr()})"
+            published_at_sql = f"COALESCE(published_at, {db_text_timestamp_expr()})"
         elif moderation_status == "rejected":
             next_status = "rejected"
         else:
@@ -6687,7 +7119,7 @@ def update_listing_verification(listing_id: int):
             phone_verification_status = ?,
             moderation_status = ?,
             moderation_reason = ?,
-            moderation_updated_at = {db_now_expr()},
+            moderation_updated_at = {db_text_timestamp_expr()},
             listing_verification_status = ?,
             status = ?,
             published_at = {published_at_sql}
@@ -6716,6 +7148,16 @@ def update_listing_verification(listing_id: int):
             log_listing_event(db, listing_id, f"phone_verification_{phone_status}", reason, admin_id=g.user_id)
         if requested_listing_verification_status:
             log_listing_event(db, listing_id, f"listing_verification_{listing_verification_status}", reason, admin_id=g.user_id)
+        log_admin_audit(
+            db,
+            actor_id=g.user_id,
+            actor_role="admin",
+            action="patch:listing_verification",
+            permission="verifications/manage",
+            resource_type="listing",
+            resource_id=listing_id,
+            changed_fields=data.keys(),
+        )
     else:
         if data.get("owner_verification_status"):
             log_listing_event(db, listing_id, f"owner_verification_{owner_status}", reason)
@@ -8697,7 +9139,11 @@ def listing_page(lid: int):
             f'<img src="{escape(img)}" alt="{escape(listing["title"])}" width="900" height="506" loading="{("eager" if i==0 else "lazy")}" style="width:100%;height:100%;object-fit:cover;flex-shrink:0;scroll-snap-align:start"/>'
             for i, img in enumerate(listing["images"])
         )
-        photos_html = f'<div id="gallery" style="display:flex;overflow-x:auto;scroll-snap-type:x mandatory;border-radius:16px;aspect-ratio:16/9;background:#e2e8f0">{imgs_html}</div>'
+        photos_html = (
+            '<div id="gallery" tabindex="0" aria-label="Галерея фотографій" '
+            'style="display:flex;overflow-x:auto;scroll-snap-type:x mandatory;'
+            f'border-radius:16px;aspect-ratio:16/9;background:#e2e8f0">{imgs_html}</div>'
+        )
         if len(listing["images"]) > 1:
             photos_html += f'<p style="font-size:13px;color:#94a3b8;margin-top:6px">{len(listing["images"])} фото · прокрутіть</p>'
     else:
@@ -8722,6 +9168,8 @@ def listing_page(lid: int):
     map_html = ""
     if listing.get("latitude") and listing.get("longitude"):
         lat, lng = listing["latitude"], listing["longitude"]
+        marker_title = json_for_html_script(f"Місцезнаходження: {listing['title']}")
+        popup_title = json_for_html_script(escape(listing["title"], quote=True))
         map_html = f"""
 <div id="map" style="height:300px;border-radius:16px;margin:20px 0"></div>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -8735,7 +9183,7 @@ def listing_page(lid: int):
     iconSize:[18,18],
     iconAnchor:[9,9]
   }});
-  L.marker([{lat},{lng}],{{icon:markerIcon}}).addTo(m).bindPopup('{escape(listing["title"])}').openPopup();
+  L.marker([{lat},{lng}],{{icon:markerIcon,title:{marker_title}}}).addTo(m).bindPopup({popup_title}).openPopup();
 </script>"""
 
     # Reviews HTML
@@ -8908,11 +9356,11 @@ def listing_page(lid: int):
   <meta name="twitter:image" content="{escape(og_image)}"/>
   <meta name="twitter:image:alt" content="{escape(listing['title'])}"/>
   <meta name="twitter:site" content="@ua_homes"/>
-  <script type="application/ld+json">{json.dumps(organization_ld, ensure_ascii=False)}</script>
-  <script type="application/ld+json">{json.dumps(webpage_ld, ensure_ascii=False)}</script>
-  <script type="application/ld+json">{json.dumps(breadcrumb_ld, ensure_ascii=False)}</script>
-  <script type="application/ld+json">{json.dumps(listing_ld, ensure_ascii=False)}</script>
-  <script type="application/ld+json">{json.dumps(faq_ld, ensure_ascii=False)}</script>
+  <script type="application/ld+json">{json_for_html_script(organization_ld)}</script>
+  <script type="application/ld+json">{json_for_html_script(webpage_ld)}</script>
+  <script type="application/ld+json">{json_for_html_script(breadcrumb_ld)}</script>
+  <script type="application/ld+json">{json_for_html_script(listing_ld)}</script>
+  <script type="application/ld+json">{json_for_html_script(faq_ld)}</script>
   <style>
     *{{box-sizing:border-box}}
     body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;max-width:860px;margin:0 auto;padding:16px 20px 48px;color:#0f172a;background:linear-gradient(180deg,#f8fafc,#eef2ff);line-height:1.55}}
@@ -9537,7 +9985,8 @@ def health():
             "s3" if S3_BUCKET else "cloudinary" if CLOUDINARY_URL else "unconfigured"
         ),
         distributed_rate_limits=bool(REDIS_URL),
-        error_monitoring=bool(SENTRY_DSN),
+        error_monitoring=SENTRY_ENABLED,
+        monitoring=monitoring_state(),
         maintenance_mode=MAINTENANCE_MODE,
     )
 
@@ -9780,7 +10229,7 @@ def payment_liqpay_create():
         "currency":    "UAH",
         "description": f"UA-Dim {plan['name']} — {plan['price']} UAH/міс",
         "order_id":    order_id,
-        "result_url":  f"{public_url}/real-estate-demo.html?payment=return&order_id={quote(order_id)}",
+        "result_url":  f"{public_url}/?payment=return&order_id={quote(order_id)}",
         "server_url":  f"{api_url}/api/payment/liqpay/callback",
         "language":    "uk",
     }

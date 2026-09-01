@@ -90,6 +90,11 @@ Push-сповіщення UA-Dim вмикаються лише коли release 
 secrets: `UA_DIM_FIREBASE_API_KEY`, окремі
 `UA_DIM_FIREBASE_ANDROID_APP_ID`/`UA_DIM_FIREBASE_IOS_APP_ID`,
 `UA_DIM_FIREBASE_MESSAGING_SENDER_ID` і `UA_DIM_FIREBASE_PROJECT_ID`.
+Production-доставка з бекенду використовує Firebase Admin credential у Railway:
+`UA_HOMES_FIREBASE_SERVICE_ACCOUNT_BASE64` (base64 service-account JSON проєкту
+`ua-dim-production`). Якщо credential відсутній, зберігається fallback на
+`UA_HOMES_ALERTS_PUSH_WEBHOOK_URL`; webhook не викликається після спроби FCM, щоб
+не дублювати сповіщення.
 Crash reporting вмикається окремим secret `UA_DIM_SENTRY_DSN`. Без цих значень
 застосунок збирається без placeholder-ключів: share, deep links, secure auth та
 offline-індикатор працюють, а Firebase/Sentry залишаються вимкненими.
@@ -114,8 +119,7 @@ offline-індикатор працюють, а Firebase/Sentry залишают
 
 **Розгортання:**
 - GitHub Actions (CI/CD)
-- Netlify public site (`web/`)
-- Netlify admin site (`web/admin/`)
+- Netlify public і admin site (`web/`, адмінпанель на `/admin/`)
 - Railway (бекенд)
 
 ## 📦 Структура проекту
@@ -199,11 +203,11 @@ POST   /logout                # Вихід
 Див. [DEPLOYMENT_STEPS.md](./DEPLOYMENT_STEPS.md) для детальних інструкцій.
 
 **Швидко:**
-1. Netlify public site: publish `web/` як основний public deploy
-2. Netlify admin site: publish `web/admin/` як окремий admin deploy
-3. Railway: `https://railway.app` → GitHub integration → deploy
+1. Netlify: publish `web/` як єдиний public/admin deploy
+2. Railway: `https://railway.app` → GitHub integration → deploy
 
-Admin deploy config: [web/admin/netlify.toml](/Users/vitalii/drive_community.worktrees/real-estate-filtering-feature/web/admin/netlify.toml)
+Канонічна Netlify-конфігурація: [`netlify.toml`](./netlify.toml). Специфічне
+правило `/admin/*` із self-hosted CSP має залишатися окремим від public policy.
 
 ## 🔐 Безпека
 
