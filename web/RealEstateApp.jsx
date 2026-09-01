@@ -2394,12 +2394,23 @@ export default function RealEstateApp() {
     }
   };
 
+  const expireSession = () => {
+    setAuthToken("");
+    setCurrentUser(null);
+    setAuthError("Сесія закінчилась — увійдіть у кабінет знову.");
+  };
+
   const refreshProfile = async () => {
     if (!authToken) return;
     try {
       const response = await fetch(getApiUrl("/auth/me"), {
         headers: { Authorization: `Bearer ${authToken}` },
       });
+      if (response.status === 401) {
+        // Stale/invalid token (e.g. signed with a rotated secret) — force re-login.
+        expireSession();
+        return;
+      }
       if (!response.ok) return;
       const data = await response.json();
       if (data.user) setCurrentUser(data.user);
@@ -3148,6 +3159,10 @@ export default function RealEstateApp() {
 
         if (!presignResponse.ok) {
           const presignPayload = await presignResponse.json().catch(() => ({}));
+          if (presignResponse.status === 401) {
+            expireSession();
+            throw new Error("Сесія закінчилась — увійдіть у кабінет знову та повторіть завантаження.");
+          }
           throw new Error(presignPayload.error || "Не вдалося підготувати медіафайл для завантаження");
         }
 
@@ -3303,6 +3318,11 @@ export default function RealEstateApp() {
           setCurrentUser((prev) => (prev ? { ...prev, usage: result.usage } : prev));
         }
         return;
+      }
+      if (response.status === 401) {
+        setShowCreateListingModal(false);
+        expireSession();
+        throw new Error("Сесія закінчилась — увійдіть у кабінет знову та повторіть публікацію.");
       }
       if (!response.ok) {
         throw new Error(result.error || "Не вдалося створити оголошення");

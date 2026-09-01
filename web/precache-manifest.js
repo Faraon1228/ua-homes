@@ -1,4 +1,4 @@
-self.__UA_BUILD_ID = 'ddae2b4ef2ee';
+self.__UA_BUILD_ID = '04281d2a23d9';
 self.__UA_PRECACHE_ASSETS = [
   '/precache-manifest.js',
   '/',
