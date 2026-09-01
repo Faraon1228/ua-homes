@@ -2114,9 +2114,9 @@ SUBSCRIPTION_PLANS: dict[str, dict] = {
         "name": "Ріелтор Старт",
         "audience": "realtor",
         "price": 799,
-        "listing_limit": 30,
+        "listing_limit": 100,
         "duration_days": 30,
-        "features": ["30 оголошень", "Профіль ріелтора", "Виділення в пошуку", "Статистика переглядів"],
+        "features": ["100 оголошень на місяць", "Профіль ріелтора", "Виділення в пошуку", "Статистика переглядів"],
     },
     "realtor_pro": {
         "name": "Ріелтор Про",
