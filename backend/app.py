@@ -44,9 +44,25 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
 if __package__:
+    from .configuration import load_settings, production_secret_required, resolve_secret
     from .monitoring import bind_request_context, initialize_sentry, monitoring_state
+    from .security_policy import (
+        SECURITY_HEADERS,
+        build_html_csp,
+        cors_origins,
+        response_security_headers,
+    )
+    from .time_helpers import legacy_utc_now
 else:
+    from configuration import load_settings, production_secret_required, resolve_secret
     from monitoring import bind_request_context, initialize_sentry, monitoring_state
+    from security_policy import (
+        SECURITY_HEADERS,
+        build_html_csp,
+        cors_origins,
+        response_security_headers,
+    )
+    from time_helpers import legacy_utc_now
 
 # Optional: Image optimization (Pillow)
 try:
@@ -59,28 +75,16 @@ except ImportError:
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Keep the SQLite file on a persistent volume in production — the container
-# filesystem is recreated on every deploy, which would wipe all user data.
-DB_PATH = os.environ.get("UA_HOMES_DB_PATH", "").strip() or os.path.join(BASE_DIR, "ua_homes.db")
+_SETTINGS = load_settings(BASE_DIR)
+DB_PATH = _SETTINGS.db_path
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
-
-# PostgreSQL DSN — if set, the app uses psycopg2 instead of SQLite.
-DATABASE_URL: str | None = os.environ.get("DATABASE_URL", "").strip() or None
-MAINTENANCE_MODE = os.environ.get("UA_HOMES_MAINTENANCE_MODE", "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-}
-if (
-    os.environ.get("UA_HOMES_REQUIRE_POSTGRES", "").strip().lower() in {"1", "true", "yes"}
-    and not DATABASE_URL
-):
-    raise RuntimeError("DATABASE_URL must be set when UA_HOMES_REQUIRE_POSTGRES is enabled.")
-PUBLIC_SITE_URL = os.environ.get("UA_HOMES_PUBLIC_URL", "").strip().rstrip("/")
-API_ORIGIN = os.environ.get("UA_HOMES_API", "").strip().rstrip("/")
-BOOTSTRAP_ADMIN_EMAIL = os.environ.get("UA_HOMES_BOOTSTRAP_ADMIN_EMAIL", "").strip().lower()
-BOOTSTRAP_ADMIN_PASSWORD = os.environ.get("UA_HOMES_BOOTSTRAP_ADMIN_PASSWORD", "").strip()
-BOOTSTRAP_ADMIN_NAME = os.environ.get("UA_HOMES_BOOTSTRAP_ADMIN_NAME", "Admin").strip() or "Admin"
+DATABASE_URL = _SETTINGS.database_url
+MAINTENANCE_MODE = _SETTINGS.maintenance_mode
+PUBLIC_SITE_URL = _SETTINGS.public_site_url
+API_ORIGIN = _SETTINGS.api_origin
+BOOTSTRAP_ADMIN_EMAIL = _SETTINGS.bootstrap_admin_email
+BOOTSTRAP_ADMIN_PASSWORD = _SETTINGS.bootstrap_admin_password
+BOOTSTRAP_ADMIN_NAME = _SETTINGS.bootstrap_admin_name
 
 
 def _legacy_liqpay_environment() -> str:
@@ -94,39 +98,15 @@ def _legacy_liqpay_environment() -> str:
 
 
 def _production_secret_required() -> bool:
-    runtime_name = (
-        os.environ.get("RAILWAY_ENVIRONMENT_NAME")
-        or os.environ.get("RAILWAY_ENVIRONMENT")
-        or os.environ.get("FLASK_ENV")
-        or os.environ.get("ENVIRONMENT")
-        or ""
-    ).strip().lower()
-    if runtime_name in {"production", "prod"}:
-        return True
-    if DATABASE_URL:
-        return True
-    if PUBLIC_SITE_URL:
-        try:
-            host = (urlsplit(PUBLIC_SITE_URL).hostname or "").lower()
-        except ValueError:
-            host = ""
-        if host and host not in {"localhost", "127.0.0.1", "0.0.0.0"}:
-            return True
-    return False
+    return production_secret_required(DATABASE_URL, PUBLIC_SITE_URL)
 
 
-_configured_secret = os.environ.get("UA_HOMES_SECRET", "").strip()
-if not _configured_secret:
-    if _production_secret_required():
-        raise RuntimeError("UA_HOMES_SECRET must be set for production deployments.")
-    _configured_secret = secrets.token_hex(32)
-
-SECRET_KEY = _configured_secret
+SECRET_KEY = resolve_secret(DATABASE_URL, PUBLIC_SITE_URL)
 JWT_ALGO   = "HS256"
 JWT_EXP_H  = 72
 
 # Redis DSN — if set, rate-limiter stores counters in Redis (safe for multi-worker).
-REDIS_URL: str | None = os.environ.get("REDIS_URL", "").strip() or None
+REDIS_URL = _SETTINGS.redis_url
 _REDIS_CACHE = None
 _REDIS_CACHE_DISABLED = False
 _REPORT_CACHE: dict[str, tuple[float, object]] = {}
@@ -238,68 +218,11 @@ def normalize_media_content_type(filename: str, content_type: str | None) -> tup
     return "", ""
 
 
-_DEFAULT_CORS_ORIGINS: list[str | re.Pattern[str]] = [
-    re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"),
-    re.compile(r"^https://(localhost|127\.0\.0\.1)(:\d+)?$"),
-    "https://ua-homes.netlify.app",
-    "https://ua-dim.netlify.app",
-    "https://ua-dom.com",
-    "https://www.ua-dom.com",
-    "https://ua-dim.com",
-    "https://www.ua-dim.com",
-]
-
-
 def _cors_origins() -> list[str | re.Pattern[str]]:
-    configured = os.environ.get("UA_HOMES_CORS_ORIGINS", "").strip()
-    if not configured:
-        origins: list[str | re.Pattern[str]] = list(_DEFAULT_CORS_ORIGINS)
-        if os.environ.get("UA_HOMES_ALLOW_NETLIFY_PREVIEW_CORS", "").strip().lower() in {"1", "true", "yes"}:
-            origins.append(re.compile(r"^https://[a-z0-9-]+\.netlify\.app$"))
-        return origins
-    return [origin.strip() for origin in configured.split(",") if origin.strip()]
-
-
-SECURITY_HEADERS = {
-    "X-Frame-Options": "DENY",
-    "X-Content-Type-Options": "nosniff",
-    "X-Permitted-Cross-Domain-Policies": "none",
-    "Referrer-Policy": "strict-origin-when-cross-origin",
-    "Permissions-Policy": "camera=(), geolocation=(), microphone=(), payment=(), usb=()",
-    "Cross-Origin-Opener-Policy": "same-origin",
-    "Cross-Origin-Resource-Policy": "same-origin",
-}
+    return cors_origins()
 
 def _build_html_csp() -> str:
-    connect_sources = [
-        "'self'",
-        "https://api.cloudinary.com",
-        "https://res.cloudinary.com",
-        "https://*.amazonaws.com",
-        "https://*.cloudfront.net",
-    ]
-    if PUBLIC_SITE_URL:
-        parsed_public_url = urlsplit(PUBLIC_SITE_URL)
-        if parsed_public_url.scheme and parsed_public_url.netloc:
-            connect_sources.append(f"{parsed_public_url.scheme}://{parsed_public_url.netloc}")
-    if API_ORIGIN:
-        connect_sources.append(API_ORIGIN)
-
-    return (
-        "default-src 'self'; "
-        "base-uri 'self'; "
-        "object-src 'none'; "
-        "frame-ancestors 'none'; "
-        "form-action 'self'; "
-        "img-src 'self' data: blob: https://res.cloudinary.com https://*.amazonaws.com https://*.cloudfront.net https://images.unsplash.com https://picsum.photos https://fastly.picsum.photos https://*.tile.openstreetmap.org; "
-        "media-src 'self' blob: https://res.cloudinary.com https://*.amazonaws.com https://*.cloudfront.net; "
-        "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.tailwindcss.com; "
-        "style-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; "
-        f"connect-src {' '.join(connect_sources)}; "
-        "font-src 'self' data:; "
-        "worker-src 'self' blob:; "
-        "manifest-src 'self';"
-    )
+    return build_html_csp(PUBLIC_SITE_URL, API_ORIGIN)
 
 
 HTML_CSP = _build_html_csp()
@@ -1490,14 +1413,18 @@ def apply_security_headers(response):
     response.headers.setdefault("X-Request-ID", getattr(g, "request_id", secrets.token_hex(12)))
     response.headers.setdefault("Server-Timing", f"app;dur={duration_ms}")
     response.headers.setdefault("X-Response-Time-Ms", str(duration_ms))
-    for header, value in SECURITY_HEADERS.items():
+    is_secure = (
+        request.is_secure
+        or request.headers.get("X-Forwarded-Proto", "").lower() == "https"
+    )
+    headers = response_security_headers(
+        is_secure=is_secure,
+        is_html=response.mimetype == "text/html",
+    )
+    if "Content-Security-Policy" in headers:
+        headers["Content-Security-Policy"] = HTML_CSP
+    for header, value in headers.items():
         response.headers.setdefault(header, value)
-
-    if request.is_secure or request.headers.get("X-Forwarded-Proto", "").lower() == "https":
-        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-
-    if response.mimetype == "text/html":
-        response.headers.setdefault("Content-Security-Policy", HTML_CSP)
 
     cache_control = _cache_control_for_request()
     if cache_control:
@@ -3284,12 +3211,13 @@ def init_db():
 # ─── Auth helpers ─────────────────────────────────────────────────────────────
 
 def make_token(user_id: int, email: str, token_version: int = 0) -> str:
+    now = legacy_utc_now()
     payload = {
         "sub": str(user_id),
         "email": email,
         "ver": int(token_version or 0),
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=JWT_EXP_H),
-        "iat": datetime.datetime.utcnow(),
+        "exp": now + datetime.timedelta(hours=JWT_EXP_H),
+        "iat": now,
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGO)
 
