@@ -70,7 +70,61 @@ void main() {
         'token-123',
       );
       expect(parseUaDimAuthBridgeToken('{"type":"auth","token":null}'), isNull);
+      expect(
+        parseUaDimAuthBridgeToken(
+          '"{\\"type\\":\\"auth\\",\\"token\\":\\" token-123 \\"}"',
+        ),
+        'token-123',
+      );
       expect(parseUaDimAuthBridgeToken('   '), isNull);
+    },
+  );
+
+  test(
+    'UA-Dim auth restore avoids reload once local bootstrap token is valid',
+    () {
+      final plan = planUaDimAuthRestore(
+        storedToken: 'token-123',
+        sessionToken: null,
+        localToken: 'token-123',
+        hasCurrentUser: true,
+      );
+      expect(plan.shouldReload, isFalse);
+      expect(plan.sessionToken, 'token-123');
+      expect(plan.localToken, 'token-123');
+      expect(plan.clearCurrentUser, isFalse);
+    },
+  );
+
+  test(
+    'UA-Dim auth restore reloads when only session storage has the token',
+    () {
+      final plan = planUaDimAuthRestore(
+        storedToken: 'token-123',
+        sessionToken: 'token-123',
+        localToken: null,
+        hasCurrentUser: true,
+      );
+      expect(plan.shouldReload, isTrue);
+      expect(plan.sessionToken, 'token-123');
+      expect(plan.localToken, 'token-123');
+      expect(plan.clearCurrentUser, isFalse);
+    },
+  );
+
+  test(
+    'UA-Dim auth restore clears stale browser auth state when native token is absent',
+    () {
+      final plan = planUaDimAuthRestore(
+        storedToken: null,
+        sessionToken: 'stale-token',
+        localToken: null,
+        hasCurrentUser: true,
+      );
+      expect(plan.shouldReload, isTrue);
+      expect(plan.sessionToken, isNull);
+      expect(plan.localToken, isNull);
+      expect(plan.clearCurrentUser, isTrue);
     },
   );
 
