@@ -41,11 +41,11 @@ jobs:
             platform: Android
             runner: ubuntu-latest
             directory: apps/ua_dim
-            build: apk --release appbundle --release
-            artifact: ua-dim-android-apk
-            artifact_path: |
-              apps/ua_dim/build/app/outputs/flutter-apk/app-release.apk
-              apps/ua_dim/build/app/outputs/bundle/release/app-release.aab
+            build: apk --release
+            artifact: ua-dim-android-release-apk
+            artifact_path: apps/ua_dim/build/app/outputs/flutter-apk/app-release.apk
+            extra_android_artifact: ua-dim-android-release-aab
+            extra_android_artifact_path: apps/ua_dim/build/app/outputs/bundle/release/app-release.aab
             fingerprint: 2ba6428754eaba71fb0ea21f721773be5288c98663f30e18e11212272eb22cde
           - app: UA-Dim
             platform: iOS
@@ -107,7 +107,12 @@ jobs:
             [ -z "$SENTRY_DSN" ] || BUILD_ARGS+=("--dart-define=UA_DIM_SENTRY_TRACES_SAMPLE_RATE=$SENTRY_TRACES_SAMPLE_RATE")
             [ -z "$SENTRY_DSN" ] || BUILD_ARGS+=("--dart-define=UA_DIM_SENTRY_PROFILES_SAMPLE_RATE=$SENTRY_PROFILES_SAMPLE_RATE")
           fi
-          flutter build ${{ matrix.build }} "${BUILD_ARGS[@]}"
+          if [ "${{ matrix.app }}" = "UA-Dim" ] && [ "${{ matrix.platform }}" = "Android" ]; then
+            flutter build apk --release "${BUILD_ARGS[@]}"
+            flutter build appbundle --release "${BUILD_ARGS[@]}"
+          else
+            flutter build ${{ matrix.build }} "${BUILD_ARGS[@]}"
+          fi
         working-directory: ${{ matrix.directory }}
       - name: Verify Android release signature
         if: matrix.platform == 'Android'
@@ -150,4 +155,10 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: matrix.extra_android_artifact != ''
+        with:
+          name: ${{ matrix.extra_android_artifact }}
+          path: ${{ matrix.extra_android_artifact_path }}
           if-no-files-found: error
