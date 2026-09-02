@@ -6,6 +6,16 @@ import {
   normalizePropertyType,
   resolveSortByForEOselya,
 } from "./realEstateFilters";
+import { ApiError, buildApiUrl, createLatestRequest } from "./lib/apiClient.js";
+import {
+  clearAuthSessionCache,
+  fetchCurrentUser,
+  persistAuthSession,
+  requestPasswordReset,
+  resetPassword as submitPasswordReset,
+  submitAuth,
+} from "./lib/authSession.js";
+import { fetchCatalogListings } from "./lib/catalogApi.js";
 
 const LazyListingsMapView = React.lazy(() =>
   import("./features/ListingsMapView.jsx")
@@ -1127,13 +1137,6 @@ function getStored(key, fallback) {
   return value ?? fallback;
 }
 
-function formatUaDimAuthBridgeMessage(authToken) {
-  return JSON.stringify({
-    type: "auth",
-    token: authToken || null,
-  });
-}
-
 function hasActivePwaDismissal() {
   if (typeof window === "undefined") return false;
   const dismissedUntil = Number(window.localStorage.getItem(PWA_DISMISS_KEY));
@@ -1180,20 +1183,8 @@ function formatCurrency(value) {
   return `${numericValue.toLocaleString("uk-UA", { maximumFractionDigits: 0 })} ₴`;
 }
 
-function getApiBaseUrl() {
-  if (typeof window === "undefined") return "/api";
-  const configured = (window.UA_HOMES_API || "").trim();
-  if (configured) return configured.replace(/\/+$/, "");
-  const hostname = window.location.hostname || "";
-  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0") {
-    return "http://127.0.0.1:5050";
-  }
-  return window.location.origin;
-}
-
 function getApiUrl(path) {
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  return `${getApiBaseUrl()}/api${normalizedPath}`;
+  return buildApiUrl(path);
 }
 
 function allowMockCatalogFallback() {
@@ -1764,7 +1755,8 @@ export default function RealEstateApp() {
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [catalogHasMore, setCatalogHasMore] = useState(false);
   const [catalogCities, setCatalogCities] = useState([]);
-  const catalogRequestRef = useRef(0);
+  const catalogRequestRef = useRef(null);
+  if (!catalogRequestRef.current) catalogRequestRef.current = createLatestRequest();
   const [trustListing, setTrustListing] = useState(null);
   const [pwaInstallPrompt, setPwaInstallPrompt] = useState(null);
   const [pwaInstallDismissed, setPwaInstallDismissed] = useState(() => hasActivePwaDismissal());
@@ -2014,7 +2006,7 @@ export default function RealEstateApp() {
   );
 
   const loadCatalogListings = async (fresh = false, append = false) => {
-    const requestId = ++catalogRequestRef.current;
+    const request = catalogRequestRef.current.begin();
     if (append) {
       setCatalogLoadingMore(true);
     } else {
@@ -2022,41 +2014,39 @@ export default function RealEstateApp() {
     }
     setCatalogError("");
     try {
-      const params = new URLSearchParams({
-        status: "published",
-        limit: String(CATALOG_PAGE_SIZE),
-        offset: String(append ? liveCatalogListings.length : 0),
-        sort: sortBy || DEFAULT_SORT,
-      });
-      if (!append) params.set("includeFacets", "1");
-      if (cityFilter !== "Всі") params.set("city", cityFilter);
-      if (propertyTypeFilter !== "Всі") params.set("type", propertyTypeFilter);
-      if (onlyEOselya) params.set("eOselya", "1");
-      if (minPrice !== "") params.set("minPrice", minPrice);
-      if (maxPrice !== "") params.set("maxPrice", maxPrice);
-      if (minRooms !== "") params.set("minRooms", minRooms);
-      if (maxRooms !== "") params.set("maxRooms", maxRooms);
-      if (minArea !== "") params.set("minArea", minArea);
-      if (maxArea !== "") params.set("maxArea", maxArea);
-      if (keywordSearch.trim()) params.set("search", keywordSearch.trim());
       if (showFavoritesOnly) {
         if (!favoriteIds.length) {
-          if (requestId !== catalogRequestRef.current) return;
+          if (!catalogRequestRef.current.isLatest(request.id)) return;
           setLiveCatalogListings([]);
           setCatalogLoaded(true);
           setCatalogTotal(0);
           setCatalogHasMore(false);
           return;
         }
-        params.set("ids", favoriteIds.join(","));
       }
 
-      const response = await fetch(getApiUrl(`/listings?${params.toString()}`), {
-        cache: fresh ? "no-store" : "default",
+      const data = await fetchCatalogListings({
+        cityFilter,
+        propertyTypeFilter,
+        onlyEOselya,
+        minPrice,
+        maxPrice,
+        minRooms,
+        maxRooms,
+        minArea,
+        maxArea,
+        sortBy: sortBy || DEFAULT_SORT,
+        keywordSearch,
+        showFavoritesOnly,
+        favoriteIds,
+      }, {
+        limit: CATALOG_PAGE_SIZE,
+        offset: append ? liveCatalogListings.length : 0,
+        append,
+        fresh,
+        signal: request.signal,
       });
-      if (!response.ok) throw new Error("Не вдалося завантажити оголошення");
-      const data = await response.json();
-      if (requestId !== catalogRequestRef.current) return;
+      if (!catalogRequestRef.current.isLatest(request.id)) return;
       const rows = Array.isArray(data.listings) ? data.listings : [];
       const mapped = rows.map(mapListingToProperty);
       setLiveCatalogListings((current) => {
@@ -2069,7 +2059,7 @@ export default function RealEstateApp() {
       setCatalogHasMore(Boolean(data.has_more));
       if (Array.isArray(data.facets?.cities)) setCatalogCities(data.facets.cities);
     } catch (error) {
-      if (requestId !== catalogRequestRef.current) return;
+      if (error?.name === "AbortError" || !catalogRequestRef.current.isLatest(request.id)) return;
       setCatalogError(error.message || "Не вдалося завантажити оголошення");
       if (!append) {
         setLiveCatalogListings([]);
@@ -2078,7 +2068,7 @@ export default function RealEstateApp() {
         setCatalogHasMore(false);
       }
     } finally {
-      if (requestId === catalogRequestRef.current) {
+      if (catalogRequestRef.current.isLatest(request.id)) {
         setCatalogLoading(false);
         setCatalogLoadingMore(false);
         window.dispatchEvent(new Event("uah:catalog-settled"));
@@ -2192,25 +2182,7 @@ export default function RealEstateApp() {
   ]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (window.UaDimAuth?.postMessage) {
-      if (authToken) {
-        window.sessionStorage.setItem("uaDim.authToken", authToken);
-      } else {
-        window.sessionStorage.removeItem("uaDim.authToken");
-      }
-      window.localStorage.removeItem("uaDim.authToken");
-      window.UaDimAuth.postMessage(formatUaDimAuthBridgeMessage(authToken));
-    } else if (authToken) {
-      window.localStorage.setItem("uaDim.authToken", authToken);
-    } else {
-      window.localStorage.removeItem("uaDim.authToken");
-    }
-    if (currentUser) {
-      window.localStorage.setItem("uaDim.currentUser", JSON.stringify(currentUser));
-    } else {
-      window.localStorage.removeItem("uaDim.currentUser");
-    }
+    persistAuthSession(authToken, currentUser);
   }, [authToken, currentUser]);
 
   useEffect(() => {
@@ -2395,6 +2367,7 @@ export default function RealEstateApp() {
   };
 
   const expireSession = () => {
+    clearAuthSessionCache();
     setAuthToken("");
     setCurrentUser(null);
     setAuthError("Сесія закінчилась — увійдіть у кабінет знову.");
@@ -2403,18 +2376,10 @@ export default function RealEstateApp() {
   const refreshProfile = async () => {
     if (!authToken) return;
     try {
-      const response = await fetch(getApiUrl("/auth/me"), {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
-      if (response.status === 401) {
-        // Stale/invalid token (e.g. signed with a rotated secret) — force re-login.
-        expireSession();
-        return;
-      }
-      if (!response.ok) return;
-      const data = await response.json();
+      const data = await fetchCurrentUser(authToken, expireSession);
       if (data.user) setCurrentUser(data.user);
-    } catch (_error) {
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) return;
       // Профіль лишається з локального кешу — не блокуємо кабінет.
     }
   };
@@ -2886,27 +2851,7 @@ export default function RealEstateApp() {
     setAuthError("");
     setAuthSuccess("");
     try {
-      const response = await fetch(getApiUrl(authMode === "login" ? "/auth/login" : "/auth/register"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          authMode === "login"
-            ? {
-                email: authForm.email.trim(),
-                password: authForm.password,
-              }
-            : {
-                name: authForm.name.trim(),
-                email: authForm.email.trim(),
-                password: authForm.password,
-                accountType: authForm.accountType,
-              }
-        ),
-      });
-      const result = await response.json();
-      if (!response.ok) {
-        throw new Error(result.error || "Не вдалося виконати дію");
-      }
+      const result = await submitAuth(authMode, authForm);
       setAuthToken(result.token || "");
       setCurrentUser(result.user || null);
       setAuthSuccess(authMode === "login" ? "Увійшли в профіль" : "Обліковий запис створено");
@@ -2924,22 +2869,14 @@ export default function RealEstateApp() {
     setForgotDone(false);
     setForgotError("");
     try {
-      const response = await fetch(getApiUrl("/auth/forgot-password"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: forgotEmail.trim() }),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(
-          response.status === 503
-            ? "Відновлення пароля тимчасово недоступне. Спробуйте пізніше."
-            : result.error || "Не вдалося надіслати запит. Спробуйте ще раз."
-        );
-      }
+      await requestPasswordReset(forgotEmail);
       setForgotDone(true);
     } catch (error) {
-      setForgotError(error.message || "Не вдалося надіслати запит. Спробуйте ще раз.");
+      setForgotError(
+        error instanceof ApiError && error.status === 503
+          ? "Відновлення пароля тимчасово недоступне. Спробуйте пізніше."
+          : error.message || "Не вдалося надіслати запит. Спробуйте ще раз."
+      );
     } finally {
       setForgotLoading(false);
     }
@@ -2955,15 +2892,7 @@ export default function RealEstateApp() {
     setResetError("");
     try {
       const token = resetTokenRef.current;
-      const response = await fetch(getApiUrl("/auth/reset-password"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, password: resetPassword }),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(result.error || "Не вдалося скинути пароль.");
-      }
+      await submitPasswordReset(token, resetPassword);
       resetTokenRef.current = null;
       setResetDone(true);
       setResetPassword("");
