@@ -284,7 +284,7 @@ class _UaDimScreenState extends State<UaDimScreen> {
     ''');
     final snapshotMessage = snapshotRaw is String
         ? snapshotRaw
-        : snapshotRaw?.toString() ?? '';
+        : snapshotRaw.toString();
     final decodedSnapshot = _decodeUaDimJsonEnvelope(snapshotMessage);
     final snapshot = decodedSnapshot is Map
         ? decodedSnapshot
