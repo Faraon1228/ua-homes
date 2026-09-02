@@ -18,20 +18,23 @@ Scope note: this draft is grounded in `apps/ua_dim` code and current legal pages
 5. **Device or other IDs**
    - Push token / pseudonymous session identifiers
 
-## Data sharing
+## Data sharing (Google Play definition caution)
 
-Data may be shared with service providers used to operate the product:
+Data can involve third-party processors used to operate the product:
 - Hosting and infrastructure providers
 - Media storage provider
 - Analytics provider (after consent)
 - Messaging/email/SMS providers
+
+Important: in Google Play Data Safety, whether this is "shared" depends on Play's specific definition and exemptions (for example, service-provider processing on behalf of the developer may be treated differently than broader third-party sharing).  
+This repository alone is not enough to finalize the legal classification for every processor and data type.
 
 No evidence in repo of selling personal data to data brokers.
 
 ## Required Play Console questionnaire direction (draft)
 
 1. **Is data collected?** → Yes
-2. **Is data shared?** → Yes (service providers for app operation)
+2. **Is data shared?** → **TBD after processor-by-processor assessment against Google Play definitions/exemptions**
 3. **Is all data encrypted in transit?** → Yes (HTTPS endpoints)
 4. **Can users request data deletion?** → Yes (manual request via contacts in privacy policy)
 5. **Collection purposes likely applicable:**
@@ -55,3 +58,4 @@ No evidence in repo of selling personal data to data brokers.
 - Confirm whether any payment flow is active for mobile users at launch.
 - Confirm exact retention windows for push-device identifiers.
 - Confirm whether analytics is always consent-gated in the mobile path as in web policy.
+- Confirm each processor/data-flow against Google Play "shared" vs exempt service-provider handling before selecting a final Yes/No in Console.

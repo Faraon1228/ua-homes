@@ -3,7 +3,7 @@
 ## Version 1.0.1 (7)
 
 - Improved deep linking so listing links open in UA-Dim more reliably.
-- Better mobile session restore for signed-in users.
-- Added iOS photo-library bridge support for seller media flows.
+- Fixed mobile auth restore/reload-loop edge cases for signed-in sessions.
+- Improved push token lifecycle handling during auth changes and logout.
+- Reduced stale-session state after token rejection.
 - Connectivity and WebView stability improvements.
-- Push notification registration hardening and safer auth sync.
