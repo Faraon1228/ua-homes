@@ -80,6 +80,37 @@ String? parseUaDimAuthBridgeToken(String message) {
   return null;
 }
 
+class UaDimAuthTransition {
+  const UaDimAuthTransition({
+    required this.previousToken,
+    required this.nextToken,
+  });
+
+  final String? previousToken;
+  final String? nextToken;
+
+  bool get changed => previousToken != nextToken;
+  bool get shouldDeleteStoredToken => changed && nextToken == null;
+  bool get shouldWriteStoredToken => changed && nextToken != null;
+}
+
+UaDimAuthTransition planUaDimAuthTransition({
+  required String? previousToken,
+  required String? nextToken,
+}) {
+  return UaDimAuthTransition(
+    previousToken: normalizeUaDimAuthToken(previousToken),
+    nextToken: normalizeUaDimAuthToken(nextToken),
+  );
+}
+
+bool shouldRejectUaDimAuthToken({
+  required String? currentToken,
+  required String rejectedToken,
+}) =>
+    normalizeUaDimAuthToken(currentToken) ==
+    normalizeUaDimAuthToken(rejectedToken);
+
 class UaDimAuthRestorePlan {
   const UaDimAuthRestorePlan({
     required this.shouldReload,
@@ -233,7 +264,12 @@ class _UaDimScreenState extends State<UaDimScreen> {
   }
 
   Future<void> _handleRejectedAuthToken(String rejectedToken) async {
-    if (_storedAuthToken != rejectedToken) return;
+    if (!shouldRejectUaDimAuthToken(
+      currentToken: _storedAuthToken,
+      rejectedToken: rejectedToken,
+    )) {
+      return;
+    }
     _storedAuthToken = null;
     await MobilePushService.instance.setAuthToken(null);
     await _secureStorage.delete(key: 'uaDim.authToken');
@@ -346,18 +382,21 @@ class _UaDimScreenState extends State<UaDimScreen> {
   }
 
   Future<void> _handleAuthTokenMessage(JavaScriptMessage message) async {
-    final token = parseUaDimAuthBridgeToken(message.message);
-    final previousToken = _storedAuthToken;
-    if (token == previousToken) return;
-    _storedAuthToken = token;
-    if (token != previousToken) {
-      if (token == null) {
-        await _secureStorage.delete(key: 'uaDim.authToken');
-      } else {
-        await _secureStorage.write(key: 'uaDim.authToken', value: token);
-      }
+    final transition = planUaDimAuthTransition(
+      previousToken: _storedAuthToken,
+      nextToken: parseUaDimAuthBridgeToken(message.message),
+    );
+    if (!transition.changed) return;
+    _storedAuthToken = transition.nextToken;
+    if (transition.shouldDeleteStoredToken) {
+      await _secureStorage.delete(key: 'uaDim.authToken');
+    } else if (transition.shouldWriteStoredToken) {
+      await _secureStorage.write(
+        key: 'uaDim.authToken',
+        value: transition.nextToken!,
+      );
     }
-    await MobilePushService.instance.setAuthToken(token);
+    await MobilePushService.instance.setAuthToken(transition.nextToken);
   }
 
   Future<void> _configureIosPhotoLibrary() async {

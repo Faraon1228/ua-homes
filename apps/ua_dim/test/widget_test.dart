@@ -128,6 +128,77 @@ void main() {
     },
   );
 
+  test('UA-Dim auth lifecycle characterizes login and account switching', () {
+    final login = planUaDimAuthTransition(
+      previousToken: null,
+      nextToken: ' login-token ',
+    );
+    expect(login.changed, isTrue);
+    expect(login.nextToken, 'login-token');
+    expect(login.shouldWriteStoredToken, isTrue);
+    expect(login.shouldDeleteStoredToken, isFalse);
+
+    final accountSwitch = planUaDimAuthTransition(
+      previousToken: login.nextToken,
+      nextToken: 'realtor-token',
+    );
+    expect(accountSwitch.previousToken, 'login-token');
+    expect(accountSwitch.nextToken, 'realtor-token');
+    expect(accountSwitch.changed, isTrue);
+    expect(accountSwitch.shouldWriteStoredToken, isTrue);
+  });
+
+  test('UA-Dim auth lifecycle characterizes logout and duplicate messages', () {
+    final logout = planUaDimAuthTransition(
+      previousToken: 'token-123',
+      nextToken: null,
+    );
+    expect(logout.changed, isTrue);
+    expect(logout.shouldDeleteStoredToken, isTrue);
+    expect(logout.shouldWriteStoredToken, isFalse);
+
+    final duplicate = planUaDimAuthTransition(
+      previousToken: ' token-123 ',
+      nextToken: 'token-123',
+    );
+    expect(duplicate.changed, isFalse);
+  });
+
+  test('UA-Dim only accepts a 401 rejection for the active token', () {
+    expect(
+      shouldRejectUaDimAuthToken(
+        currentToken: 'token-123',
+        rejectedToken: ' token-123 ',
+      ),
+      isTrue,
+    );
+    expect(
+      shouldRejectUaDimAuthToken(
+        currentToken: 'new-token',
+        rejectedToken: 'old-token',
+      ),
+      isFalse,
+    );
+    expect(
+      shouldRejectUaDimAuthToken(
+        currentToken: null,
+        rejectedToken: 'old-token',
+      ),
+      isFalse,
+    );
+  });
+
+  test('UA-Dim auth bridge rejects unrelated and malformed contracts', () {
+    expect(
+      parseUaDimAuthBridgeToken('{"type":"logout","token":"token-123"}'),
+      isNull,
+    );
+    expect(parseUaDimAuthBridgeToken('{"type":"auth"}'), isNull);
+    expect(parseUaDimAuthBridgeToken('{"type":"auth","token":"   "}'), isNull);
+    expect(parseUaDimAuthBridgeToken('{"type":"auth"'), isNull);
+    expect(parseUaDimAuthBridgeToken('["token-123"]'), isNull);
+  });
+
   test('Sentry configuration is disabled without a DSN', () {
     const config = UaDimSentryConfig(
       dsn: '',
