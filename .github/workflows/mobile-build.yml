@@ -41,9 +41,11 @@ jobs:
             platform: Android
             runner: ubuntu-latest
             directory: apps/ua_dim
-            build: apk --release
+            build: apk --release appbundle --release
             artifact: ua-dim-android-apk
-            artifact_path: apps/ua_dim/build/app/outputs/flutter-apk/app-release.apk
+            artifact_path: |
+              apps/ua_dim/build/app/outputs/flutter-apk/app-release.apk
+              apps/ua_dim/build/app/outputs/bundle/release/app-release.aab
             fingerprint: 2ba6428754eaba71fb0ea21f721773be5288c98663f30e18e11212272eb22cde
           - app: UA-Dim
             platform: iOS
@@ -110,9 +112,12 @@ jobs:
       - name: Verify Android release signature
         if: matrix.platform == 'Android'
         run: |
+          KEYTOOL="$(find "$JAVA_HOME" -name keytool -type f | head -1)"
+          test -x "$KEYTOOL" || { echo "keytool was not found"; exit 1; }
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)"
           test -x "$APKSIGNER" || { echo "apksigner was not found"; exit 1; }
-          CERT_OUTPUT="$("$APKSIGNER" verify --print-certs "${{ matrix.artifact_path }}")"
+          APK_PATH="${{ matrix.directory }}/build/app/outputs/flutter-apk/app-release.apk"
+          CERT_OUTPUT="$("$APKSIGNER" verify --print-certs "$APK_PATH")"
           printf '%s\n' "$CERT_OUTPUT"
           ACTUAL_FINGERPRINT="$(
             printf '%s\n' "$CERT_OUTPUT" |
@@ -125,6 +130,22 @@ jobs:
             echo "Unexpected Android signing certificate: $ACTUAL_FINGERPRINT"
             exit 1
           }
+          if [ "${{ matrix.app }}" = "UA-Dim" ]; then
+            AAB_PATH="${{ matrix.directory }}/build/app/outputs/bundle/release/app-release.aab"
+            test -f "$AAB_PATH" || { echo "AAB was not generated: $AAB_PATH"; exit 1; }
+            AAB_FINGERPRINT="$(
+              "$KEYTOOL" -printcert -jarfile "$AAB_PATH" |
+                sed -n 's/^.*SHA256: //p' |
+                head -1 |
+                tr '[:upper:]' '[:lower:]' |
+                tr -d ':[:space:]'
+            )"
+            test -n "$AAB_FINGERPRINT" || { echo "Unable to read AAB signing certificate"; exit 1; }
+            test "$AAB_FINGERPRINT" = "${{ matrix.fingerprint }}" || {
+              echo "Unexpected AAB signing certificate: $AAB_FINGERPRINT"
+              exit 1
+            }
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
