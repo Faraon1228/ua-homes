@@ -13,148 +13,16 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import '../services/mobile_push_service.dart';
+import '../webview/auth_bridge.dart';
+import '../webview/navigation_policy.dart';
 
 const String uaDimProductionUrl =
     'https://ua-dim.com/app'
     '?source=ua-dim-app&release=20260820-photo-library';
 const MethodChannel _nativeChannel = MethodChannel('com.uadim.app/native');
 
-bool isUaDimInternalUri(Uri uri) {
-  if (uri.scheme != 'http' && uri.scheme != 'https') return false;
-  return uri.host == 'ua-dim.com' || uri.host.endsWith('.ua-dim.com');
-}
-
-bool isUaDimListingUri(Uri uri) {
-  if (!isUaDimInternalUri(uri) || uri.pathSegments.length != 2) return false;
-  return uri.pathSegments.first == 'listing' &&
-      int.tryParse(uri.pathSegments.last) != null;
-}
-
-Uri? parseUaDimNativeUri(Object? value) {
-  if (value is! String || value.trim().isEmpty) return null;
-  var uri = Uri.tryParse(value.trim());
-  if (uri?.scheme == 'uadim' && uri?.host == 'listing') {
-    final listingId = uri!.pathSegments.firstOrNull;
-    uri = Uri.parse('https://ua-dim.com/listing/$listingId');
-  }
-  return uri != null && isUaDimListingUri(uri) ? uri : null;
-}
-
 bool isJavaScriptTrue(Object? value) =>
     value == true || value == 'true' || value == 1;
-
-String? normalizeUaDimAuthToken(String? token) {
-  final trimmed = token?.trim();
-  return trimmed == null || trimmed.isEmpty ? null : trimmed;
-}
-
-Object? _decodeUaDimJsonEnvelope(String message) {
-  Object? decoded = message.trim();
-  for (var attempt = 0; attempt < 2 && decoded is String; attempt += 1) {
-    final candidate = decoded.trim();
-    if (candidate.isEmpty) return null;
-    final looksJsonEnvelope =
-        candidate.startsWith('{') ||
-        candidate.startsWith('[') ||
-        candidate.startsWith('"');
-    if (!looksJsonEnvelope) break;
-    try {
-      decoded = jsonDecode(candidate);
-    } on FormatException {
-      break;
-    }
-  }
-  return decoded;
-}
-
-String? parseUaDimAuthBridgeToken(String message) {
-  final decoded = _decodeUaDimJsonEnvelope(message);
-  if (decoded is Map && decoded['type'] == 'auth') {
-    return normalizeUaDimAuthToken(decoded['token']?.toString());
-  }
-  if (decoded is String) {
-    final normalized = normalizeUaDimAuthToken(decoded);
-    if (normalized?.startsWith('{') == true) return null;
-    return normalized;
-  }
-  return null;
-}
-
-class UaDimAuthTransition {
-  const UaDimAuthTransition({
-    required this.previousToken,
-    required this.nextToken,
-  });
-
-  final String? previousToken;
-  final String? nextToken;
-
-  bool get changed => previousToken != nextToken;
-  bool get shouldDeleteStoredToken => changed && nextToken == null;
-  bool get shouldWriteStoredToken => changed && nextToken != null;
-}
-
-UaDimAuthTransition planUaDimAuthTransition({
-  required String? previousToken,
-  required String? nextToken,
-}) {
-  return UaDimAuthTransition(
-    previousToken: normalizeUaDimAuthToken(previousToken),
-    nextToken: normalizeUaDimAuthToken(nextToken),
-  );
-}
-
-bool shouldRejectUaDimAuthToken({
-  required String? currentToken,
-  required String rejectedToken,
-}) =>
-    normalizeUaDimAuthToken(currentToken) ==
-    normalizeUaDimAuthToken(rejectedToken);
-
-class UaDimAuthRestorePlan {
-  const UaDimAuthRestorePlan({
-    required this.shouldReload,
-    required this.sessionToken,
-    required this.localToken,
-    required this.clearCurrentUser,
-  });
-
-  final bool shouldReload;
-  final String? sessionToken;
-  final String? localToken;
-  final bool clearCurrentUser;
-}
-
-UaDimAuthRestorePlan planUaDimAuthRestore({
-  required String? storedToken,
-  required String? sessionToken,
-  required String? localToken,
-  required bool hasCurrentUser,
-}) {
-  final normalizedStoredToken = normalizeUaDimAuthToken(storedToken);
-  final normalizedSessionToken = normalizeUaDimAuthToken(sessionToken);
-  final normalizedLocalToken = normalizeUaDimAuthToken(localToken);
-
-  if (normalizedStoredToken != null) {
-    return UaDimAuthRestorePlan(
-      shouldReload: normalizedLocalToken != normalizedStoredToken,
-      sessionToken: normalizedStoredToken,
-      localToken: normalizedStoredToken,
-      clearCurrentUser: false,
-    );
-  }
-
-  final hasStaleAuthState =
-      normalizedSessionToken != null ||
-      normalizedLocalToken != null ||
-      hasCurrentUser;
-  return UaDimAuthRestorePlan(
-    shouldReload: hasStaleAuthState,
-    sessionToken: null,
-    localToken: null,
-    clearCurrentUser: hasCurrentUser,
-  );
-}
 
 class UaDimScreen extends StatefulWidget {
   const UaDimScreen({super.key});
@@ -174,10 +42,11 @@ class _UaDimScreenState extends State<UaDimScreen> {
   bool _iosPhotoBridgeAvailable = false;
   bool _isPickingIosPhotos = false;
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  final UaDimNavigationPolicy _navigationPolicy = const UaDimNavigationPolicy();
+  late UaDimAuthCoordinator _authCoordinator;
   final AppLinks _appLinks = AppLinks();
   StreamSubscription<Uri>? _linkSubscription;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
-  String? _storedAuthToken;
   bool _restoredAuthForPage = false;
   bool _isOffline = false;
 
@@ -187,11 +56,15 @@ class _UaDimScreenState extends State<UaDimScreen> {
   bool get _supportsIosPhotoLibrary =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
 
-  bool get _canShareCurrentPage => isUaDimListingUri(_currentUri);
+  bool get _canShareCurrentPage => _navigationPolicy.isListing(_currentUri);
 
   @override
   void initState() {
     super.initState();
+    _authCoordinator = UaDimAuthCoordinator(
+      _SecureAuthTokenStore(_secureStorage),
+      _PushAuthTokenConsumer(),
+    );
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0xFFF1F5F9))
@@ -246,7 +119,12 @@ class _UaDimScreenState extends State<UaDimScreen> {
   }
 
   Future<void> _initializeMobileSession() async {
-    _storedAuthToken = await _secureStorage.read(key: 'uaDim.authToken');
+    final storedToken = await _secureStorage.read(key: uaDimAuthStorageKey);
+    _authCoordinator = UaDimAuthCoordinator(
+      _SecureAuthTokenStore(_secureStorage),
+      _PushAuthTokenConsumer(),
+      initialToken: storedToken,
+    );
     unawaited(_initializeMobilePush());
     final initialUri = await _configureDeepLinks();
     await _configureConnectivity();
@@ -260,19 +138,13 @@ class _UaDimScreenState extends State<UaDimScreen> {
       onOpenUri: _openInternalUri,
       onAuthRejected: _handleRejectedAuthToken,
     );
-    await MobilePushService.instance.setAuthToken(_storedAuthToken);
+    await MobilePushService.instance.setAuthToken(
+      _authCoordinator.currentToken,
+    );
   }
 
   Future<void> _handleRejectedAuthToken(String rejectedToken) async {
-    if (!shouldRejectUaDimAuthToken(
-      currentToken: _storedAuthToken,
-      rejectedToken: rejectedToken,
-    )) {
-      return;
-    }
-    _storedAuthToken = null;
-    await MobilePushService.instance.setAuthToken(null);
-    await _secureStorage.delete(key: 'uaDim.authToken');
+    if (!await _authCoordinator.reject(rejectedToken)) return;
     await _controller.runJavaScript('''
       window.sessionStorage.removeItem('uaDim.authToken');
       window.localStorage.removeItem('uaDim.authToken');
@@ -283,11 +155,11 @@ class _UaDimScreenState extends State<UaDimScreen> {
 
   Future<Uri?> _configureDeepLinks() async {
     _linkSubscription = _appLinks.uriLinkStream.listen((uri) {
-      final listingUri = parseUaDimNativeUri(uri.toString());
+      final listingUri = _navigationPolicy.parseNativeListing(uri.toString());
       if (listingUri != null) unawaited(_openInternalUri(listingUri));
     });
     final initialUri = await _appLinks.getInitialLink();
-    return parseUaDimNativeUri(initialUri?.toString());
+    return _navigationPolicy.parseNativeListing(initialUri?.toString());
   }
 
   Future<void> _configureConnectivity() async {
@@ -309,94 +181,34 @@ class _UaDimScreenState extends State<UaDimScreen> {
   Future<bool> _restoreAuthTokenIfNeeded() async {
     if (_restoredAuthForPage) return false;
     _restoredAuthForPage = true;
-    final snapshotRaw = await _controller.runJavaScriptReturningResult('''
-      (() => {
-        return JSON.stringify({
-          sessionToken: window.sessionStorage.getItem('uaDim.authToken'),
-          localToken: window.localStorage.getItem('uaDim.authToken'),
-          hasCurrentUser: Boolean(window.localStorage.getItem('uaDim.currentUser')),
-        });
-      })();
-    ''');
+    final snapshotRaw = await _controller.runJavaScriptReturningResult(
+      uaDimAuthSnapshotScript,
+    );
     final snapshotMessage = snapshotRaw is String
         ? snapshotRaw
         : snapshotRaw.toString();
-    final decodedSnapshot = _decodeUaDimJsonEnvelope(snapshotMessage);
+    final decodedSnapshot = decodeUaDimJsonEnvelope(snapshotMessage);
     final snapshot = decodedSnapshot is Map
         ? decodedSnapshot
         : const <String, Object?>{};
     final plan = planUaDimAuthRestore(
-      storedToken: _storedAuthToken,
+      storedToken: _authCoordinator.currentToken,
       sessionToken: snapshot['sessionToken']?.toString(),
       localToken: snapshot['localToken']?.toString(),
       hasCurrentUser: snapshot['hasCurrentUser'] == true,
     );
-    await _controller.runJavaScript('''
-      (() => {
-        const sessionToken = ${jsonEncode(plan.sessionToken)};
-        const localToken = ${jsonEncode(plan.localToken)};
-        const clearCurrentUser = ${plan.clearCurrentUser ? 'true' : 'false'};
-        if (sessionToken) {
-          window.sessionStorage.setItem('uaDim.authToken', sessionToken);
-        } else {
-          window.sessionStorage.removeItem('uaDim.authToken');
-        }
-        if (localToken) {
-          window.localStorage.setItem('uaDim.authToken', localToken);
-        } else {
-          window.localStorage.removeItem('uaDim.authToken');
-        }
-        if (clearCurrentUser) {
-          window.localStorage.removeItem('uaDim.currentUser');
-        }
-      })();
-    ''');
+    await _controller.runJavaScript(uaDimApplyAuthRestoreScript(plan));
     if (!plan.shouldReload) return false;
     await _controller.reload();
     return true;
   }
 
   Future<void> _installAuthBridge() async {
-    await _controller.runJavaScript('''
-      (() => {
-        if (window.__uaDimAuthBridgeInstalled) return;
-        window.__uaDimAuthBridgeInstalled = true;
-        let previous = null;
-        const syncAuth = () => {
-          const token = window.sessionStorage.getItem('uaDim.authToken')
-            || window.localStorage.getItem('uaDim.authToken')
-            || '';
-          const payload = JSON.stringify({
-            type: 'auth',
-            token: token || null,
-          });
-          if (payload === previous) return;
-          previous = payload;
-          UaDimAuth.postMessage(payload);
-        };
-        window.addEventListener('storage', syncAuth);
-        window.setInterval(syncAuth, 1500);
-        syncAuth();
-      })();
-    ''');
+    await _controller.runJavaScript(uaDimInstallAuthBridgeScript);
   }
 
   Future<void> _handleAuthTokenMessage(JavaScriptMessage message) async {
-    final transition = planUaDimAuthTransition(
-      previousToken: _storedAuthToken,
-      nextToken: parseUaDimAuthBridgeToken(message.message),
-    );
-    if (!transition.changed) return;
-    _storedAuthToken = transition.nextToken;
-    if (transition.shouldDeleteStoredToken) {
-      await _secureStorage.delete(key: 'uaDim.authToken');
-    } else if (transition.shouldWriteStoredToken) {
-      await _secureStorage.write(
-        key: 'uaDim.authToken',
-        value: transition.nextToken!,
-      );
-    }
-    await MobilePushService.instance.setAuthToken(transition.nextToken);
+    await _authCoordinator.handle(message.message);
   }
 
   Future<void> _configureIosPhotoLibrary() async {
@@ -642,7 +454,7 @@ class _UaDimScreenState extends State<UaDimScreen> {
   }
 
   Future<void> _openInternalUri(Uri uri) async {
-    if (!isUaDimInternalUri(uri)) return;
+    if (!_navigationPolicy.isInternal(uri)) return;
     _currentUri = uri;
     if (mounted) {
       setState(() {
@@ -676,7 +488,7 @@ class _UaDimScreenState extends State<UaDimScreen> {
     NavigationRequest request,
   ) async {
     final uri = Uri.tryParse(request.url);
-    if (uri != null && isUaDimInternalUri(uri)) {
+    if (uri != null && _navigationPolicy.isInternal(uri)) {
       return NavigationDecision.navigate;
     }
 
@@ -718,6 +530,7 @@ class _UaDimScreenState extends State<UaDimScreen> {
         platformController.setOnShowFileSelector(null);
       }
     }
+
     super.dispose();
   }
 
@@ -875,4 +688,23 @@ class _UaDimScreenState extends State<UaDimScreen> {
       ),
     );
   }
+}
+
+class _SecureAuthTokenStore implements UaDimAuthTokenStore {
+  const _SecureAuthTokenStore(this._storage);
+
+  final FlutterSecureStorage _storage;
+
+  @override
+  Future<void> delete() => _storage.delete(key: uaDimAuthStorageKey);
+
+  @override
+  Future<void> write(String token) =>
+      _storage.write(key: uaDimAuthStorageKey, value: token);
+}
+
+class _PushAuthTokenConsumer implements UaDimAuthTokenConsumer {
+  @override
+  Future<void> setAuthToken(String? token) =>
+      MobilePushService.instance.setAuthToken(token);
 }
