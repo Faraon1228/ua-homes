@@ -42,7 +42,7 @@ jobs:
             runner: ubuntu-latest
             directory: apps/ua_dim
             build: apk --release
-            artifact: ua-dim-android-release-apk
+            artifact: ua-dim-android-apk
             artifact_path: apps/ua_dim/build/app/outputs/flutter-apk/app-release.apk
             extra_android_artifact: ua-dim-android-release-aab
             extra_android_artifact_path: apps/ua_dim/build/app/outputs/bundle/release/app-release.aab
@@ -157,7 +157,7 @@ jobs:
           path: ${{ matrix.artifact_path }}
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
-        if: matrix.extra_android_artifact != ''
+        if: matrix.app == 'UA-Dim' && matrix.platform == 'Android'
         with:
           name: ${{ matrix.extra_android_artifact }}
           path: ${{ matrix.extra_android_artifact_path }}
