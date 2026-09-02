@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "../../react-shim.js";
+import React, { useEffect, useState } from "../../react-shim.js";
 import { useModalFocus } from "../../lib/modalFocus.js";
 
 const ACTION_LABELS = {
@@ -16,15 +16,11 @@ const ACTION_LABELS = {
  */
 export function ModerationActionDialog({ open, action, count = 1, onConfirm, onCancel, busy }) {
   const [reason, setReason] = useState("");
-  const textareaRef = useRef(null);
   const requiresReason = action === "reject" || action === "changes_requested";
   const dialogRef = useModalFocus(open, busy ? () => {} : onCancel, "textarea");
 
   useEffect(() => {
-    if (open) {
-      setReason("");
-      setTimeout(() => textareaRef.current?.focus(), 0);
-    }
+    if (open) setReason("");
   }, [open, action]);
 
   if (!open) return null;
@@ -50,7 +46,6 @@ export function ModerationActionDialog({ open, action, count = 1, onConfirm, onC
             Причина {requiresReason ? "(обов'язково)" : "(необов'язково)"}
           </span>
           <textarea
-            ref={textareaRef}
             rows={3}
             maxLength={1000}
             value={reason}
