@@ -4,6 +4,8 @@ import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:ua_dim/main.dart';
 import 'package:ua_dim/monitoring/sentry_monitoring.dart';
 import 'package:ua_dim/screens/ua_dim_screen.dart';
+import 'package:ua_dim/webview/auth_bridge.dart';
+import 'package:ua_dim/webview/navigation_policy.dart';
 
 void main() {
   testWidgets('UA-Dim app has its own identity', (tester) async {
@@ -18,38 +20,61 @@ void main() {
     expect(uaDimProductionUrl, isNot(contains('demo')));
     expect(uaDimProductionUrl, contains('source=ua-dim-app'));
     expect(uaDimProductionUrl, contains('release=20260820-photo-library'));
-    expect(isUaDimInternalUri(Uri.parse(uaDimProductionUrl)), isTrue);
+    const policy = UaDimNavigationPolicy();
+    expect(policy.isInternal(Uri.parse(uaDimProductionUrl)), isTrue);
     expect(
-      isUaDimInternalUri(Uri.parse('https://feedback.ua-dim.com/contact')),
+      policy.isInternal(Uri.parse('https://www.ua-dim.com/contact')),
       isTrue,
     );
-    expect(
-      isUaDimInternalUri(Uri.parse('mailto:feedback@ua-dim.com')),
-      isFalse,
-    );
+    expect(policy.isInternal(Uri.parse('mailto:feedback@ua-dim.com')), isFalse);
+  });
+
+  test('UA-Dim navigation policy uses exact production host boundaries', () {
+    const policy = UaDimNavigationPolicy();
+    for (final host in uaDimProductionHosts) {
+      expect(policy.isInternal(Uri.https(host, '/app')), isTrue);
+      expect(policy.isInternal(Uri.http(host, '/app')), isTrue);
+    }
+    for (final url in [
+      'https://feedback.ua-dim.com/contact',
+      'https://evilua-dim.com/app',
+      'https://ua-dim.com.evil.test/app',
+      'https://example.com/app',
+      'ftp://ua-dim.com/app',
+      'mailto:feedback@ua-dim.com',
+    ]) {
+      expect(policy.isInternal(Uri.parse(url)), isFalse, reason: url);
+    }
   });
 
   test('UA-Dim validates native listing links', () {
+    const policy = UaDimNavigationPolicy();
     expect(
-      isUaDimListingUri(Uri.parse('https://ua-dim.com/listing/42')),
+      policy.isListing(Uri.parse('https://ua-dim.com/listing/42')),
       isTrue,
     );
     expect(
-      isUaDimListingUri(Uri.parse('https://ua-dim.com/agencies/example')),
+      policy.isListing(Uri.parse('https://ua-dim.com/agencies/example')),
       isFalse,
     );
     expect(
-      parseUaDimNativeUri('https://ua-dim.com/listing/42')?.path,
+      policy.parseNativeListing('https://ua-dim.com/listing/42')?.path,
       '/listing/42',
     );
-    expect(parseUaDimNativeUri('uadim://listing/42')?.path, '/listing/42');
     expect(
-      parseUaDimNativeUri('https://ua-dim.com/listing/not-a-number'),
+      policy.parseNativeListing('uadim://listing/42')?.path,
+      '/listing/42',
+    );
+    expect(
+      policy.parseNativeListing('https://ua-dim.com/listing/not-a-number'),
       isNull,
     );
-    expect(parseUaDimNativeUri('https://ua-dim.com/listing/42/edit'), isNull);
-    expect(parseUaDimNativeUri('https://example.com/listing/42'), isNull);
-    expect(parseUaDimNativeUri('mailto:feedback@ua-dim.com'), isNull);
+    expect(
+      policy.parseNativeListing('https://ua-dim.com/listing/42/edit'),
+      isNull,
+    );
+    expect(policy.parseNativeListing('https://example.com/listing/42'), isNull);
+    expect(policy.parseNativeListing('mailto:feedback@ua-dim.com'), isNull);
   });
 
   test('UA-Dim normalizes JavaScript boolean results', () {
@@ -64,19 +89,28 @@ void main() {
   test(
     'UA-Dim parses auth bridge payloads without relying on empty messages',
     () {
-      expect(parseUaDimAuthBridgeToken('token-123'), 'token-123');
       expect(
-        parseUaDimAuthBridgeToken('{"type":"auth","token":" token-123 "}'),
-        'token-123',
-      );
-      expect(parseUaDimAuthBridgeToken('{"type":"auth","token":null}'), isNull);
-      expect(
-        parseUaDimAuthBridgeToken(
-          '"{\\"type\\":\\"auth\\",\\"token\\":\\" token-123 \\"}"',
+        UaDimAuthBridgeMessage.parse(
+          '{"version":1,"type":"auth","token":" token-123 "}',
         ),
-        'token-123',
+        isA<UaDimAuthChanged>().having(
+          (message) => message.token,
+          'token',
+          'token-123',
+        ),
       );
-      expect(parseUaDimAuthBridgeToken('   '), isNull);
+      expect(
+        UaDimAuthBridgeMessage.parse(
+          '"{\\"version\\":1,\\"type\\":\\"auth\\",\\"token\\":null}"',
+        ),
+        isA<UaDimAuthChanged>().having(
+          (message) => message.token,
+          'token',
+          isNull,
+        ),
+      );
+      expect(UaDimAuthBridgeMessage.parse('token-123'), isNull);
+      expect(UaDimAuthBridgeMessage.parse('   '), isNull);
     },
   );
 
@@ -190,13 +224,105 @@ void main() {
 
   test('UA-Dim auth bridge rejects unrelated and malformed contracts', () {
     expect(
-      parseUaDimAuthBridgeToken('{"type":"logout","token":"token-123"}'),
+      UaDimAuthBridgeMessage.parse(
+        '{"version":1,"type":"logout","token":"token-123"}',
+      ),
       isNull,
     );
-    expect(parseUaDimAuthBridgeToken('{"type":"auth"}'), isNull);
-    expect(parseUaDimAuthBridgeToken('{"type":"auth","token":"   "}'), isNull);
-    expect(parseUaDimAuthBridgeToken('{"type":"auth"'), isNull);
-    expect(parseUaDimAuthBridgeToken('["token-123"]'), isNull);
+    expect(
+      UaDimAuthBridgeMessage.parse('{"type":"auth","token":"token-123"}'),
+      isNull,
+    );
+    expect(
+      UaDimAuthBridgeMessage.parse(
+        '{"version":2,"type":"auth","token":"token-123"}',
+      ),
+      isNull,
+    );
+    expect(UaDimAuthBridgeMessage.parse('{"version":1,"type":"auth"}'), isNull);
+    expect(
+      UaDimAuthBridgeMessage.parse('{"version":1,"type":"auth","token":123}'),
+      isNull,
+    );
+    expect(UaDimAuthBridgeMessage.parse('{"version":1,"type":"auth"'), isNull);
+    expect(UaDimAuthBridgeMessage.parse('["token-123"]'), isNull);
+  });
+
+  test(
+    'UA-Dim auth coordinator delegates the complete token lifecycle',
+    () async {
+      final store = _RecordingAuthStore();
+      final consumer = _RecordingAuthConsumer();
+      final coordinator = UaDimAuthCoordinator(store, consumer);
+
+      expect(
+        await coordinator.handle(
+          '{"version":1,"type":"auth","token":"login-token"}',
+        ),
+        isTrue,
+      );
+      expect(
+        await coordinator.handle(
+          '{"version":1,"type":"auth","token":"login-token"}',
+        ),
+        isFalse,
+      );
+      expect(
+        await coordinator.handle(
+          '{"version":1,"type":"auth","token":"account-token"}',
+        ),
+        isTrue,
+      );
+      expect(
+        await coordinator.handle('{"version":1,"type":"auth","token":null}'),
+        isTrue,
+      );
+      expect(store.operations, [
+        'write:login-token',
+        'write:account-token',
+        'delete',
+      ]);
+      expect(consumer.tokens, ['login-token', 'account-token', null]);
+    },
+  );
+
+  test(
+    'UA-Dim auth coordinator ignores unrelated and stale rejections',
+    () async {
+      final store = _RecordingAuthStore();
+      final consumer = _RecordingAuthConsumer();
+      final coordinator = UaDimAuthCoordinator(
+        store,
+        consumer,
+        initialToken: 'active-token',
+      );
+
+      expect(await coordinator.handle('{"type":"tracking"}'), isFalse);
+      expect(await coordinator.reject('stale-token'), isFalse);
+      expect(await coordinator.reject('active-token'), isTrue);
+      expect(store.operations, ['delete']);
+      expect(consumer.tokens, [null]);
+    },
+  );
+
+  test('UA-Dim auth coordinator serializes overlapping messages', () async {
+    final store = _RecordingAuthStore(delay: const Duration(milliseconds: 5));
+    final consumer = _RecordingAuthConsumer();
+    final coordinator = UaDimAuthCoordinator(store, consumer);
+
+    await Future.wait([
+      coordinator.handle('{"version":1,"type":"auth","token":"login-token"}'),
+      coordinator.handle('{"version":1,"type":"auth","token":"account-token"}'),
+      coordinator.handle('{"version":1,"type":"auth","token":null}'),
+    ]);
+
+    expect(coordinator.currentToken, isNull);
+    expect(store.operations, [
+      'write:login-token',
+      'write:account-token',
+      'delete',
+    ]);
+    expect(consumer.tokens, ['login-token', 'account-token', null]);
   });
 
   test('Sentry configuration is disabled without a DSN', () {
@@ -288,6 +414,32 @@ void main() {
       isNull,
     );
   });
+}
+
+class _RecordingAuthStore implements UaDimAuthTokenStore {
+  _RecordingAuthStore({this.delay = Duration.zero});
+
+  final Duration delay;
+  final List<String> operations = [];
+
+  @override
+  Future<void> delete() async {
+    await Future<void>.delayed(delay);
+    operations.add('delete');
+  }
+
+  @override
+  Future<void> write(String token) async {
+    await Future<void>.delayed(delay);
+    operations.add('write:$token');
+  }
+}
+
+class _RecordingAuthConsumer implements UaDimAuthTokenConsumer {
+  final List<String?> tokens = [];
+
+  @override
+  Future<void> setAuthToken(String? token) async => tokens.add(token);
 }
 
 // Monitoring configuration is tested without initializing a transport or using a
