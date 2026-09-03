@@ -7,7 +7,8 @@
       "namespace": "android_app",
       "package_name": "com.uadim.app",
       "sha256_cert_fingerprints": [
-        "2B:A6:42:87:54:EA:BA:71:FB:0E:A2:1F:72:17:73:BE:52:88:C9:86:63:F3:0E:18:E1:12:12:27:2E:B2:2C:DE"
+        "2B:A6:42:87:54:EA:BA:71:FB:0E:A2:1F:72:17:73:BE:52:88:C9:86:63:F3:0E:18:E1:12:12:27:2E:B2:2C:DE",
+        "EE:11:9F:28:AB:1C:26:BD:34:D7:74:52:64:6D:2D:2B:51:BC:9C:DF:88:40:98:99:82:BF:F4:49:14:67:A4:72"
       ]
     }
   }
