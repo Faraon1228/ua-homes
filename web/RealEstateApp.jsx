@@ -230,8 +230,6 @@ function getCatalogHref() {
   return isLocalPreview() ? "/real-estate-demo.html" : "/";
 }
 
-const INITIAL_LISTING_IMAGE_FIELDS = ["", "", ""];
-
 // Ідентифікатори мають збігатися з ACCOUNT_TYPES у backend/app.py.
 const ACCOUNT_TYPE_OPTIONS = [
   { id: "owner", label: "🏠 Власник", hint: "Продаю або здаю власне житло" },
@@ -269,7 +267,7 @@ function createInitialListingForm(initialValues = {}) {
     yearBuilt: "",
     eOselya: false,
     description: "",
-    images: [...INITIAL_LISTING_IMAGE_FIELDS],
+    images: [],
     videos: [],
     ...initialValues,
   };
@@ -1068,9 +1066,6 @@ function ListingsMapView({ properties, onShowList }) {
 
 function mapListingToForm(listing) {
   const images = Array.isArray(listing?.images) ? listing.images.filter(Boolean).slice(0, 8) : [];
-  while (images.length < INITIAL_LISTING_IMAGE_FIELDS.length) {
-    images.push("");
-  }
 
   return {
     title: listing?.title || "",
@@ -2978,18 +2973,6 @@ export default function RealEstateApp() {
     setListingForm((current) => ({ ...current, [field]: value }));
   };
 
-  const updateListingImage = (index, value) => {
-    setListingForm((current) => {
-      const images = [...current.images];
-      images[index] = value;
-      return { ...current, images };
-    });
-  };
-
-  const addListingImageField = () => {
-    setListingForm((current) => ({ ...current, images: [...current.images, ""] }));
-  };
-
   const removeListingImageField = (index) => {
     setListingForm((current) => ({
       ...current,
@@ -3009,7 +2992,8 @@ export default function RealEstateApp() {
     if (mediaType === "video") {
       setSelectedListingVideoFiles((previous) => [...previous, ...acceptedFiles].slice(0, maxFiles));
     } else {
-      setSelectedListingFiles((previous) => [...previous, ...acceptedFiles].slice(0, maxFiles));
+      const remainingSlots = Math.max(0, maxFiles - listingForm.images.filter(Boolean).length);
+      setSelectedListingFiles((previous) => [...previous, ...acceptedFiles].slice(0, remainingSlots));
     }
     setListingMessage(
       rejectedCount
@@ -3222,7 +3206,7 @@ export default function RealEstateApp() {
         listingStatus: "active",
         source: isDeveloperCabinet ? "developer" : isRealtorCabinet ? "agent" : "owner",
         publishNow: true,
-        images: [...uploadedStorageUrls, ...imageUrls].slice(0, 8),
+        images: [...imageUrls, ...uploadedStorageUrls].slice(0, 8),
         videos: [...uploadedVideoUrls, ...videoUrls].slice(0, 2),
       };
 
@@ -5347,18 +5331,9 @@ export default function RealEstateApp() {
                 />
               </div>
               <div className="md:col-span-2">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Фото оголошення</p>
-                    <p className="mt-1 text-xs text-slate-500">Додайте до 8 фотографій об'єкта.</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={addListingImageField}
-                    className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
-                  >
-                    Додати фото за посиланням
-                  </button>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Фото оголошення</p>
+                  <p className="mt-1 text-xs text-slate-500">Додайте до 8 фотографій об'єкта.</p>
                 </div>
                 <div className="mt-3 rounded-3xl border border-blue-100 bg-blue-50/70 p-4">
                   <div className="grid gap-2 sm:grid-cols-2">
@@ -5461,33 +5436,31 @@ export default function RealEstateApp() {
                   ) : null}
 
                 </div>
-                <div className="mt-3 space-y-2">
-                  {listingForm.images.map((image, index) => (
-                    <div key={`${index}-${image}`} className="flex items-center gap-2">
-                      <label htmlFor={`listing-image-${index}`} className="min-w-0 flex-1 text-xs font-semibold text-slate-600">
-                        Посилання на фото {index + 1}
-                        <input
-                          id={`listing-image-${index}`}
-                          type="url"
-                          value={image}
-                          onChange={(event) => updateListingImage(index, event.target.value)}
-                          placeholder="https://…"
-                          className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                {listingForm.images.length ? (
+                  <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4" aria-label="Збережені фото оголошення">
+                    {listingForm.images.map((image, index) => (
+                      <div key={`${index}-${image}`} className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                        <img
+                          src={getCloudinaryImageUrl(image, 640) || image}
+                          alt={`Фото оголошення ${index + 1}`}
+                          width="320"
+                          height="224"
+                          loading="lazy"
+                          decoding="async"
+                          className="h-28 w-full object-cover"
                         />
-                      </label>
-                      {listingForm.images.length > 1 ? (
                         <button
                           type="button"
                           onClick={() => removeListingImageField(index)}
-                          aria-label={`Видалити поле посилання на фото ${index + 1}`}
-                          className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+                          aria-label={`Видалити фото ${index + 1}`}
+                          className="absolute right-1.5 top-1.5 flex h-11 w-11 items-center justify-center rounded-full bg-black/75 text-xs font-bold text-white transition hover:bg-red-700 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-red-200"
                         >
                           ✕
                         </button>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
               <div className="md:col-span-2">
                 <div>
