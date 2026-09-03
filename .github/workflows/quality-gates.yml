@@ -60,8 +60,7 @@ jobs:
           UA_HOMES_PUBLIC_URL: https://ua-dim.com
         run: |
           python3 scripts/build-real-estate-demo.py
-          python3 -m json.tool web/.well-known/assetlinks.json >/dev/null
-          python3 -c 'import json, pathlib; statement = json.loads(pathlib.Path("web/.well-known/assetlinks.json").read_text())[0]; assert statement["relation"] == ["delegate_permission/common.handle_all_urls"]; target = statement["target"]; assert target["namespace"] == "android_app" and target["package_name"] == "com.uadim.app"; assert target["sha256_cert_fingerprints"] == ["2B:A6:42:87:54:EA:BA:71:FB:0E:A2:1F:72:17:73:BE:52:88:C9:86:63:F3:0E:18:E1:12:12:27:2E:B2:2C:DE"]'
+          python3 scripts/validate-assetlinks.py
           ! grep -R -F '__UA_HOMES_API__' web/real-estate-demo.html web/real-estate-app.js
           ! grep -F '__UA_HOMES_PUBLIC_URL__' web/robots.txt
 
