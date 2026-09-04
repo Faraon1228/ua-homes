@@ -145,3 +145,13 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --comment "Production health checks recovered in $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
           fi
+
+      - name: Refresh admin system status snapshot
+        if: always() && env.STATUS_REFRESH_KEY != ''
+        env:
+          STATUS_REFRESH_KEY: ${{ secrets.UA_HOMES_STATUS_REFRESH_KEY }}
+        run: |
+          curl --fail --silent --show-error --max-time 20 \
+           --request POST \
+           --header "X-System-Refresh-Key: $STATUS_REFRESH_KEY" \
+           "$BACKEND_URL/api/admin/system/health/refresh/scheduled"

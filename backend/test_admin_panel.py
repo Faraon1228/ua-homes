@@ -9,6 +9,7 @@ import bcrypt
 from backend.test_trust_features import TEST_DB, app_module
 
 admin_routes_module = importlib.import_module("admin_routes")
+system_status_module = importlib.import_module("system_status")
 
 
 def setUpModule():
@@ -23,7 +24,17 @@ class AdminPanelTests(unittest.TestCase):
         self.client = app_module.app.test_client()
         with sqlite3.connect(TEST_DB) as db:
             db.execute("PRAGMA foreign_keys=ON")
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS system_status_snapshot (
+                    snapshot_key TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    refreshed_at TEXT NOT NULL
+                )
+                """
+            )
             for table in (
+                "system_status_snapshot",
                 "admin_audit_log", "listing_reports", "listing_change_history",
                 "moderation_log", "lead_requests", "listing_images", "reviews",
                 "listings", "agency_profiles", "users",
@@ -122,6 +133,184 @@ class AdminPanelTests(unittest.TestCase):
             ).status_code,
             200,
         )
+
+    def test_system_health_snapshot_refresh_auth_csrf_and_scheduler_key(self):
+        payload = {
+            "status": "ok",
+            "database": "ok",
+            "services": {
+                "website": {"status": "not_configured"},
+                "api": {"status": "ok"},
+                "database": {"status": "ok"},
+                "push": {"status": "not_configured"},
+            },
+            "sentry": {"status": "not_configured", "new_critical_count": None, "issues": []},
+            "deployments": {"status": "not_configured", "failed_runs": [], "latest_success_sha": None},
+            "version": {"release": None, "sha": None, "expected_sha": None, "mismatch": False},
+            "notifications": {"status": "not_configured", "email": "not_configured", "telegram": "not_configured"},
+            "refreshed_at": "2026-09-03T19:00:00Z",
+            "stale": False,
+        }
+        with mock.patch.object(system_status_module, "get_status", return_value=dict(payload)) as get_status:
+            response = self.client.get(
+                "/api/admin/system/health", headers=self._auth(self.admin_token)
+            )
+            self.assertEqual(response.status_code, 200)
+            body = response.get_json()
+            self.assertEqual(body["status"], "ok")
+            self.assertEqual(body["services"]["push"]["status"], "not_configured")
+            self.assertIn("counts", body)
+            get_status.assert_called_once()
+
+        login = self.client.post(
+            "/api/admin/auth/login",
+            json={"email": "admin@staff.test", "password": "staff-password"},
+        )
+        csrf = login.get_json()["csrf_token"]
+        with mock.patch.object(system_status_module, "get_status", return_value=dict(payload)) as get_status:
+            self.assertEqual(
+                self.client.post("/api/admin/system/health/refresh").status_code,
+                403,
+            )
+            refreshed = self.client.post(
+                "/api/admin/system/health/refresh",
+                headers={"X-CSRF-Token": csrf},
+            )
+            self.assertEqual(refreshed.status_code, 200)
+            self.assertTrue(get_status.call_args.kwargs["force"])
+
+        with mock.patch.dict(os.environ, {"UA_HOMES_STATUS_REFRESH_KEY": "scheduled-secret"}):
+            self.assertEqual(
+                self.client.post(
+                    "/api/admin/system/health/refresh/scheduled",
+                    headers={"X-System-Refresh-Key": "wrong"},
+                ).status_code,
+                401,
+            )
+            with mock.patch.object(system_status_module, "get_status", return_value=dict(payload)):
+                self.assertEqual(
+                    self.client.post(
+                        "/api/admin/system/health/refresh/scheduled",
+                        headers={"X-System-Refresh-Key": "scheduled-secret"},
+                    ).status_code,
+                    200,
+                )
+
+        with sqlite3.connect(TEST_DB) as db:
+            audit = db.execute(
+                """
+                SELECT permission FROM admin_audit_log
+                WHERE resource_type = 'system_health_refresh'
+                ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+        self.assertEqual(audit, ("admin/all",))
+
+    def test_system_status_privacy_safe_sentry_rows_and_snapshot_cache(self):
+        sentry_payload = [{
+            "id": "123",
+            "title": "Database unavailable",
+            "culprit": "GET /api/listings",
+            "level": "fatal",
+            "count": "4",
+            "firstSeen": "2026-09-03T18:00:00Z",
+            "lastSeen": "2026-09-03T19:00:00Z",
+            "permalink": "https://faraon1228.sentry.io/issues/123/?secret=drop",
+            "metadata": {"email": "private@example.test"},
+        }]
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "UA_HOMES_SENTRY_API_TOKEN": "secret-token",
+                    "SENTRY_ORG": "ua-dim",
+                    "SENTRY_BACKEND_PROJECT": "ua-homes-backend",
+                },
+                clear=False,
+            ),
+            mock.patch.object(system_status_module, "_request_json", return_value=sentry_payload),
+        ):
+            result = system_status_module._sentry_status()
+        self.assertEqual(result["new_critical_count"], 1)
+        self.assertEqual(result["issues"][0]["url"], "https://faraon1228.sentry.io/issues/123/")
+        self.assertNotIn("metadata", result["issues"][0])
+        self.assertNotIn("secret-token", str(result))
+
+        captured_request = {}
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return b"[]"
+
+        def open_request(request, timeout):
+            captured_request["authorization"] = request.get_header("Authorization")
+            captured_request["timeout"] = timeout
+            return Response()
+
+        with (
+            mock.patch.dict(os.environ, {"UA_HOMES_SENTRY_API_TOKEN": "secret-token"}),
+            mock.patch.object(
+                system_status_module.urllib.request,
+                "urlopen",
+                side_effect=open_request,
+            ),
+        ):
+            system_status_module._request_json(
+                "https://sentry.io/api/0/projects/org/project/issues/"
+            )
+        self.assertEqual(
+            captured_request["authorization"],
+            "Bearer " + "secret-token",
+        )
+
+        cached_payload = {
+            "status": "ok",
+            "database": "ok",
+            "services": {"api": {"status": "ok"}},
+            "sentry": {"status": "not_configured", "issues": []},
+            "deployments": {"status": "not_configured", "failed_runs": []},
+            "version": {},
+            "notifications": {},
+            "refreshed_at": "2026-09-03T19:00:00Z",
+            "stale": False,
+        }
+        with sqlite3.connect(TEST_DB) as raw_db, mock.patch.object(
+            system_status_module,
+            "build_status",
+            return_value=(
+                dict(cached_payload),
+                system_status_module._utcnow(),
+            ),
+        ) as build_status:
+            raw_db.row_factory = sqlite3.Row
+            first = system_status_module.get_status(raw_db, force=True)
+            second = system_status_module.get_status(raw_db)
+        self.assertEqual(first["refreshed_at"], second["refreshed_at"])
+        self.assertEqual(build_status.call_count, 1)
+
+    def test_system_status_incident_notifications_are_deduplicated_and_recover(self):
+        degraded = {"status": "degraded", "refreshed_at": "2026-09-03T19:00:00Z"}
+        down = {"status": "down", "refreshed_at": "2026-09-03T19:05:00Z"}
+        ok = {"status": "ok", "refreshed_at": "2026-09-03T19:10:00Z"}
+        with (
+            mock.patch.dict(os.environ, {"UA_HOMES_STATUS_ALERT_EMAIL": "ops@example.test"}),
+            mock.patch.object(app_module, "_send_email", return_value=True) as send_email,
+            mock.patch.object(system_status_module, "_send_telegram") as send_telegram,
+        ):
+            system_status_module._notify_transition(None, degraded)
+            system_status_module._notify_transition(degraded, down)
+            system_status_module._notify_transition(down, ok)
+        self.assertEqual(send_email.call_count, 2)
+        self.assertEqual(send_telegram.call_count, 2)
+        self.assertIn("відновлена", send_email.call_args_list[1].args[1])
 
     def test_staff_cookie_session_csrf_origin_logout_and_generic_login(self):
         for credentials in (
