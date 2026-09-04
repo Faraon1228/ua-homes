@@ -92,6 +92,44 @@ class TrustFeatureTests(unittest.TestCase):
         self.realtor_token = app_module.make_token(self.realtor_id, "realtor@example.test")
         self.admin_token = app_module.make_token(self.admin_id, "admin@example.test")
 
+    def test_oversized_json_body_returns_json_413(self):
+        response = self.client.post(
+            "/api/analytics/lead-funnel",
+            data=b'{"payload":"' + b"x" * (12 * 1024 * 1024) + b'"}',
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.get_json()["code"], "request_too_large")
+        ignored_body_response = self.client.post(
+            f"/api/listings/{self.target_id}/view",
+            data=b"x" * (12 * 1024 * 1024 + 1),
+            content_type="application/octet-stream",
+        )
+        self.assertEqual(ignored_body_response.status_code, 413)
+        self.assertEqual(
+            ignored_body_response.get_json()["code"], "request_too_large"
+        )
+
+    def test_public_write_hotspots_have_focused_limits(self):
+        view_statuses = [
+            self.client.post(f"/api/listings/{self.target_id}/view").status_code
+            for _ in range(61)
+        ]
+        self.assertEqual(view_statuses[-1], 429)
+
+        app_module.limiter.reset()
+        payload = {
+            "event": "view",
+            "intent": "browse",
+            "source": "test",
+            "session_id": "rate-limit-test",
+        }
+        funnel_statuses = [
+            self.client.post("/api/analytics/lead-funnel", json=payload).status_code
+            for _ in range(121)
+        ]
+        self.assertEqual(funnel_statuses[-1], 429)
+
     def test_postgres_migration_covers_all_application_tables(self):
         with sqlite3.connect(TEST_DB) as database:
             application_tables = {

@@ -104,6 +104,27 @@ rate-limit, and error-monitoring readiness without exposing credentials. See `MO
 | Variable | Description | Default |
 |---|---|---|
 | `REDIS_URL` | Redis DSN for rate limiter | in-memory (dev only) |
+| `UA_HOMES_TRUSTED_PROXY_CIDRS` | Comma-separated CIDRs of ingress proxies allowed to supply `X-Forwarded-For` | unset (forwarding headers ignored) |
+| `UA_HOMES_MAX_CONTENT_LENGTH` | Maximum request body in bytes | `12582912` (12 MiB) |
+
+Production services fail startup when `REDIS_URL` is absent, preventing
+worker-local counters from appearing consistent when Gunicorn runs multiple workers.
+Local development and tests continue to use memory storage.
+
+Do not put public client networks in `UA_HOMES_TRUSTED_PROXY_CIDRS`. Populate it
+only with the immediate Railway ingress network and any proxy networks that can
+appear on the right side of `X-Forwarded-For`, based on observed Railway request
+metadata/provider documentation. The backend walks the chain right-to-left and
+uses the first untrusted address. If the direct peer is not in this allowlist, or
+the header contains an invalid address, the backend ignores the entire header and
+uses the socket peer. This supports both direct Railway and Netlify-proxied traffic
+without trusting a user-supplied leftmost address or assuming an unproven fixed
+`ProxyFix` hop count. `/api/health` reports whether forwarding trust is enabled,
+whether Redis-backed limits are configured, and the request-size cap without
+exposing CIDRs or credentials.
+
+The global 12 MiB cap accommodates the existing 10 MiB image optimization path.
+Presigned Cloudinary/S3 uploads remain direct and are not carried through Flask.
 
 ## Email (at least one required for email verification)
 
@@ -199,3 +220,6 @@ Password reset is available via:
 | `GUNICORN_BIND` | `0.0.0.0:5050` | Bind address |
 | `GUNICORN_TIMEOUT` | `30` | Worker timeout seconds |
 | `GUNICORN_LOG_LEVEL` | `info` | Log level |
+| `GUNICORN_LIMIT_REQUEST_LINE` | `4094` | Maximum HTTP request-line bytes |
+| `GUNICORN_LIMIT_REQUEST_FIELDS` | `100` | Maximum HTTP header count |
+| `GUNICORN_LIMIT_REQUEST_FIELD_SIZE` | `8190` | Maximum bytes per HTTP header |

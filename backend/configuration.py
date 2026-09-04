@@ -21,6 +21,8 @@ class BackendSettings(NamedTuple):
     bootstrap_admin_password: str
     bootstrap_admin_name: str
     redis_url: str | None
+    trusted_proxy_cidrs: str
+    max_content_length: int
 
 
 def parse_bool(value: str | None) -> bool:
@@ -46,6 +48,31 @@ def load_settings(
             "DATABASE_URL must be set when UA_HOMES_REQUIRE_POSTGRES is enabled."
         )
 
+    max_content_length_raw = environment.get(
+        "UA_HOMES_MAX_CONTENT_LENGTH", "12582912"
+    ).strip()
+    try:
+        max_content_length = int(max_content_length_raw)
+    except ValueError as exc:
+        raise RuntimeError("UA_HOMES_MAX_CONTENT_LENGTH must be an integer.") from exc
+    if max_content_length < 1_048_576:
+        raise RuntimeError(
+            "UA_HOMES_MAX_CONTENT_LENGTH must be at least 1048576 bytes."
+        )
+
+    redis_url = optional_value(environment, "REDIS_URL")
+    runtime_name = (
+        environment.get("RAILWAY_ENVIRONMENT_NAME")
+        or environment.get("RAILWAY_ENVIRONMENT")
+        or environment.get("FLASK_ENV")
+        or environment.get("ENVIRONMENT")
+        or ""
+    ).strip().lower()
+    if runtime_name in {"production", "prod"} and not redis_url:
+        raise RuntimeError(
+            "REDIS_URL must be set for production deployments."
+        )
+
     return BackendSettings(
         db_path=db_path,
         database_url=database_url,
@@ -62,7 +89,11 @@ def load_settings(
             environment.get("UA_HOMES_BOOTSTRAP_ADMIN_NAME", "Admin").strip()
             or "Admin"
         ),
-        redis_url=optional_value(environment, "REDIS_URL"),
+        redis_url=redis_url,
+        trusted_proxy_cidrs=environment.get(
+            "UA_HOMES_TRUSTED_PROXY_CIDRS", ""
+        ).strip(),
+        max_content_length=max_content_length,
     )
 
 
