@@ -1566,6 +1566,54 @@ class TrustFeatureTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row, (user_id, "unverified@example.test", 0))
 
+    def test_unverified_account_cannot_patch_pending_alert_active_or_dispatch_it(self):
+        with mock.patch.object(app_module, "send_email_verify", return_value=True):
+            registered = self.client.post(
+                "/api/auth/register",
+                json={
+                    "name": "Pending Owner",
+                    "email": "pending-owner@example.test",
+                    "password": "password123",
+                },
+            )
+        token = registered.get_json()["token"]
+        with mock.patch.object(
+            app_module, "send_alert_verification_email", return_value=True
+        ):
+            created = self.client.post(
+                "/api/alerts",
+                json={"city": "Київ", "channels": ["email"]},
+                headers=self._auth(token),
+            )
+        self.assertEqual(created.status_code, 202)
+        listed = self.client.get("/api/alerts", headers=self._auth(token))
+        alert_id = listed.get_json()["alerts"][0]["id"]
+        resumed = self.client.patch(
+            f"/api/alerts/{alert_id}",
+            json={"is_active": True},
+            headers=self._auth(token),
+        )
+        self.assertEqual(resumed.status_code, 409)
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE listing_alerts SET is_active = 1 WHERE id = ?",
+                (alert_id,),
+            )
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with mock.patch.object(
+                app_module, "send_alert_listing_email", return_value=True
+            ) as send_email:
+                stats = app_module.dispatch_saved_alerts(
+                    db, listing_id=self.target_id
+                )
+            state = db.execute(
+                "SELECT is_active FROM listing_alerts WHERE id = ?", (alert_id,)
+            ).fetchone()[0]
+        self.assertEqual(state, 1)
+        self.assertEqual(stats["checked"], 0)
+        send_email.assert_not_called()
+
     def test_authenticated_alert_cap_is_enforced_without_changing_ownership(self):
         with sqlite3.connect(TEST_DB) as db:
             db.executemany(
@@ -1679,6 +1727,54 @@ class TrustFeatureTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(state, (0, 1))
 
+    def test_consolidated_unsubscribe_deactivates_only_the_recipient_scope(self):
+        with sqlite3.connect(TEST_DB) as db:
+            filters = json.dumps({"city": "Київ", "channels": ["email"]})
+            cursors = [
+                db.execute(
+                    """
+                    INSERT INTO listing_alerts (
+                        email, email_normalized, name, filters, is_active
+                    ) VALUES (?, ?, ?, ?, 1)
+                    """,
+                    (email, email, name, filters),
+                )
+                for email, name in (
+                    ("grouped@example.test", "One"),
+                    ("grouped@example.test", "Two"),
+                    ("other@example.test", "Other"),
+                )
+            ]
+            grouped_ids = [cursors[0].lastrowid, cursors[1].lastrowid]
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with mock.patch.object(
+                app_module, "send_alert_listing_email", return_value=True
+            ) as send_email:
+                stats = app_module.dispatch_saved_alerts(
+                    db, listing_id=self.target_id
+                )
+        self.assertEqual(stats["email_sent"], 2)
+        grouped_call = next(
+            call for call in send_email.call_args_list
+            if call.args[0] == "grouped@example.test"
+        )
+        unsubscribe_url = grouped_call.kwargs["unsubscribe_url"]
+        token = unsubscribe_url.split("token=", 1)[1]
+        response = self.client.post(f"/api/alerts/unsubscribe?token={token}")
+        self.assertEqual(response.status_code, 200)
+        with sqlite3.connect(TEST_DB) as db:
+            grouped_states = db.execute(
+                "SELECT is_active FROM listing_alerts WHERE id IN (?, ?) ORDER BY id",
+                tuple(grouped_ids),
+            ).fetchall()
+            other_state = db.execute(
+                "SELECT is_active FROM listing_alerts WHERE email_normalized = ?",
+                ("other@example.test",),
+            ).fetchone()[0]
+        self.assertEqual(grouped_states, [(0,), (0,)])
+        self.assertEqual(other_state, 1)
+
     def test_alert_email_has_body_and_provider_unsubscribe_headers(self):
         with (
             mock.patch.object(app_module, "_email_provider_configured", return_value=True),
@@ -1744,8 +1840,8 @@ class TrustFeatureTests(unittest.TestCase):
             db.row_factory = sqlite3.Row
             with mock.patch.object(
                 app_module,
-                "send_alert_push_payload",
-                return_value=True,
+                "_deliver_alert_push_payload",
+                return_value=app_module._AlertPushOutcome(True, True),
             ) as send_push:
                 stats = app_module.dispatch_saved_alerts(
                     db,
@@ -2081,7 +2177,9 @@ class TrustFeatureTests(unittest.TestCase):
                     side_effect=[False, True],
                 ) as send_email,
                 mock.patch.object(
-                    app_module, "send_alert_push_payload", return_value=True
+                    app_module,
+                    "_deliver_alert_push_payload",
+                    return_value=app_module._AlertPushOutcome(True, True),
                 ) as send_push,
             ):
                 first = app_module.dispatch_saved_alerts(db, listing_id=self.target_id)
@@ -2096,6 +2194,108 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(third["email_sent"], 0)
         self.assertEqual(send_push.call_count, 1)
         self.assertEqual(send_email.call_count, 2)
+
+    def test_non_deliverable_push_does_not_stall_email_alert_cursor(self):
+        filters = json.dumps({"city": "Київ", "channels": ["email", "push"]})
+        with sqlite3.connect(TEST_DB) as db:
+            db.executemany(
+                """
+                INSERT INTO listing_alerts (
+                    user_id, email, email_normalized, name, filters, is_active
+                ) VALUES (?, ?, ?, ?, ?, 1)
+                """,
+                [
+                    (None, "anonymous@example.test", "anonymous@example.test", "Anon", filters),
+                    (self.owner_id, "owner@example.test", "owner@example.test", "Owner", filters),
+                ],
+            )
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with (
+                mock.patch.object(
+                    app_module, "send_alert_listing_email", return_value=True
+                ) as send_email,
+                mock.patch.object(
+                    app_module,
+                    "_deliver_alert_push_payload",
+                    return_value=app_module._AlertPushOutcome(False, False),
+                ) as send_push,
+            ):
+                first = app_module.dispatch_saved_alerts(db)
+                second = app_module.dispatch_saved_alerts(db)
+
+        self.assertEqual(first["email_sent"], 2)
+        self.assertEqual(second["email_sent"], 2)
+        self.assertEqual(send_email.call_count, 4)
+        self.assertEqual(send_push.call_count, 4)
+        first_ids = [call.args[2]["id"] for call in send_email.call_args_list[:2]]
+        second_ids = [call.args[2]["id"] for call in send_email.call_args_list[2:]]
+        self.assertEqual(first_ids, [self.target_id, self.target_id])
+        self.assertEqual(
+            second_ids,
+            [self.realtor_listing_id, self.realtor_listing_id],
+        )
+
+    def test_attempted_push_failure_retries_without_resending_email(self):
+        filters = json.dumps({"city": "Київ", "channels": ["email", "push"]})
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                """
+                INSERT INTO listing_alerts (
+                    user_id, email, email_normalized, name, filters, is_active
+                ) VALUES (?, 'owner@example.test', 'owner@example.test', 'Both', ?, 1)
+                """,
+                (self.owner_id, filters),
+            )
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with (
+                mock.patch.object(
+                    app_module, "send_alert_listing_email", return_value=True
+                ) as send_email,
+                mock.patch.object(
+                    app_module,
+                    "_deliver_alert_push_payload",
+                    side_effect=[
+                        app_module._AlertPushOutcome(True, False),
+                        app_module._AlertPushOutcome(True, True),
+                    ],
+                ) as send_push,
+            ):
+                first = app_module.dispatch_saved_alerts(
+                    db, listing_id=self.target_id
+                )
+                second = app_module.dispatch_saved_alerts(
+                    db, listing_id=self.target_id
+                )
+                third = app_module.dispatch_saved_alerts(
+                    db, listing_id=self.target_id
+                )
+
+        self.assertEqual(first["email_sent"], 1)
+        self.assertEqual(first["push_sent"], 0)
+        self.assertEqual(second["email_sent"], 0)
+        self.assertEqual(second["push_sent"], 1)
+        self.assertEqual(third["email_sent"], 0)
+        self.assertEqual(third["push_sent"], 0)
+        self.assertEqual(send_email.call_count, 1)
+        self.assertEqual(send_push.call_count, 2)
+
+    def test_webhook_push_is_attempted_without_firebase_device_tokens(self):
+        payload = {"device_tokens": [], "listing": {"id": self.target_id}}
+        with (
+            mock.patch.object(
+                app_module,
+                "ALERTS_PUSH_WEBHOOK_URL",
+                "https://push.example.test",
+            ),
+            mock.patch.object(
+                app_module, "_send_alert_push_webhook", return_value=True
+            ) as webhook,
+        ):
+            outcome = app_module._deliver_alert_push_payload(payload)
+        self.assertEqual(outcome, app_module._AlertPushOutcome(True, True))
+        webhook.assert_called_once_with(payload)
 
     def test_owner_confirms_listing_freshness_and_reminders_are_throttled(self):
         stale_at = "2026-01-01 00:00:00"

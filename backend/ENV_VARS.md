@@ -191,11 +191,20 @@ consolidated into one email, with a maximum of ten listing emails per recipient
 per run; deferred matches keep their cursor and are eligible on the next run.
 Listing candidates are also scanned in bounded pages, so a non-match in the first
 page cannot permanently hide later matches. Per-channel delivery receipts prevent
-a successful push or email from being repeated when the other channel fails;
-delivery failure leaves the alert cursor unchanged. Alert emails include a signed,
+a successful push or email from being repeated when the other channel fails.
+Push with no active device token or configured delivery path is explicitly skipped
+and does not block email cursor progress; an attempted provider failure still
+retries. Delivery failure leaves the alert cursor unchanged. Alert emails include a signed,
 versioned unsubscribe link that works without login and does not use the numeric
 alert ID as authority. SendGrid and SMTP both receive `List-Unsubscribe` and
 one-click `List-Unsubscribe-Post` headers.
+
+An account cannot resume a pending alert until either the subscription token or
+the account email has been verified, and dispatch independently excludes any
+non-legacy pending row without verified ownership. Because duplicate matching
+alerts are consolidated into one recipient email, its one-click unsubscribe
+deactivates all alerts for that normalized recipient address atomically; alerts
+for every other address are unaffected.
 
 The startup migration adds nullable normalized-email, idempotency, verification,
 scan-cursor, and unsubscribe-version columns, a channel-delivery receipt table,

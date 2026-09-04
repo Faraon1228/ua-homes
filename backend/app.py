@@ -3697,6 +3697,11 @@ class _FirebasePushResult(NamedTuple):
     invalid_tokens: tuple[str, ...] = ()
 
 
+class _AlertPushOutcome(NamedTuple):
+    attempted: bool
+    delivered: bool
+
+
 def _get_firebase_app():
     global _firebase_app, _firebase_init_failed
     if not FIREBASE_SERVICE_ACCOUNT_BASE64 or _firebase_init_failed:
@@ -3883,19 +3888,38 @@ def _send_alert_push_webhook(payload: dict) -> bool:
         return False
 
 
-def send_alert_push_payload(payload: dict, *, db=None) -> bool:
+def _deliver_alert_push_payload(payload: dict, *, db=None) -> _AlertPushOutcome:
+    tokens = [
+        token
+        for token in payload.get("device_tokens", [])
+        if isinstance(token, str) and token
+    ]
+    if not tokens:
+        if ALERTS_PUSH_WEBHOOK_URL:
+            return _AlertPushOutcome(
+                attempted=True,
+                delivered=_send_alert_push_webhook(payload),
+            )
+        return _AlertPushOutcome(attempted=False, delivered=False)
     firebase_result = _send_alert_push_via_firebase(payload)
     if db is not None:
         _deactivate_push_tokens(db, firebase_result.invalid_tokens)
     if firebase_result.attempted:
-        return firebase_result.success
+        return _AlertPushOutcome(attempted=True, delivered=firebase_result.success)
     if ALERTS_PUSH_WEBHOOK_URL:
         if firebase_result.configured:
             app.logger.warning(
                 "Firebase push was unavailable before delivery; using configured webhook fallback"
             )
-        return _send_alert_push_webhook(payload)
-    return False
+        return _AlertPushOutcome(
+            attempted=True,
+            delivered=_send_alert_push_webhook(payload),
+        )
+    return _AlertPushOutcome(attempted=False, delivered=False)
+
+
+def send_alert_push_payload(payload: dict, *, db=None) -> bool:
+    return _deliver_alert_push_payload(payload, db=db).delivered
 
 
 def _listing_matches_alert_filters(listing: dict, filters: dict) -> bool:
@@ -4000,12 +4024,18 @@ def dispatch_saved_alerts(
     while True:
         alerts = db.execute(
             """
-            SELECT id, user_id, email, email_normalized, name, filters,
-                   last_sent_at, last_sent_listing_id, last_scanned_at,
-                   last_scanned_listing_id, unsubscribe_version
-            FROM listing_alerts
-            WHERE is_active = 1 AND id > ?
-            ORDER BY id ASC
+            SELECT la.id, la.user_id, la.email, la.email_normalized, la.name, la.filters,
+                   la.last_sent_at, la.last_sent_listing_id, la.last_scanned_at,
+                   la.last_scanned_listing_id, la.unsubscribe_version
+            FROM listing_alerts AS la
+            LEFT JOIN users AS u ON u.id = la.user_id
+            WHERE la.is_active = 1 AND la.id > ?
+              AND (
+                la.subscription_key IS NULL
+                OR la.verified_at IS NOT NULL
+                OR (la.user_id IS NOT NULL AND u.email_verified = 1)
+              )
+            ORDER BY la.id ASC
             LIMIT ?
             """,
             (last_alert_id, ALERT_DISPATCH_BATCH_SIZE),
@@ -4106,7 +4136,7 @@ def dispatch_saved_alerts(
                             (alert["user_id"],),
                         ).fetchall()
                     ]
-                push_ok = True if dry_run else send_alert_push_payload(
+                push_outcome = _AlertPushOutcome(attempted=True, delivered=True) if dry_run else _deliver_alert_push_payload(
                     {
                         "event": "saved_alert_price_change" if event_type == "price_change" else "saved_alert_match",
                         "alert_id": alert["id"],
@@ -4129,12 +4159,20 @@ def dispatch_saved_alerts(
                     },
                     db=db,
                 )
-                if push_ok:
+                if push_outcome.delivered:
                     push_sent += 1
                     if not dry_run:
                         record_delivery(
                             alert["id"], candidate_listing["id"], "push", receipt_event_key
                         )
+                elif not push_outcome.attempted:
+                    channels = [channel for channel in channels if channel != "push"]
+                    candidates[-1] = (
+                        alert,
+                        candidate_listing,
+                        channels,
+                        receipt_event_key,
+                    )
 
     recipient_counts: dict[str, int] = {}
     for (recipient, _listing_id, receipt_event_key), grouped in email_groups.items():
@@ -7620,12 +7658,26 @@ def update_listing_alert(alert_id: int):
     data = _parse_json_payload()
     if "is_active" not in data:
         return jsonify(error="is_active is required"), 422
+    requested_active = bool(data["is_active"])
+    if requested_active:
+        activation_allowed = db.execute(
+            """
+            SELECT 1
+            FROM listing_alerts AS la
+            JOIN users AS u ON u.id = la.user_id
+            WHERE la.id = ? AND la.user_id = ?
+              AND (la.verified_at IS NOT NULL OR u.email_verified = 1)
+            """,
+            (alert_id, g.user_id),
+        ).fetchone()
+        if not activation_allowed:
+            return jsonify(error="Підтвердіть email перед активацією сповіщення"), 409
     db.execute(
         "UPDATE listing_alerts SET is_active = ? WHERE id = ?",
-        (int(bool(data["is_active"])), alert_id),
+        (int(requested_active), alert_id),
     )
     db.commit()
-    return jsonify(ok=True, is_active=bool(data["is_active"]))
+    return jsonify(ok=True, is_active=requested_active)
 
 
 @app.route("/api/alerts", methods=["POST"])
@@ -7838,16 +7890,25 @@ def unsubscribe_listing_alert():
     db = get_db()
     if parsed:
         alert_id, version = parsed
-        db.execute(
+        anchor = db.execute(
+            """
+            SELECT email_normalized
+            FROM listing_alerts
+            WHERE id = ? AND unsubscribe_version = ?
+            """,
+            (alert_id, version),
+        ).fetchone()
+        if anchor:
+            db.execute(
             """
             UPDATE listing_alerts
             SET is_active = 0, verification_token_hash = NULL,
                 verification_expires_at = NULL,
                 unsubscribe_version = unsubscribe_version + 1
-            WHERE id = ? AND unsubscribe_version = ?
+            WHERE email_normalized = ?
             """,
-            (alert_id, version),
-        )
+                (anchor["email_normalized"],),
+            )
         db.commit()
     if request.method == "POST":
         return jsonify(ok=True)
