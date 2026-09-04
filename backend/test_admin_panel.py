@@ -9,6 +9,7 @@ import bcrypt
 from backend.test_trust_features import TEST_DB, app_module
 
 admin_routes_module = importlib.import_module("admin_routes")
+system_status_module = importlib.import_module("system_status")
 
 
 def setUpModule():
@@ -24,7 +25,8 @@ class AdminPanelTests(unittest.TestCase):
         with sqlite3.connect(TEST_DB) as db:
             db.execute("PRAGMA foreign_keys=ON")
             for table in (
-                "admin_audit_log", "listing_reports", "listing_change_history",
+                "admin_audit_log", "system_incidents", "system_status_snapshots",
+                "listing_reports", "listing_change_history",
                 "moderation_log", "lead_requests", "listing_images", "reviews",
                 "listings", "agency_profiles", "users",
             ):
@@ -122,6 +124,100 @@ class AdminPanelTests(unittest.TestCase):
             ).status_code,
             200,
         )
+
+    def test_system_status_snapshot_refresh_is_admin_only_and_audited(self):
+        health_path = "/api/admin/system/health"
+        refresh_path = f"{health_path}/refresh"
+        self.assertEqual(self.client.get(health_path).status_code, 401)
+        self.assertEqual(
+            self.client.post(refresh_path, headers=self._auth(self.moderator_token)).status_code,
+            403,
+        )
+        refreshed = self.client.post(refresh_path, headers=self._auth(self.admin_token))
+        self.assertEqual(refreshed.status_code, 200)
+        payload = refreshed.get_json()
+        self.assertEqual(payload["contract_version"], 1)
+        self.assertIn(payload["overall_status"], {"ok", "degraded", "unknown", "down"})
+        self.assertIn("database", payload["components"])
+        self.assertNotIn("SENTRY_API_TOKEN", str(payload))
+        self.assertEqual(
+            self.client.get(health_path, headers=self._auth(self.admin_token)).status_code,
+            200,
+        )
+        with sqlite3.connect(TEST_DB) as db:
+            action = db.execute(
+                "SELECT action FROM admin_audit_log ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+        self.assertIn("post:", action)
+
+    def test_operations_status_refresh_requires_constant_time_shared_key(self):
+        path = "/api/operations/system-status/refresh"
+        self.assertEqual(self.client.post(path).status_code, 401)
+        with mock.patch.dict(os.environ, {"UA_HOMES_STATUS_REFRESH_KEY": "shared-status-key"}):
+            self.assertEqual(
+                self.client.post(path, headers={"Authorization": "Bearer invalid"}).status_code,
+                401,
+            )
+            response = self.client.post(
+                path, headers={"Authorization": "Bearer shared-status-key"}
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("shared-status-key", response.get_data(as_text=True))
+
+    def test_status_provider_payloads_are_scrubbed_and_allowlisted(self):
+        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+        sentry_payload = [{
+            "title": "Failure for person@example.test",
+            "type": "RuntimeError",
+            "firstSeen": now,
+            "project": {"slug": "production"},
+            "permalink": "https://evil.example/issue/1?token=leak",
+        }]
+        with mock.patch.dict(os.environ, {
+            "SENTRY_API_TOKEN": "provider-token",
+            "SENTRY_ORG": "ua-homes",
+            "SENTRY_STATUS_PROJECTS": "production",
+        }, clear=False), mock.patch.object(
+            system_status_module, "_http_json", return_value=(200, sentry_payload, 1)
+        ):
+            component = system_status_module._sentry()
+        self.assertEqual(component["critical_new_count"], 1)
+        self.assertEqual(component["recent_issues"][0]["url"], None)
+        self.assertNotIn("person@example.test", component["recent_issues"][0]["title"])
+        self.assertNotIn("provider-token", str(component))
+
+    def test_stale_status_snapshot_is_not_reported_as_fresh(self):
+        system_status_module._CACHE.clear()
+        stale = {
+            "contract_version": 1, "overall_status": "ok", "generated_at": "2000-01-01T00:00:00+00:00",
+            "stale": False, "components": {}, "production_version": {}, "notification_channels": {},
+        }
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "INSERT INTO system_status_snapshots (generated_at, overall_status, snapshot_json, refresh_duration_ms) VALUES (?, ?, ?, ?)",
+                (stale["generated_at"], "ok", __import__("json").dumps(stale), 1),
+            )
+            db.commit()
+        database = sqlite3.connect(TEST_DB)
+        database.row_factory = sqlite3.Row
+        snapshot = system_status_module.current_snapshot(database)
+        database.close()
+        self.assertTrue(snapshot["stale"])
+        self.assertEqual(snapshot["overall_status"], "unknown")
+
+    def test_push_status_accepts_legacy_naive_dispatch_timestamp(self):
+        database = sqlite3.connect(TEST_DB)
+        database.row_factory = sqlite3.Row
+        database.execute(
+            "INSERT INTO alert_dispatch_runs (trigger_type, success, started_at, finished_at) VALUES (?, ?, datetime('now'), datetime('now'))",
+            ("test", 1),
+        )
+        database.commit()
+        with mock.patch.dict(os.environ, {"UA_HOMES_FIREBASE_SERVICE_ACCOUNT_BASE64": "configured"}, clear=False):
+            component = system_status_module._push(database)
+        database.close()
+        self.assertEqual(component["status"], "ok")
+        self.assertFalse(component["stale"])
 
     def test_staff_cookie_session_csrf_origin_logout_and_generic_login(self):
         for credentials in (
