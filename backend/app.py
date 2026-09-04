@@ -41,10 +41,11 @@ import jwt
 from flask import Flask, Response, g, jsonify, request, send_file
 from flask_cors import CORS
 from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
+from werkzeug.exceptions import RequestEntityTooLarge
 
 if __package__:
     from .configuration import load_settings, production_secret_required, resolve_secret
+    from .client_identity import parse_trusted_proxy_cidrs, request_client_ip
     from .monitoring import bind_request_context, initialize_sentry, monitoring_state
     from .security_policy import (
         SECURITY_HEADERS,
@@ -55,6 +56,7 @@ if __package__:
     from .time_helpers import legacy_utc_now
 else:
     from configuration import load_settings, production_secret_required, resolve_secret
+    from client_identity import parse_trusted_proxy_cidrs, request_client_ip
     from monitoring import bind_request_context, initialize_sentry, monitoring_state
     from security_policy import (
         SECURITY_HEADERS,
@@ -107,6 +109,7 @@ JWT_EXP_H  = 72
 
 # Redis DSN — if set, rate-limiter stores counters in Redis (safe for multi-worker).
 REDIS_URL = _SETTINGS.redis_url
+TRUSTED_PROXY_NETWORKS = parse_trusted_proxy_cidrs(_SETTINGS.trusted_proxy_cidrs)
 _REDIS_CACHE = None
 _REDIS_CACHE_DISABLED = False
 _REPORT_CACHE: dict[str, tuple[float, object]] = {}
@@ -1337,13 +1340,31 @@ if REDIS_URL and not REDIS_URL.startswith("redis://"):
     _limiter_storage = REDIS_URL  # accept full DSN as-is
 
 limiter = Limiter(
-    get_remote_address,
+    lambda: request_client_ip(request, TRUSTED_PROXY_NETWORKS),
     app=app,
     # Public browsing endpoints: generous — real users never hit this.
     # Sensitive mutation endpoints keep tighter per-route limits below.
     default_limits=["1000 per minute"],
     storage_uri=_limiter_storage,
 )
+app.config["MAX_CONTENT_LENGTH"] = _SETTINGS.max_content_length
+
+
+@app.before_request
+def enforce_declared_request_size():
+    if (
+        request.content_length is not None
+        and request.content_length > app.config["MAX_CONTENT_LENGTH"]
+    ):
+        raise RequestEntityTooLarge()
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def request_too_large(_error):
+    return jsonify(
+        error="Тіло запиту перевищує дозволений розмір",
+        code="request_too_large",
+    ), 413
 
 ALERTS_DISPATCH_KEY = os.environ.get("UA_HOMES_ALERTS_DISPATCH_KEY", "").strip()
 ALERTS_PUSH_WEBHOOK_URL = os.environ.get("UA_HOMES_ALERTS_PUSH_WEBHOOK_URL", "").strip()
@@ -6179,6 +6200,7 @@ def get_listing(lid: int):
 
 
 @app.route("/api/listings/<int:lid>/view", methods=["POST"])
+@limiter.limit("60 per minute")
 def increment_view(lid: int):
     db = get_db()
     db.execute("UPDATE listings SET views = views + 1 WHERE id = ?", (lid,))
@@ -7742,6 +7764,7 @@ def analytics_summary():
 
 
 @app.route("/api/analytics/lead-funnel", methods=["POST"])
+@limiter.limit("120 per minute")
 def analytics_lead_funnel_event():
     db = get_db()
     data = _parse_json_payload()
@@ -9913,6 +9936,8 @@ def health():
             "s3" if S3_BUCKET else "cloudinary" if CLOUDINARY_URL else "unconfigured"
         ),
         distributed_rate_limits=bool(REDIS_URL),
+        trusted_proxy_forwarding=bool(TRUSTED_PROXY_NETWORKS),
+        max_request_bytes=app.config["MAX_CONTENT_LENGTH"],
         error_monitoring=SENTRY_ENABLED,
         monitoring=monitoring_state(),
         maintenance_mode=MAINTENANCE_MODE,
