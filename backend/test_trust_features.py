@@ -747,6 +747,38 @@ class TrustFeatureTests(unittest.TestCase):
             normal_page,
         )
 
+    def test_seo_json_ld_cannot_be_terminated_by_listing_data(self):
+        title = "Attack </script><script>alert(1)</script>\u2028line\u2029paragraph"
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE listings SET title = ? WHERE id = ?",
+                (title, self.target_id),
+            )
+            db.commit()
+
+        page = self.client.get("/seo/%D0%9A%D0%B8%D1%97%D0%B2").get_data(as_text=True)
+        json_ld_blocks = re.findall(
+            r'<script type="application/ld\+json">(.*?)</script>',
+            page,
+            flags=re.DOTALL,
+        )
+
+        self.assertEqual(len(json_ld_blocks), 6)
+        self.assertEqual(page.count('<script type="application/ld+json">'), 6)
+        self.assertEqual(page.count("</script>"), 6)
+        self.assertNotIn("</script><script>alert(1)</script>", page)
+        self.assertNotIn("\u2028", "".join(json_ld_blocks))
+        self.assertNotIn("\u2029", "".join(json_ld_blocks))
+
+        parsed_blocks = [json.loads(block) for block in json_ld_blocks]
+        collection_page = next(
+            block for block in parsed_blocks if block.get("@type") == "CollectionPage"
+        )
+        self.assertEqual(
+            collection_page["mainEntity"]["itemListElement"][0]["name"],
+            title,
+        )
+
     def test_seller_cannot_spoof_agency_attribution(self):
         response = self.client.patch(
             f"/api/listings/{self.target_id}",

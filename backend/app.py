@@ -8791,12 +8791,12 @@ def _render_seo_page(city: str, district: str | None):
   <meta name="twitter:title" content="Купити нерухомість — {escape(title_suffix)} | UA-Dim" />
   <meta name="twitter:description" content="Актуальні оголошення в локації {escape(title_suffix)}: {total_count} об'єктів, середня ціна ${avg_price:,}. Сторінка {page} з {total_pages}." />
   <meta name="twitter:image" content="{og_image}" />
-  <script type="application/ld+json">{json.dumps(organization_json_ld, ensure_ascii=False)}</script>
-  <script type="application/ld+json">{json.dumps(webpage_json_ld, ensure_ascii=False)}</script>
-  <script type="application/ld+json">{json.dumps(page_json_ld, ensure_ascii=False)}</script>
-  <script type="application/ld+json">{json.dumps(city_dataset_json_ld, ensure_ascii=False)}</script>
-  <script type="application/ld+json">{json.dumps(breadcrumb_json_ld, ensure_ascii=False)}</script>
-  <script type="application/ld+json">{json.dumps(faq_json_ld, ensure_ascii=False)}</script>
+  <script type="application/ld+json">{json_for_html_script(organization_json_ld)}</script>
+  <script type="application/ld+json">{json_for_html_script(webpage_json_ld)}</script>
+  <script type="application/ld+json">{json_for_html_script(page_json_ld)}</script>
+  <script type="application/ld+json">{json_for_html_script(city_dataset_json_ld)}</script>
+  <script type="application/ld+json">{json_for_html_script(breadcrumb_json_ld)}</script>
+  <script type="application/ld+json">{json_for_html_script(faq_json_ld)}</script>
   <style>
     body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:900px;margin:0 auto;padding:24px;line-height:1.55;color:#0f172a}}
     a{{color:#2563eb;text-decoration:none}} a:hover{{text-decoration:underline}}
