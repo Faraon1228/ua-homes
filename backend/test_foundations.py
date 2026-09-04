@@ -89,16 +89,21 @@ class ConfigurationTests(unittest.TestCase):
         )
 
     def test_production_requires_redis_but_development_does_not(self):
-        with self.assertRaisesRegex(RuntimeError, "REDIS_URL must be set"):
-            load_settings(
-                "/tmp",
-                {
-                    "RAILWAY_ENVIRONMENT_NAME": "production",
-                    "UA_HOMES_SECRET": "configured",
-                },
-            )
+        production_environments = (
+            {"RAILWAY_ENVIRONMENT_NAME": "production"},
+            {"DATABASE_URL": "postgres://database"},
+            {"UA_HOMES_PUBLIC_URL": "https://ua-dim.com"},
+        )
+        for environment in production_environments:
+            with self.subTest(environment=environment):
+                with self.assertRaisesRegex(RuntimeError, "REDIS_URL must be set"):
+                    load_settings("/tmp", environment)
         settings = load_settings("/tmp", {"FLASK_ENV": "development"})
         self.assertIsNone(settings.redis_url)
+        local_site_settings = load_settings(
+            "/tmp", {"UA_HOMES_PUBLIC_URL": "http://localhost:5050"}
+        )
+        self.assertIsNone(local_site_settings.redis_url)
 
     def test_rejects_unsafe_request_size_configuration(self):
         with self.assertRaisesRegex(RuntimeError, "must be at least"):

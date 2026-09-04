@@ -111,6 +111,12 @@ Production services fail startup when `REDIS_URL` is absent, preventing
 worker-local counters from appearing consistent when Gunicorn runs multiple workers.
 Local development and tests continue to use memory storage.
 
+**Rollout gate:** do not merge or deploy this change until production
+`REDIS_URL` exists and has been verified from the Railway backend service. A
+deployment with `DATABASE_URL`, a non-local public URL, or an explicit production
+environment is treated as production and intentionally refuses to start without
+Redis.
+
 Do not put public client networks in `UA_HOMES_TRUSTED_PROXY_CIDRS`. Populate it
 only with the immediate Railway ingress network and any proxy networks that can
 appear on the right side of `X-Forwarded-For`, based on observed Railway request

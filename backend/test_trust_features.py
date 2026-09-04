@@ -13,6 +13,8 @@ from unittest import mock
 
 import bcrypt
 
+from backend.client_identity import parse_trusted_proxy_cidrs
+
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if BACKEND_DIR not in sys.path:
@@ -129,6 +131,61 @@ class TrustFeatureTests(unittest.TestCase):
             for _ in range(121)
         ]
         self.assertEqual(funnel_statuses[-1], 429)
+
+    def test_limiter_uses_trusted_proxy_chain_and_rejects_spoofed_xff(self):
+        trusted_networks = parse_trusted_proxy_cidrs(
+            "10.0.0.0/8,192.0.2.0/24"
+        )
+        login_payload = {
+            "email": "missing@example.test",
+            "password": "not-the-password",
+        }
+        trusted_proxy_environment = {"REMOTE_ADDR": "10.2.3.4"}
+
+        with mock.patch.object(
+            app_module, "TRUSTED_PROXY_NETWORKS", trusted_networks
+        ):
+            client_a_headers = {
+                "X-Forwarded-For": "198.51.100.10, 192.0.2.8"
+            }
+            for _ in range(20):
+                response = self.client.post(
+                    "/api/auth/login",
+                    json=login_payload,
+                    headers=client_a_headers,
+                    environ_overrides=trusted_proxy_environment,
+                )
+                self.assertEqual(response.status_code, 401)
+            self.assertEqual(
+                self.client.post(
+                    "/api/auth/login",
+                    json=login_payload,
+                    headers=client_a_headers,
+                    environ_overrides=trusted_proxy_environment,
+                ).status_code,
+                429,
+            )
+            self.assertEqual(
+                self.client.post(
+                    "/api/auth/login",
+                    json=login_payload,
+                    headers={
+                        "X-Forwarded-For": "198.51.100.11, 192.0.2.8"
+                    },
+                    environ_overrides=trusted_proxy_environment,
+                ).status_code,
+                401,
+            )
+
+            app_module.limiter.reset()
+            for index in range(21):
+                response = self.client.post(
+                    "/api/auth/login",
+                    json=login_payload,
+                    headers={"X-Forwarded-For": f"198.51.100.{index + 1}"},
+                    environ_overrides={"REMOTE_ADDR": "203.0.113.9"},
+                )
+            self.assertEqual(response.status_code, 429)
 
     def test_postgres_migration_covers_all_application_tables(self):
         with sqlite3.connect(TEST_DB) as database:

@@ -43,6 +43,9 @@ def load_settings(
         or os.path.join(base_dir, "ua_homes.db")
     )
     database_url = optional_value(environment, "DATABASE_URL")
+    public_site_url = environment.get(
+        "UA_HOMES_PUBLIC_URL", ""
+    ).strip().rstrip("/")
     if parse_bool(environment.get("UA_HOMES_REQUIRE_POSTGRES")) and not database_url:
         raise RuntimeError(
             "DATABASE_URL must be set when UA_HOMES_REQUIRE_POSTGRES is enabled."
@@ -61,14 +64,10 @@ def load_settings(
         )
 
     redis_url = optional_value(environment, "REDIS_URL")
-    runtime_name = (
-        environment.get("RAILWAY_ENVIRONMENT_NAME")
-        or environment.get("RAILWAY_ENVIRONMENT")
-        or environment.get("FLASK_ENV")
-        or environment.get("ENVIRONMENT")
-        or ""
-    ).strip().lower()
-    if runtime_name in {"production", "prod"} and not redis_url:
+    if (
+        production_secret_required(database_url, public_site_url, environment)
+        and not redis_url
+    ):
         raise RuntimeError(
             "REDIS_URL must be set for production deployments."
         )
@@ -77,7 +76,7 @@ def load_settings(
         db_path=db_path,
         database_url=database_url,
         maintenance_mode=parse_bool(environment.get("UA_HOMES_MAINTENANCE_MODE")),
-        public_site_url=environment.get("UA_HOMES_PUBLIC_URL", "").strip().rstrip("/"),
+        public_site_url=public_site_url,
         api_origin=environment.get("UA_HOMES_API", "").strip().rstrip("/"),
         bootstrap_admin_email=environment.get(
             "UA_HOMES_BOOTSTRAP_ADMIN_EMAIL", ""
