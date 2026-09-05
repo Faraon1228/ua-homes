@@ -146,6 +146,13 @@ Presigned Cloudinary/S3 uploads remain direct and are not carried through Flask.
 Production email verification now returns a clear 503 if neither SendGrid nor SMTP is configured, so the live site will not silently pretend messages were sent.
 
 Saved alerts delivery uses the same email provider settings (`SENDGRID_API_KEY` or SMTP vars).
+Anonymous saved alerts use double opt-in: creation stores an inactive row and only
+a SHA-256 verification-token hash, then emails a 24-hour activation link. Repeated
+requests for the same normalized email and semantic filter do not create another
+row, and verification mail is cooled down for 30 minutes. Anonymous addresses are
+limited to five active/pending alerts; verified accounts can create up to twenty.
+The public creation response intentionally does not reveal whether an address or
+subscription already exists.
 
 ## Saved alerts delivery / dispatch
 
@@ -177,6 +184,41 @@ secrets, and logs; rotate it through Railway when required.
 Dispatch endpoints:
 - `POST/GET /api/alerts/dispatch` — run matching + delivery (`listing_id`, `dry_run`, `trigger` supported).
 - `GET /api/alerts/dispatch/health` — last run, 24h summary, recent history, stale flag.
+
+Dispatch scans active subscriptions in 200-row keyset batches instead of stopping
+at the newest 500. Matches for the same normalized recipient and listing are
+consolidated into one email, with a maximum of ten listing emails per recipient
+per run; deferred matches keep their cursor and are eligible on the next run.
+Listing candidates are also scanned in bounded pages, so a non-match in the first
+page cannot permanently hide later matches. Per-channel delivery receipts prevent
+a successful push or email from being repeated when the other channel fails.
+Push with no active device token or configured delivery path is explicitly skipped
+and does not block email cursor progress; an attempted provider failure still
+retries. Delivery failure leaves the alert cursor unchanged. Alert emails include a signed,
+versioned unsubscribe link that works without login and does not use the numeric
+alert ID as authority. SendGrid and SMTP both receive `List-Unsubscribe` and
+one-click `List-Unsubscribe-Post` headers.
+
+An account cannot resume a pending alert until either the subscription token or
+the account email has been verified, and dispatch independently excludes any
+non-legacy pending row without verified ownership. Because duplicate matching
+alerts are consolidated into one recipient email, its one-click unsubscribe
+deactivates all alerts for that normalized recipient address atomically; alerts
+for every other address are unaffected.
+
+The unsubscribe URL in the message body uses a non-mutating `GET` confirmation
+page so mail scanners and link previewers cannot disable alerts. The confirmation
+form submits the signed capability token by `POST`; provider one-click requests
+also use `POST` through `List-Unsubscribe-Post`. No login or cookie-based CSRF
+token is required because the unguessable signed capability is the authorization,
+and POST responses remain non-enumerating and replay-safe.
+
+The startup migration adds nullable normalized-email, idempotency, verification,
+scan-cursor, and unsubscribe-version columns, a channel-delivery receipt table,
+and supporting indexes. Existing active anonymous alerts
+remain active; their next email receives a signed unsubscribe link. Existing
+duplicate legacy rows are not merged automatically, but dispatch consolidation
+prevents them from multiplying a recipient/listing email.
 
 Auth for both endpoints:
 - `X-Alerts-Dispatch-Key: <UA_HOMES_ALERTS_DISPATCH_KEY>` **or** admin bearer token.

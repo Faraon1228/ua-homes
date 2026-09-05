@@ -49,6 +49,7 @@ class TrustFeatureTests(unittest.TestCase):
                 "lead_requests",
                 "push_devices",
                 "user_favorites",
+                "alert_delivery_receipts",
                 "listing_alerts",
                 "premium_orders",
                 "listing_reports",
@@ -221,7 +222,7 @@ class TrustFeatureTests(unittest.TestCase):
     @staticmethod
     def _insert_user(db, name, email, account_type, role="user"):
         cursor = db.execute(
-            "INSERT INTO users (name, email, password, role, account_type) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO users (name, email, password, role, account_type, email_verified) VALUES (?, ?, ?, ?, ?, 1)",
             (name, email, "hash", role, account_type),
         )
         return cursor.lastrowid
@@ -1497,6 +1498,369 @@ class TrustFeatureTests(unittest.TestCase):
             )
         )
 
+    def test_anonymous_alert_requires_single_use_double_opt_in_and_cools_down(self):
+        payload = {
+            "email": "  Person@Example.TEST ",
+            "name": "Kyiv",
+            "city": "Київ",
+        }
+        with mock.patch.object(
+            app_module, "send_alert_verification_email", return_value=True
+        ) as send_verification:
+            created = self.client.post("/api/alerts", json=payload)
+            duplicate = self.client.post("/api/alerts", json=payload)
+
+        self.assertEqual(created.status_code, 202)
+        self.assertEqual(created.get_json(), duplicate.get_json())
+        self.assertEqual(created.get_json(), {"ok": True, "status": "pending"})
+        send_verification.assert_called_once()
+        raw_token = send_verification.call_args.args[1]
+        with sqlite3.connect(TEST_DB) as db:
+            row = db.execute(
+                """
+                SELECT email, email_normalized, is_active, verification_token_hash,
+                       verification_expires_at
+                FROM listing_alerts WHERE user_id IS NULL
+                """
+            ).fetchone()
+        self.assertEqual(row[0], "person@example.test")
+        self.assertEqual(row[1], "person@example.test")
+        self.assertEqual(row[2], 0)
+        self.assertNotEqual(row[3], raw_token)
+        self.assertEqual(row[3], app_module._token_hash(raw_token))
+
+        activated = self.client.get(f"/api/alerts/verify?token={raw_token}")
+        replay = self.client.get(f"/api/alerts/verify?token={raw_token}")
+        self.assertEqual(activated.status_code, 200)
+        self.assertEqual(replay.status_code, 200)
+        with sqlite3.connect(TEST_DB) as db:
+            state = db.execute(
+                "SELECT is_active, verification_token_hash FROM listing_alerts"
+                " WHERE user_id IS NULL"
+            ).fetchone()
+        self.assertEqual(state, (1, None))
+
+    def test_unverified_account_alert_is_bound_to_account_email_and_pending(self):
+        with sqlite3.connect(TEST_DB) as db:
+            user_id = self._insert_user(
+                db, "Unverified", "unverified@example.test", "owner"
+            )
+            db.execute(
+                "UPDATE users SET email_verified = 0 WHERE id = ?", (user_id,)
+            )
+            db.commit()
+        token = app_module.make_token(user_id, "unverified@example.test")
+        with mock.patch.object(
+            app_module, "send_alert_verification_email", return_value=True
+        ):
+            response = self.client.post(
+                "/api/alerts",
+                json={"email": "victim@example.test", "city": "Київ"},
+                headers=self._auth(token),
+            )
+        self.assertEqual(response.status_code, 202)
+        with sqlite3.connect(TEST_DB) as db:
+            row = db.execute(
+                "SELECT user_id, email, is_active FROM listing_alerts WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        self.assertEqual(row, (user_id, "unverified@example.test", 0))
+
+    def test_unverified_account_cannot_patch_pending_alert_active_or_dispatch_it(self):
+        with mock.patch.object(app_module, "send_email_verify", return_value=True):
+            registered = self.client.post(
+                "/api/auth/register",
+                json={
+                    "name": "Pending Owner",
+                    "email": "pending-owner@example.test",
+                    "password": "password123",
+                },
+            )
+        token = registered.get_json()["token"]
+        with mock.patch.object(
+            app_module, "send_alert_verification_email", return_value=True
+        ):
+            created = self.client.post(
+                "/api/alerts",
+                json={"city": "Київ", "channels": ["email"]},
+                headers=self._auth(token),
+            )
+        self.assertEqual(created.status_code, 202)
+        listed = self.client.get("/api/alerts", headers=self._auth(token))
+        alert_id = listed.get_json()["alerts"][0]["id"]
+        resumed = self.client.patch(
+            f"/api/alerts/{alert_id}",
+            json={"is_active": True},
+            headers=self._auth(token),
+        )
+        self.assertEqual(resumed.status_code, 409)
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE listing_alerts SET is_active = 1 WHERE id = ?",
+                (alert_id,),
+            )
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with mock.patch.object(
+                app_module, "send_alert_listing_email", return_value=True
+            ) as send_email:
+                stats = app_module.dispatch_saved_alerts(
+                    db, listing_id=self.target_id
+                )
+            state = db.execute(
+                "SELECT is_active FROM listing_alerts WHERE id = ?", (alert_id,)
+            ).fetchone()[0]
+        self.assertEqual(state, 1)
+        self.assertEqual(stats["checked"], 0)
+        send_email.assert_not_called()
+
+    def test_authenticated_alert_cap_is_enforced_without_changing_ownership(self):
+        with sqlite3.connect(TEST_DB) as db:
+            db.executemany(
+                """
+                INSERT INTO listing_alerts (
+                    user_id, email, email_normalized, name, filters, is_active,
+                    subscription_key
+                ) VALUES (?, 'owner@example.test', 'owner@example.test', ?, ?, 1, ?)
+                """,
+                [
+                    (
+                        self.owner_id,
+                        f"Alert {index}",
+                        json.dumps({"city": f"City {index}"}),
+                        f"existing-key-{index}",
+                    )
+                    for index in range(app_module.ALERT_USER_CAP)
+                ],
+            )
+            db.commit()
+        response = self.client.post(
+            "/api/alerts",
+            json={"email": "victim@example.test", "city": "Another city"},
+            headers=self._auth(self.owner_token),
+        )
+        self.assertEqual(response.status_code, 409)
+        with sqlite3.connect(TEST_DB) as db:
+            victim_rows = db.execute(
+                "SELECT COUNT(*) FROM listing_alerts WHERE email = 'victim@example.test'"
+            ).fetchone()[0]
+        self.assertEqual(victim_rows, 0)
+
+    def test_anonymous_alert_expiry_caps_and_non_enumerating_responses(self):
+        base_payload = {"email": "victim@example.test", "city": "Київ"}
+        with mock.patch.object(
+            app_module, "send_alert_verification_email", return_value=True
+        ) as send_verification:
+            first = self.client.post(
+                "/api/alerts",
+                json={**base_payload, "district": "expired"},
+                environ_overrides={"REMOTE_ADDR": "198.51.100.1"},
+            )
+            expired_token = send_verification.call_args.args[1]
+            with sqlite3.connect(TEST_DB) as db:
+                db.execute(
+                    "UPDATE listing_alerts SET verification_expires_at = '2000-01-01 00:00:00'"
+                    " WHERE email_normalized = ?",
+                    ("victim@example.test",),
+                )
+                db.commit()
+            expired = self.client.get(f"/api/alerts/verify?token={expired_token}")
+            responses = [first]
+            for index in range(2, 7):
+                responses.append(
+                    self.client.post(
+                        "/api/alerts",
+                        json={**base_payload, "district": f"district-{index}"},
+                        environ_overrides={"REMOTE_ADDR": f"198.51.100.{index}"},
+                    )
+                )
+
+        self.assertEqual(expired.status_code, 200)
+        self.assertTrue(all(response.status_code == 202 for response in responses))
+        self.assertTrue(all(response.get_json() == responses[0].get_json() for response in responses))
+        with sqlite3.connect(TEST_DB) as db:
+            active = db.execute(
+                "SELECT is_active FROM listing_alerts ORDER BY id ASC LIMIT 1"
+            ).fetchone()[0]
+            counted = db.execute(
+                """
+                SELECT COUNT(*) FROM listing_alerts
+                WHERE email_normalized = ?
+                  AND (is_active = 1 OR verification_token_hash IS NOT NULL)
+                """,
+                ("victim@example.test",),
+            ).fetchone()[0]
+        self.assertEqual(active, 0)
+        self.assertEqual(counted, app_module.ALERT_ANONYMOUS_EMAIL_CAP)
+
+    def test_signed_unsubscribe_is_non_enumerating_and_authorized(self):
+        with sqlite3.connect(TEST_DB) as db:
+            cursor = db.execute(
+                """
+                INSERT INTO listing_alerts (
+                    email, email_normalized, name, filters, is_active,
+                    verification_token_hash, verification_expires_at
+                ) VALUES (
+                    'legacy@example.test', 'legacy@example.test', 'Legacy', '{}', 1,
+                    'preserved-before-post', '2099-01-01 00:00:00'
+                )
+                """
+            )
+            alert_id = cursor.lastrowid
+            db.commit()
+        token = app_module._alert_action_token(alert_id, 0, "unsubscribe")
+
+        with sqlite3.connect(TEST_DB) as db:
+            original_state = db.execute(
+                """
+                SELECT is_active, unsubscribe_version, verification_token_hash,
+                       verification_expires_at
+                FROM listing_alerts WHERE id = ?
+                """,
+                (alert_id,),
+            ).fetchone()
+        tampered = self.client.get(f"/api/alerts/unsubscribe?token={token}x")
+        confirmation = self.client.get(f"/api/alerts/unsubscribe?token={token}")
+        scanner_retry = self.client.get(f"/api/alerts/unsubscribe?token={token}")
+        scanner_head = self.client.head(f"/api/alerts/unsubscribe?token={token}")
+        with sqlite3.connect(TEST_DB) as db:
+            after_scanners = db.execute(
+                """
+                SELECT is_active, unsubscribe_version, verification_token_hash,
+                       verification_expires_at
+                FROM listing_alerts WHERE id = ?
+                """,
+                (alert_id,),
+            ).fetchone()
+        self.assertEqual(after_scanners, original_state)
+        confirmation_html = confirmation.get_data(as_text=True)
+        self.assertIn("method='post'", confirmation_html)
+        self.assertIn("action='/api/alerts/unsubscribe'", confirmation_html)
+        self.assertIn(f"value='{token}'", confirmation_html)
+        self.assertEqual(scanner_retry.status_code, 200)
+        self.assertEqual(scanner_head.status_code, 200)
+        valid = self.client.post(
+            f"/api/alerts/unsubscribe?token={token}",
+            data="List-Unsubscribe=One-Click",
+            content_type="application/x-www-form-urlencoded",
+        )
+        replay = self.client.post(f"/api/alerts/unsubscribe?token={token}")
+        tampered_post = self.client.post(
+            f"/api/alerts/unsubscribe?token={token}x"
+        )
+        fallback_post = self.client.post("/api/alerts/unsubscribe")
+        self.assertEqual(tampered.status_code, confirmation.status_code)
+        self.assertEqual(valid.status_code, replay.status_code)
+        for response in (
+            tampered,
+            confirmation,
+            scanner_retry,
+            scanner_head,
+            valid,
+            replay,
+            tampered_post,
+            fallback_post,
+        ):
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+            self.assertEqual(response.headers["Pragma"], "no-cache")
+            self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
+            self.assertEqual(
+                response.headers["X-Robots-Tag"], "noindex, nofollow"
+            )
+            self.assertEqual(
+                response.headers["Content-Security-Policy"],
+                "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            )
+        with sqlite3.connect(TEST_DB) as db:
+            state = db.execute(
+                "SELECT is_active, unsubscribe_version FROM listing_alerts WHERE id = ?",
+                (alert_id,),
+            ).fetchone()
+        self.assertEqual(state, (0, 1))
+
+    def test_consolidated_unsubscribe_deactivates_only_the_recipient_scope(self):
+        with sqlite3.connect(TEST_DB) as db:
+            filters = json.dumps({"city": "Київ", "channels": ["email"]})
+            cursors = [
+                db.execute(
+                    """
+                    INSERT INTO listing_alerts (
+                        email, email_normalized, name, filters, is_active
+                    ) VALUES (?, ?, ?, ?, 1)
+                    """,
+                    (email, email, name, filters),
+                )
+                for email, name in (
+                    ("grouped@example.test", "One"),
+                    ("grouped@example.test", "Two"),
+                    ("other@example.test", "Other"),
+                )
+            ]
+            grouped_ids = [cursors[0].lastrowid, cursors[1].lastrowid]
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with mock.patch.object(
+                app_module, "send_alert_listing_email", return_value=True
+            ) as send_email:
+                stats = app_module.dispatch_saved_alerts(
+                    db, listing_id=self.target_id
+                )
+        self.assertEqual(stats["email_sent"], 2)
+        grouped_call = next(
+            call for call in send_email.call_args_list
+            if call.args[0] == "grouped@example.test"
+        )
+        unsubscribe_url = grouped_call.kwargs["unsubscribe_url"]
+        token = unsubscribe_url.split("token=", 1)[1]
+        for _ in range(2):
+            scanner_get = self.client.get(
+                f"/api/alerts/unsubscribe?token={token}"
+            )
+            self.assertEqual(scanner_get.status_code, 200)
+        with sqlite3.connect(TEST_DB) as db:
+            active_before_post = db.execute(
+                "SELECT COUNT(*) FROM listing_alerts WHERE is_active = 1"
+            ).fetchone()[0]
+        self.assertEqual(active_before_post, 3)
+        response = self.client.post(f"/api/alerts/unsubscribe?token={token}")
+        replay = self.client.post(f"/api/alerts/unsubscribe?token={token}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), replay.get_json())
+        with sqlite3.connect(TEST_DB) as db:
+            grouped_states = db.execute(
+                "SELECT is_active FROM listing_alerts WHERE id IN (?, ?) ORDER BY id",
+                tuple(grouped_ids),
+            ).fetchall()
+            other_state = db.execute(
+                "SELECT is_active FROM listing_alerts WHERE email_normalized = ?",
+                ("other@example.test",),
+            ).fetchone()[0]
+        self.assertEqual(grouped_states, [(0,), (0,)])
+        self.assertEqual(other_state, 1)
+
+    def test_alert_email_has_body_and_provider_unsubscribe_headers(self):
+        with (
+            mock.patch.object(app_module, "_email_provider_configured", return_value=True),
+            mock.patch.object(app_module, "_send_email", return_value=True) as send_email,
+        ):
+            sent = app_module.send_alert_listing_email(
+                "recipient@example.test",
+                "Kyiv",
+                {"id": self.target_id, "title": "Target", "price": 100_000},
+                unsubscribe_url="https://ua-dim.com/api/alerts/unsubscribe?token=signed",
+            )
+        self.assertTrue(sent)
+        self.assertIn("Відписатися", send_email.call_args.args[2])
+        self.assertIn("Відписатися", send_email.call_args.args[3])
+        self.assertEqual(
+            send_email.call_args.kwargs["headers"]["List-Unsubscribe-Post"],
+            "List-Unsubscribe=One-Click",
+        )
+        self.assertIn(
+            "token=signed",
+            send_email.call_args.kwargs["headers"]["List-Unsubscribe"],
+        )
+
     def test_mobile_push_devices_follow_the_authenticated_account(self):
         missing_auth = self.client.post(
             "/api/push/devices",
@@ -1539,8 +1903,8 @@ class TrustFeatureTests(unittest.TestCase):
             db.row_factory = sqlite3.Row
             with mock.patch.object(
                 app_module,
-                "send_alert_push_payload",
-                return_value=True,
+                "_deliver_alert_push_payload",
+                return_value=app_module._AlertPushOutcome(True, True),
             ) as send_push:
                 stats = app_module.dispatch_saved_alerts(
                     db,
@@ -1770,6 +2134,231 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(second_listing["id"], self.realtor_listing_id)
         self.assertEqual(send_email.call_args_list[2].kwargs["event_type"], "price_change")
         self.assertEqual(send_email.call_args_list[2].kwargs["previous_price"], 110_000)
+
+    def test_alert_dispatch_pages_beyond_500_and_consolidates_recipient_listing(self):
+        filters = json.dumps({"city": "Київ", "channels": ["email"]})
+        with sqlite3.connect(TEST_DB) as db:
+            db.executemany(
+                """
+                INSERT INTO listing_alerts (
+                    email, email_normalized, name, filters, is_active
+                ) VALUES (?, ?, ?, ?, 1)
+                """,
+                [
+                    (
+                        "bulk@example.test",
+                        "bulk@example.test",
+                        f"Alert {index}",
+                        filters,
+                    )
+                    for index in range(510)
+                ],
+            )
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with mock.patch.object(
+                app_module, "send_alert_listing_email", return_value=True
+            ) as send_email:
+                stats = app_module.dispatch_saved_alerts(
+                    db,
+                    listing_id=self.target_id,
+                )
+            advanced = db.execute(
+                "SELECT COUNT(*) FROM listing_alerts WHERE last_sent_listing_id = ?",
+                (self.target_id,),
+            ).fetchone()[0]
+
+        self.assertEqual(stats["checked"], 510)
+        self.assertEqual(stats["matched"], 510)
+        self.assertEqual(stats["email_sent"], 1)
+        self.assertEqual(send_email.call_count, 1)
+        self.assertEqual(advanced, 510)
+
+    def test_alert_dispatch_pages_listing_candidates_past_first_80(self):
+        with sqlite3.connect(TEST_DB) as db:
+            for index in range(81):
+                self._insert_listing(
+                    db,
+                    self.owner_id,
+                    title=f"Nonmatch {index}",
+                    price=90_000,
+                    area=40,
+                    city="Львів",
+                )
+            matching_id = self._insert_listing(
+                db,
+                self.owner_id,
+                title="Late match",
+                price=95_000,
+                area=42,
+                city="Одеса",
+            )
+            db.execute(
+                """
+                INSERT INTO listing_alerts (
+                    user_id, email, email_normalized, name, filters
+                ) VALUES (?, 'owner@example.test', 'owner@example.test', 'Одеса', ?)
+                """,
+                (self.owner_id, json.dumps({"city": "Одеса", "channels": ["email"]})),
+            )
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with mock.patch.object(
+                app_module, "send_alert_listing_email", return_value=True
+            ) as send_email:
+                stats = app_module.dispatch_saved_alerts(db)
+
+        self.assertEqual(stats["email_sent"], 1)
+        self.assertEqual(send_email.call_args.args[2]["id"], matching_id)
+
+    def test_alert_dispatch_does_not_repeat_successful_channel_after_partial_failure(self):
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                """
+                INSERT INTO listing_alerts (
+                    user_id, email, email_normalized, name, filters
+                ) VALUES (?, 'owner@example.test', 'owner@example.test', 'Both', ?)
+                """,
+                (
+                    self.owner_id,
+                    json.dumps({"city": "Київ", "channels": ["email", "push"]}),
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO push_devices (user_id, token, platform)
+                VALUES (?, 'partial-device', 'ios')
+                """,
+                (self.owner_id,),
+            )
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with (
+                mock.patch.object(
+                    app_module,
+                    "send_alert_listing_email",
+                    side_effect=[False, True],
+                ) as send_email,
+                mock.patch.object(
+                    app_module,
+                    "_deliver_alert_push_payload",
+                    return_value=app_module._AlertPushOutcome(True, True),
+                ) as send_push,
+            ):
+                first = app_module.dispatch_saved_alerts(db, listing_id=self.target_id)
+                second = app_module.dispatch_saved_alerts(db, listing_id=self.target_id)
+                third = app_module.dispatch_saved_alerts(db, listing_id=self.target_id)
+
+        self.assertEqual(first["push_sent"], 1)
+        self.assertEqual(first["email_sent"], 0)
+        self.assertEqual(second["push_sent"], 0)
+        self.assertEqual(second["email_sent"], 1)
+        self.assertEqual(third["push_sent"], 0)
+        self.assertEqual(third["email_sent"], 0)
+        self.assertEqual(send_push.call_count, 1)
+        self.assertEqual(send_email.call_count, 2)
+
+    def test_non_deliverable_push_does_not_stall_email_alert_cursor(self):
+        filters = json.dumps({"city": "Київ", "channels": ["email", "push"]})
+        with sqlite3.connect(TEST_DB) as db:
+            db.executemany(
+                """
+                INSERT INTO listing_alerts (
+                    user_id, email, email_normalized, name, filters, is_active
+                ) VALUES (?, ?, ?, ?, ?, 1)
+                """,
+                [
+                    (None, "anonymous@example.test", "anonymous@example.test", "Anon", filters),
+                    (self.owner_id, "owner@example.test", "owner@example.test", "Owner", filters),
+                ],
+            )
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with (
+                mock.patch.object(
+                    app_module, "send_alert_listing_email", return_value=True
+                ) as send_email,
+                mock.patch.object(
+                    app_module,
+                    "_deliver_alert_push_payload",
+                    return_value=app_module._AlertPushOutcome(False, False),
+                ) as send_push,
+            ):
+                first = app_module.dispatch_saved_alerts(db)
+                second = app_module.dispatch_saved_alerts(db)
+
+        self.assertEqual(first["email_sent"], 2)
+        self.assertEqual(second["email_sent"], 2)
+        self.assertEqual(send_email.call_count, 4)
+        self.assertEqual(send_push.call_count, 4)
+        first_ids = [call.args[2]["id"] for call in send_email.call_args_list[:2]]
+        second_ids = [call.args[2]["id"] for call in send_email.call_args_list[2:]]
+        self.assertEqual(first_ids, [self.target_id, self.target_id])
+        self.assertEqual(
+            second_ids,
+            [self.realtor_listing_id, self.realtor_listing_id],
+        )
+
+    def test_attempted_push_failure_retries_without_resending_email(self):
+        filters = json.dumps({"city": "Київ", "channels": ["email", "push"]})
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                """
+                INSERT INTO listing_alerts (
+                    user_id, email, email_normalized, name, filters, is_active
+                ) VALUES (?, 'owner@example.test', 'owner@example.test', 'Both', ?, 1)
+                """,
+                (self.owner_id, filters),
+            )
+            db.commit()
+            db.row_factory = sqlite3.Row
+            with (
+                mock.patch.object(
+                    app_module, "send_alert_listing_email", return_value=True
+                ) as send_email,
+                mock.patch.object(
+                    app_module,
+                    "_deliver_alert_push_payload",
+                    side_effect=[
+                        app_module._AlertPushOutcome(True, False),
+                        app_module._AlertPushOutcome(True, True),
+                    ],
+                ) as send_push,
+            ):
+                first = app_module.dispatch_saved_alerts(
+                    db, listing_id=self.target_id
+                )
+                second = app_module.dispatch_saved_alerts(
+                    db, listing_id=self.target_id
+                )
+                third = app_module.dispatch_saved_alerts(
+                    db, listing_id=self.target_id
+                )
+
+        self.assertEqual(first["email_sent"], 1)
+        self.assertEqual(first["push_sent"], 0)
+        self.assertEqual(second["email_sent"], 0)
+        self.assertEqual(second["push_sent"], 1)
+        self.assertEqual(third["email_sent"], 0)
+        self.assertEqual(third["push_sent"], 0)
+        self.assertEqual(send_email.call_count, 1)
+        self.assertEqual(send_push.call_count, 2)
+
+    def test_webhook_push_is_attempted_without_firebase_device_tokens(self):
+        payload = {"device_tokens": [], "listing": {"id": self.target_id}}
+        with (
+            mock.patch.object(
+                app_module,
+                "ALERTS_PUSH_WEBHOOK_URL",
+                "https://push.example.test",
+            ),
+            mock.patch.object(
+                app_module, "_send_alert_push_webhook", return_value=True
+            ) as webhook,
+        ):
+            outcome = app_module._deliver_alert_push_payload(payload)
+        self.assertEqual(outcome, app_module._AlertPushOutcome(True, True))
+        webhook.assert_called_once_with(payload)
 
     def test_owner_confirms_listing_freshness_and_reminders_are_throttled(self):
         stale_at = "2026-01-01 00:00:00"

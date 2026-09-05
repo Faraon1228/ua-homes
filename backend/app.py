@@ -106,6 +106,12 @@ def _production_secret_required() -> bool:
 SECRET_KEY = resolve_secret(DATABASE_URL, PUBLIC_SITE_URL)
 JWT_ALGO   = "HS256"
 JWT_EXP_H  = 72
+ALERT_VERIFY_TTL_HOURS = 24
+ALERT_VERIFY_COOLDOWN_MINUTES = 30
+ALERT_ANONYMOUS_EMAIL_CAP = 5
+ALERT_USER_CAP = 20
+ALERT_DISPATCH_BATCH_SIZE = 200
+ALERT_RECIPIENT_RUN_CAP = 10
 
 # Redis DSN — if set, rate-limiter stores counters in Redis (safe for multi-worker).
 REDIS_URL = _SETTINGS.redis_url
@@ -829,7 +835,25 @@ def _init_postgres_db():
                 is_active    INTEGER NOT NULL DEFAULT 1,
                 last_sent_at TEXT,
                 last_sent_listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL,
+                last_scanned_at TEXT,
+                last_scanned_listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL,
+                email_normalized TEXT,
+                subscription_key TEXT UNIQUE,
+                verification_token_hash TEXT,
+                verification_expires_at TEXT,
+                verification_sent_at TEXT,
+                verified_at TEXT,
+                unsubscribe_version INTEGER NOT NULL DEFAULT 0,
                 created_at   TEXT    NOT NULL DEFAULT ({db_now_expr()})
+            );
+
+            CREATE TABLE IF NOT EXISTS alert_delivery_receipts (
+                alert_id INTEGER NOT NULL REFERENCES listing_alerts(id) ON DELETE CASCADE,
+                listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+                channel TEXT NOT NULL,
+                event_key TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT ({db_now_expr()}),
+                PRIMARY KEY (alert_id, listing_id, channel, event_key)
             );
 
             CREATE TABLE IF NOT EXISTS push_devices (
@@ -1055,6 +1079,7 @@ def _init_postgres_db():
             CREATE INDEX IF NOT EXISTS idx_listing_alerts_user ON listing_alerts(user_id);
             CREATE INDEX IF NOT EXISTS idx_listing_alerts_email ON listing_alerts(email);
             CREATE INDEX IF NOT EXISTS idx_listing_alerts_last_sent ON listing_alerts(last_sent_at);
+            CREATE INDEX IF NOT EXISTS idx_alert_delivery_receipts_created ON alert_delivery_receipts(created_at);
             CREATE INDEX IF NOT EXISTS idx_push_devices_user ON push_devices(user_id, is_active);
             CREATE INDEX IF NOT EXISTS idx_push_devices_last_seen ON push_devices(last_seen_at);
             CREATE INDEX IF NOT EXISTS idx_user_favorites_listing ON user_favorites(listing_id);
@@ -1133,6 +1158,15 @@ def _init_postgres_db():
             ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS response_message TEXT;
             ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS responded_at TEXT;
             ALTER TABLE listing_alerts ADD COLUMN IF NOT EXISTS last_sent_listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL;
+            ALTER TABLE listing_alerts ADD COLUMN IF NOT EXISTS last_scanned_at TEXT;
+            ALTER TABLE listing_alerts ADD COLUMN IF NOT EXISTS last_scanned_listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL;
+            ALTER TABLE listing_alerts ADD COLUMN IF NOT EXISTS email_normalized TEXT;
+            ALTER TABLE listing_alerts ADD COLUMN IF NOT EXISTS subscription_key TEXT;
+            ALTER TABLE listing_alerts ADD COLUMN IF NOT EXISTS verification_token_hash TEXT;
+            ALTER TABLE listing_alerts ADD COLUMN IF NOT EXISTS verification_expires_at TEXT;
+            ALTER TABLE listing_alerts ADD COLUMN IF NOT EXISTS verification_sent_at TEXT;
+            ALTER TABLE listing_alerts ADD COLUMN IF NOT EXISTS verified_at TEXT;
+            ALTER TABLE listing_alerts ADD COLUMN IF NOT EXISTS unsubscribe_version INTEGER NOT NULL DEFAULT 0;
         """)
         _migrate_postgres_agency_profiles(cur)
         cur.execute("""
@@ -1140,7 +1174,17 @@ def _init_postgres_db():
                 ON lead_requests(listing_id, status, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_lead_requests_requester
                 ON lead_requests(requester_user_id, created_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_listing_alerts_subscription_key
+                ON listing_alerts(subscription_key);
+            CREATE INDEX IF NOT EXISTS idx_listing_alerts_email_state
+                ON listing_alerts(email_normalized, is_active);
+            CREATE INDEX IF NOT EXISTS idx_listing_alerts_verification_token
+                ON listing_alerts(verification_token_hash);
         """)
+        cur.execute(
+            "UPDATE listing_alerts SET email_normalized = LOWER(TRIM(email))"
+            " WHERE email_normalized IS NULL"
+        )
         cur.execute(
             "UPDATE premium_orders SET environment = %s"
             " WHERE environment IS NULL OR environment = ''"
@@ -2607,11 +2651,29 @@ def init_db():
             is_active    INTEGER NOT NULL DEFAULT 1,
             last_sent_at TEXT,
             last_sent_listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL,
+            last_scanned_at TEXT,
+            last_scanned_listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL,
+            email_normalized TEXT,
+            subscription_key TEXT UNIQUE,
+            verification_token_hash TEXT,
+            verification_expires_at TEXT,
+            verification_sent_at TEXT,
+            verified_at TEXT,
+            unsubscribe_version INTEGER NOT NULL DEFAULT 0,
             created_at   TEXT    NOT NULL DEFAULT (db_now_expr())
+        );
+        CREATE TABLE IF NOT EXISTS alert_delivery_receipts (
+            alert_id INTEGER NOT NULL REFERENCES listing_alerts(id) ON DELETE CASCADE,
+            listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+            channel TEXT NOT NULL,
+            event_key TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (db_now_expr()),
+            PRIMARY KEY (alert_id, listing_id, channel, event_key)
         );
         CREATE INDEX IF NOT EXISTS idx_listing_alerts_user ON listing_alerts(user_id);
         CREATE INDEX IF NOT EXISTS idx_listing_alerts_email ON listing_alerts(email);
         CREATE INDEX IF NOT EXISTS idx_listing_alerts_last_sent ON listing_alerts(last_sent_at);
+        CREATE INDEX IF NOT EXISTS idx_alert_delivery_receipts_created ON alert_delivery_receipts(created_at);
 
         CREATE TABLE IF NOT EXISTS push_devices (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3000,6 +3062,41 @@ def init_db():
             "ALTER TABLE listing_alerts ADD COLUMN last_sent_listing_id INTEGER"
             " REFERENCES listings(id) ON DELETE SET NULL"
         )
+    if "last_scanned_at" not in listing_alert_columns:
+        db.execute("ALTER TABLE listing_alerts ADD COLUMN last_scanned_at TEXT")
+    if "last_scanned_listing_id" not in listing_alert_columns:
+        db.execute(
+            "ALTER TABLE listing_alerts ADD COLUMN last_scanned_listing_id INTEGER"
+            " REFERENCES listings(id) ON DELETE SET NULL"
+        )
+    alert_column_definitions = {
+        "email_normalized": "TEXT",
+        "subscription_key": "TEXT",
+        "verification_token_hash": "TEXT",
+        "verification_expires_at": "TEXT",
+        "verification_sent_at": "TEXT",
+        "verified_at": "TEXT",
+        "unsubscribe_version": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for column, definition in alert_column_definitions.items():
+        if column not in listing_alert_columns:
+            db.execute(f"ALTER TABLE listing_alerts ADD COLUMN {column} {definition}")
+    db.execute(
+        "UPDATE listing_alerts SET email_normalized = LOWER(TRIM(email))"
+        " WHERE email_normalized IS NULL"
+    )
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_listing_alerts_subscription_key"
+        " ON listing_alerts(subscription_key)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_listing_alerts_email_state"
+        " ON listing_alerts(email_normalized, is_active)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_listing_alerts_verification_token"
+        " ON listing_alerts(verification_token_hash)"
+    )
 
     lead_request_columns = {
         row[1] for row in db.execute("PRAGMA table_info(lead_requests)").fetchall()
@@ -3303,18 +3400,32 @@ def get_optional_actor(db) -> tuple[int | None, bool]:
     return user_id, row["role"] == "admin"
 
 
+def _request_has_active_actor() -> bool:
+    user_id, _ = get_optional_actor(get_db())
+    return user_id is not None
+
+
 # ─── Email / SMS helpers ─────────────────────────────────────────────────────
 
-def _send_email(to_email: str, subject: str, body_text: str, body_html: str) -> bool:
+def _send_email(
+    to_email: str,
+    subject: str,
+    body_text: str,
+    body_html: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> bool:
     """Shared email dispatch via SendGrid or SMTP. Returns True on success, False otherwise."""
     sg_key = os.environ.get("SENDGRID_API_KEY", "")
     smtp_host = os.environ.get("SMTP_HOST", "")
-
     if sg_key:
         try:
             import urllib.request as _req, json as _json
+            personalization = {"to": [{"email": to_email}]}
+            if headers:
+                personalization["headers"] = headers
             payload = _json.dumps({
-                "personalizations": [{"to": [{"email": to_email}]}],
+                "personalizations": [personalization],
                 "from": {"email": os.environ.get("FROM_EMAIL", "noreply@ua-dim.com")},
                 "subject": subject,
                 "content": [
@@ -3340,6 +3451,8 @@ def _send_email(to_email: str, subject: str, body_text: str, body_html: str) -> 
             msg["Subject"] = subject
             msg["From"] = os.environ.get("FROM_EMAIL", "noreply@ua-dim.com")
             msg["To"] = to_email
+            for header_name, header_value in (headers or {}).items():
+                msg[header_name] = header_value
             msg.attach(MIMEText(body_text, "plain", "utf-8"))
             msg.attach(MIMEText(body_html, "html", "utf-8"))
             smtp_port = int(os.environ.get("SMTP_PORT", 587))
@@ -3375,6 +3488,61 @@ def send_email_verify(to_email: str, token: str) -> bool:
         app.logger.warning("Email verification is not configured for production (%s)", to_email)
         return False
     app.logger.info("EMAIL VERIFY (dev) → %s | URL: %s", to_email, verify_url)
+    return True
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _alert_action_token(alert_id: int, version: int, purpose: str) -> str:
+    payload = f"{purpose}:{alert_id}:{version}"
+    signature = hmac.new(
+        SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}:{signature}".encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _parse_alert_action_token(token: str, purpose: str) -> tuple[int, int] | None:
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        token_purpose, alert_id, version, signature = decoded.split(":", 3)
+        payload = f"{token_purpose}:{alert_id}:{version}"
+        expected = hmac.new(
+            SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        if token_purpose != purpose or not secrets.compare_digest(signature, expected):
+            return None
+        return int(alert_id), int(version)
+    except (ValueError, UnicodeError, binascii.Error):
+        return None
+
+
+def _alert_unsubscribe_url(alert_id: int, version: int) -> str:
+    token = _alert_action_token(alert_id, version, "unsubscribe")
+    base_url = (PUBLIC_SITE_URL or "http://localhost:8080").rstrip("/")
+    return f"{base_url}/api/alerts/unsubscribe?token={quote(token)}"
+
+
+def send_alert_verification_email(to_email: str, token: str) -> bool:
+    base_url = (PUBLIC_SITE_URL or "http://localhost:8080").rstrip("/")
+    verify_url = f"{base_url}/api/alerts/verify?token={quote(token)}"
+    subject = "Підтвердіть сповіщення про нові оголошення — UA-Dim"
+    body_text = (
+        "Підтвердіть підписку на сповіщення UA-Dim:\n"
+        f"{verify_url}\n\nПосилання дійсне {ALERT_VERIFY_TTL_HOURS} години."
+    )
+    body_html = (
+        "<p>Підтвердіть підписку на сповіщення UA-Dim.</p>"
+        f'<p><a href="{verify_url}">Підтвердити підписку</a></p>'
+        f"<p>Посилання дійсне {ALERT_VERIFY_TTL_HOURS} години.</p>"
+    )
+    if _email_provider_configured():
+        return _send_email(to_email, subject, body_text, body_html)
+    if PUBLIC_SITE_URL:
+        app.logger.warning("Alert verification email provider is not configured")
+        return False
     return True
 
 
@@ -3415,6 +3583,7 @@ def send_alert_listing_email(
     *,
     event_type: str = "new_listing",
     previous_price: int | None = None,
+    unsubscribe_url: str | None = None,
 ) -> bool:
     listing_url = f"{PUBLIC_SITE_URL or 'http://localhost:8080'}/listing/{listing['id']}"
     is_price_change = event_type == "price_change"
@@ -3435,6 +3604,7 @@ def send_alert_listing_email(
         f"{price_change_text}"
         f"{listing.get('city', '')}, {listing.get('district', '')}\n"
         f"Переглянути: {listing_url}"
+        + (f"\nВідписатися: {unsubscribe_url}" if unsubscribe_url else "")
     )
     price_change_html = (
         f'<p>Попередня ціна: <s>${int(previous_price):,}</s></p>'
@@ -3446,15 +3616,33 @@ def send_alert_listing_email(
 {price_change_html}
 <p><b>${int(listing.get("price") or 0):,}</b> · {escape(listing.get("city", ""))}, {escape(listing.get("district", ""))}</p>
 <p>Швидкі сигнали: оновлено {listing.get("freshness_hours_ago") if listing.get("freshness_hours_ago") is not None else "—"} год тому, ризик дубля — {escape(listing.get("duplicate_risk", "low"))}.</p>"""
+    if unsubscribe_url:
+        body_html += f'<p><a href="{unsubscribe_url}">Відписатися від цього сповіщення</a></p>'
+    message_headers = None
+    if unsubscribe_url:
+        message_headers = {
+            "List-Unsubscribe": f"<{unsubscribe_url}>",
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        }
 
     sg_key = os.environ.get("SENDGRID_API_KEY", "")
     smtp_host = os.environ.get("SMTP_HOST", "")
-
+    if _email_provider_configured():
+        return _send_email(
+            to_email,
+            subject,
+            body_text,
+            body_html,
+            headers=message_headers,
+        )
     if sg_key:
         try:
             import urllib.request as _req, json as _json
+            personalization = {"to": [{"email": to_email}]}
+            if message_headers:
+                personalization["headers"] = message_headers
             payload = _json.dumps({
-                "personalizations": [{"to": [{"email": to_email}]}],
+                "personalizations": [personalization],
                 "from": {"email": os.environ.get("FROM_EMAIL", "noreply@ua-dim.com")},
                 "subject": subject,
                 "content": [
@@ -3482,6 +3670,8 @@ def send_alert_listing_email(
             msg["Subject"] = subject
             msg["From"] = os.environ.get("FROM_EMAIL", "noreply@ua-dim.com")
             msg["To"] = to_email
+            for header_name, header_value in (message_headers or {}).items():
+                msg[header_name] = header_value
             msg.attach(MIMEText(body_text, "plain", "utf-8"))
             msg.attach(MIMEText(body_html, "html", "utf-8"))
             smtp_port = int(os.environ.get("SMTP_PORT", 587))
@@ -3505,6 +3695,11 @@ class _FirebasePushResult(NamedTuple):
     attempted: bool
     success: bool
     invalid_tokens: tuple[str, ...] = ()
+
+
+class _AlertPushOutcome(NamedTuple):
+    attempted: bool
+    delivered: bool
 
 
 def _get_firebase_app():
@@ -3693,19 +3888,38 @@ def _send_alert_push_webhook(payload: dict) -> bool:
         return False
 
 
-def send_alert_push_payload(payload: dict, *, db=None) -> bool:
+def _deliver_alert_push_payload(payload: dict, *, db=None) -> _AlertPushOutcome:
+    tokens = [
+        token
+        for token in payload.get("device_tokens", [])
+        if isinstance(token, str) and token
+    ]
+    if not tokens:
+        if ALERTS_PUSH_WEBHOOK_URL:
+            return _AlertPushOutcome(
+                attempted=True,
+                delivered=_send_alert_push_webhook(payload),
+            )
+        return _AlertPushOutcome(attempted=False, delivered=False)
     firebase_result = _send_alert_push_via_firebase(payload)
     if db is not None:
         _deactivate_push_tokens(db, firebase_result.invalid_tokens)
     if firebase_result.attempted:
-        return firebase_result.success
+        return _AlertPushOutcome(attempted=True, delivered=firebase_result.success)
     if ALERTS_PUSH_WEBHOOK_URL:
         if firebase_result.configured:
             app.logger.warning(
                 "Firebase push was unavailable before delivery; using configured webhook fallback"
             )
-        return _send_alert_push_webhook(payload)
-    return False
+        return _AlertPushOutcome(
+            attempted=True,
+            delivered=_send_alert_push_webhook(payload),
+        )
+    return _AlertPushOutcome(attempted=False, delivered=False)
+
+
+def send_alert_push_payload(payload: dict, *, db=None) -> bool:
+    return _deliver_alert_push_payload(payload, db=db).delivered
 
 
 def _listing_matches_alert_filters(listing: dict, filters: dict) -> bool:
@@ -3765,18 +3979,6 @@ def dispatch_saved_alerts(
     event_type: str = "new_listing",
     previous_price: int | None = None,
 ) -> dict:
-    alerts = db.execute(
-        """
-        SELECT id, user_id, email, name, filters, last_sent_at, last_sent_listing_id
-        FROM listing_alerts
-        WHERE is_active = 1
-        ORDER BY id DESC
-        LIMIT 500
-        """
-    ).fetchall()
-    if not alerts:
-        return {"checked": 0, "matched": 0, "email_sent": 0, "push_sent": 0}
-
     target_listing = None
     if listing_id is not None:
         row = db.execute(
@@ -3790,117 +3992,241 @@ def dispatch_saved_alerts(
     matched = 0
     email_sent = 0
     push_sent = 0
+    email_groups: dict[tuple[str, int, str], list[tuple[object, dict]]] = {}
+    candidates: list[tuple[object, dict, list[str], str]] = []
 
-    for alert in alerts:
-        checked += 1
-        try:
-            filters = json.loads(alert["filters"] or "{}")
-            if not isinstance(filters, dict):
+    def delivery_recorded(
+        alert_id: int, listing_value: int, channel: str, receipt_event_key: str
+    ) -> bool:
+        return bool(
+            db.execute(
+                """
+                SELECT 1 FROM alert_delivery_receipts
+                WHERE alert_id = ? AND listing_id = ? AND channel = ? AND event_key = ?
+                """,
+                (alert_id, listing_value, channel, receipt_event_key),
+            ).fetchone()
+        )
+
+    def record_delivery(
+        alert_id: int, listing_value: int, channel: str, receipt_event_key: str
+    ) -> None:
+        db.execute(
+            """
+            INSERT INTO alert_delivery_receipts (alert_id, listing_id, channel, event_key)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(alert_id, listing_id, channel, event_key) DO NOTHING
+            """,
+            (alert_id, listing_value, channel, receipt_event_key),
+        )
+
+    last_alert_id = 0
+    while True:
+        alerts = db.execute(
+            """
+            SELECT la.id, la.user_id, la.email, la.email_normalized, la.name, la.filters,
+                   la.last_sent_at, la.last_sent_listing_id, la.last_scanned_at,
+                   la.last_scanned_listing_id, la.unsubscribe_version
+            FROM listing_alerts AS la
+            LEFT JOIN users AS u ON u.id = la.user_id
+            WHERE la.is_active = 1 AND la.id > ?
+              AND (
+                la.subscription_key IS NULL
+                OR la.verified_at IS NOT NULL
+                OR (la.user_id IS NOT NULL AND u.email_verified = 1)
+              )
+            ORDER BY la.id ASC
+            LIMIT ?
+            """,
+            (last_alert_id, ALERT_DISPATCH_BATCH_SIZE),
+        ).fetchall()
+        if not alerts:
+            break
+        for alert in alerts:
+            last_alert_id = alert["id"]
+            checked += 1
+            try:
+                filters = json.loads(alert["filters"] or "{}")
+                if not isinstance(filters, dict):
+                    filters = {}
+            except json.JSONDecodeError:
                 filters = {}
-        except json.JSONDecodeError:
-            filters = {}
-        channels_raw = filters.get("channels")
-        if isinstance(channels_raw, list):
-            channels = [strip(item, 20).lower() for item in channels_raw if strip(item, 20)]
-        elif isinstance(channels_raw, str):
-            channels = [strip(channels_raw, 20).lower()]
-        else:
-            channels = ["email"]
-        channels = [c for c in channels if c in {"email", "push"}] or ["email"]
+            channels_raw = filters.get("channels")
+            if isinstance(channels_raw, list):
+                channels = [strip(item, 20).lower() for item in channels_raw if strip(item, 20)]
+            elif isinstance(channels_raw, str):
+                channels = [strip(channels_raw, 20).lower()]
+            else:
+                channels = ["email"]
+            channels = [c for c in channels if c in {"email", "push"}] or ["email"]
 
-        candidate_listing = None
-        if target_listing:
-            candidate_listing = target_listing if _listing_matches_alert_filters(target_listing, filters) else None
-        else:
-            rows = db.execute(
-                LISTING_SELECT
-                + """
-                    WHERE l.status = 'published'
-                      AND (
-                        l.created_at > COALESCE(?, '1970-01-01 00:00:00')
-                        OR (
-                          l.created_at = COALESCE(?, '1970-01-01 00:00:00')
-                          AND l.id > COALESCE(?, 0)
+            candidate_listing = None
+            if target_listing:
+                candidate_listing = target_listing if _listing_matches_alert_filters(target_listing, filters) else None
+            else:
+                scan_at = alert["last_scanned_at"] or alert["last_sent_at"]
+                scan_id = alert["last_scanned_listing_id"] or alert["last_sent_listing_id"]
+                while True:
+                    rows = db.execute(
+                        LISTING_SELECT
+                        + """
+                            WHERE l.status = 'published'
+                              AND (
+                                l.created_at > COALESCE(?, '1970-01-01 00:00:00')
+                                OR (
+                                  l.created_at = COALESCE(?, '1970-01-01 00:00:00')
+                                  AND l.id > COALESCE(?, 0)
+                                )
+                              )
+                            ORDER BY l.created_at ASC, l.id ASC
+                            LIMIT 80
+                        """,
+                        (scan_at, scan_at, scan_id),
+                    ).fetchall()
+                    if not rows:
+                        break
+                    for row in rows:
+                        listing = _row_to_listing(row)
+                        scan_at = listing.get("created_at")
+                        scan_id = listing["id"]
+                        if _listing_matches_alert_filters(listing, filters):
+                            candidate_listing = listing
+                            break
+                    if candidate_listing:
+                        break
+                    if not dry_run:
+                        db.execute(
+                            """
+                            UPDATE listing_alerts
+                            SET last_scanned_at = ?, last_scanned_listing_id = ?
+                            WHERE id = ?
+                            """,
+                            (scan_at, scan_id, alert["id"]),
                         )
-                      )
-                    ORDER BY l.created_at ASC, l.id ASC
-                    LIMIT 80
+                    if len(rows) < 80:
+                        break
+            if not candidate_listing:
+                continue
+
+            matched += 1
+            receipt_event_key = (
+                f"price_change:{previous_price}:{candidate_listing.get('price')}"
+                if event_type == "price_change"
+                else event_type
+            )
+            candidates.append((alert, candidate_listing, channels, receipt_event_key))
+            if "email" in channels and not delivery_recorded(
+                alert["id"], candidate_listing["id"], "email", receipt_event_key
+            ):
+                recipient = (alert["email_normalized"] or alert["email"]).strip().lower()
+                email_groups.setdefault(
+                    (recipient, candidate_listing["id"], receipt_event_key), []
+                ).append((alert, candidate_listing))
+
+            if "push" in channels and not delivery_recorded(
+                alert["id"], candidate_listing["id"], "push", receipt_event_key
+            ):
+                device_tokens = []
+                if alert["user_id"]:
+                    device_tokens = [
+                        row["token"]
+                        for row in db.execute(
+                            "SELECT token FROM push_devices WHERE user_id = ? AND is_active = 1"
+                            " ORDER BY last_seen_at DESC LIMIT 20",
+                            (alert["user_id"],),
+                        ).fetchall()
+                    ]
+                push_outcome = _AlertPushOutcome(attempted=True, delivered=True) if dry_run else _deliver_alert_push_payload(
+                    {
+                        "event": "saved_alert_price_change" if event_type == "price_change" else "saved_alert_match",
+                        "alert_id": alert["id"],
+                        "user_id": alert["user_id"],
+                        "email": alert["email"],
+                        "name": alert["name"] or "Listing alert",
+                        "device_tokens": device_tokens,
+                        "listing": {
+                            "id": candidate_listing["id"],
+                            "title": candidate_listing.get("title"),
+                            "price": candidate_listing.get("price"),
+                            "previous_price": previous_price,
+                            "city": candidate_listing.get("city"),
+                            "district": candidate_listing.get("district"),
+                            "url": (
+                                f"{(PUBLIC_SITE_URL or 'http://localhost:8080').rstrip('/')}"
+                                f"/listing/{candidate_listing['id']}"
+                            ),
+                        },
+                    },
+                    db=db,
+                )
+                if push_outcome.delivered:
+                    push_sent += 1
+                    if not dry_run:
+                        record_delivery(
+                            alert["id"], candidate_listing["id"], "push", receipt_event_key
+                        )
+                elif not push_outcome.attempted:
+                    channels = [channel for channel in channels if channel != "push"]
+                    candidates[-1] = (
+                        alert,
+                        candidate_listing,
+                        channels,
+                        receipt_event_key,
+                    )
+
+    recipient_counts: dict[str, int] = {}
+    for (recipient, _listing_id, receipt_event_key), grouped in email_groups.items():
+        if recipient_counts.get(recipient, 0) >= ALERT_RECIPIENT_RUN_CAP:
+            continue
+        alert, listing = grouped[0]
+        unsubscribe_url = _alert_unsubscribe_url(
+            alert["id"], int(alert["unsubscribe_version"] or 0)
+        )
+        email_ok = True if dry_run else send_alert_listing_email(
+            alert["email"],
+            alert["name"] or "Listing alert",
+            listing,
+            event_type=event_type,
+            previous_price=previous_price,
+            unsubscribe_url=unsubscribe_url,
+        )
+        if not email_ok:
+            continue
+        email_sent += 1
+        recipient_counts[recipient] = recipient_counts.get(recipient, 0) + 1
+        if not dry_run:
+            for grouped_alert, grouped_listing in grouped:
+                record_delivery(
+                    grouped_alert["id"],
+                    grouped_listing["id"],
+                    "email",
+                    receipt_event_key,
+                )
+
+    if not dry_run:
+        for alert, candidate_listing, channels, receipt_event_key in candidates:
+            if not all(
+                delivery_recorded(
+                    alert["id"], candidate_listing["id"], channel, receipt_event_key
+                )
+                for channel in channels
+            ):
+                continue
+            delivered_at = (
+                candidate_listing.get("created_at")
+                or datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ")
+            )
+            db.execute(
+                """
+                UPDATE listing_alerts
+                SET last_sent_at = ?, last_sent_listing_id = ?,
+                    last_scanned_at = ?, last_scanned_listing_id = ?
+                WHERE id = ?
                 """,
                 (
-                    alert["last_sent_at"],
-                    alert["last_sent_at"],
-                    alert["last_sent_listing_id"],
-                ),
-            ).fetchall()
-            for row in rows:
-                listing = _row_to_listing(row)
-                if _listing_matches_alert_filters(listing, filters):
-                    candidate_listing = listing
-                    break
-
-        if not candidate_listing:
-            continue
-
-        matched += 1
-        sent_any = False
-        if "email" in channels:
-            email_ok = True if dry_run else send_alert_listing_email(
-                alert["email"],
-                alert["name"] or "Listing alert",
-                candidate_listing,
-                event_type=event_type,
-                previous_price=previous_price,
-            )
-            if email_ok:
-                email_sent += 1
-                sent_any = True
-
-        if "push" in channels:
-            device_tokens = []
-            if alert["user_id"]:
-                device_tokens = [
-                    row["token"]
-                    for row in db.execute(
-                        """
-                        SELECT token
-                        FROM push_devices
-                        WHERE user_id = ? AND is_active = 1
-                        ORDER BY last_seen_at DESC
-                        LIMIT 20
-                        """,
-                        (alert["user_id"],),
-                    ).fetchall()
-                ]
-            push_ok = True if dry_run else send_alert_push_payload(
-                {
-                    "event": "saved_alert_price_change" if event_type == "price_change" else "saved_alert_match",
-                    "alert_id": alert["id"],
-                    "user_id": alert["user_id"],
-                    "email": alert["email"],
-                    "name": alert["name"] or "Listing alert",
-                    "device_tokens": device_tokens,
-                    "listing": {
-                        "id": candidate_listing["id"],
-                        "title": candidate_listing.get("title"),
-                        "price": candidate_listing.get("price"),
-                        "previous_price": previous_price,
-                        "city": candidate_listing.get("city"),
-                        "district": candidate_listing.get("district"),
-                        "url": f"{PUBLIC_SITE_URL or 'http://localhost:8080'}/listing/{candidate_listing['id']}",
-                    },
-                },
-                db=db,
-            )
-            if push_ok:
-                push_sent += 1
-                sent_any = True
-
-        if sent_any and not dry_run:
-            db.execute(
-                "UPDATE listing_alerts SET last_sent_at = ?, last_sent_listing_id = ? WHERE id = ?",
-                (
-                    candidate_listing.get("created_at")
-                    or datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" "),
+                    delivered_at,
+                    candidate_listing["id"],
+                    delivered_at,
                     candidate_listing["id"],
                     alert["id"],
                 ),
@@ -4015,6 +4341,19 @@ EMAIL_RE = re.compile(r"^[a-zA-Z0-9_.+\-]+@[a-zA-Z0-9\-]+\.[a-zA-Z0-9\-.]+$")
 
 def validate_email(email: str) -> bool:
     return bool(EMAIL_RE.match(email)) and len(email) <= 254
+
+
+def normalize_alert_email(value) -> str:
+    email = strip(value, 254).lower()
+    if email.count("@") != 1:
+        return ""
+    local, domain = email.rsplit("@", 1)
+    try:
+        domain = domain.encode("idna").decode("ascii")
+    except UnicodeError:
+        return ""
+    normalized = f"{local}@{domain}"
+    return normalized if validate_email(normalized) else ""
 
 def strip(val, max_len=255) -> str:
     return str(val or "").strip()[:max_len]
@@ -7319,15 +7658,33 @@ def update_listing_alert(alert_id: int):
     data = _parse_json_payload()
     if "is_active" not in data:
         return jsonify(error="is_active is required"), 422
+    requested_active = bool(data["is_active"])
+    if requested_active:
+        activation_allowed = db.execute(
+            """
+            SELECT 1
+            FROM listing_alerts AS la
+            JOIN users AS u ON u.id = la.user_id
+            WHERE la.id = ? AND la.user_id = ?
+              AND (la.verified_at IS NOT NULL OR u.email_verified = 1)
+            """,
+            (alert_id, g.user_id),
+        ).fetchone()
+        if not activation_allowed:
+            return jsonify(error="Підтвердіть email перед активацією сповіщення"), 409
     db.execute(
         "UPDATE listing_alerts SET is_active = ? WHERE id = ?",
-        (int(bool(data["is_active"])), alert_id),
+        (int(requested_active), alert_id),
     )
     db.commit()
-    return jsonify(ok=True, is_active=bool(data["is_active"]))
+    return jsonify(ok=True, is_active=requested_active)
 
 
 @app.route("/api/alerts", methods=["POST"])
+@limiter.limit(
+    "5 per hour; 2 per minute",
+    exempt_when=_request_has_active_actor,
+)
 def create_listing_alert():
     db = get_db()
     data = request.get_json(silent=True) or {}
@@ -7350,10 +7707,15 @@ def create_listing_alert():
     push_channel = data.get("push")
 
     user_id, _ = get_optional_actor(db)
-    email = strip(data.get("email"), 254).lower()
+    email = normalize_alert_email(data.get("email"))
     if user_id:
-        row = db.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
-        email = row["email"] if row else email
+        row = db.execute(
+            "SELECT email, email_verified FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        email = normalize_alert_email(row["email"]) if row else email
+        account_email_verified = bool(row and row["email_verified"])
+    else:
+        account_email_verified = False
 
     if not email or not validate_email(email):
         return jsonify(error="Потрібен валідний email для алерта"), 422
@@ -7387,28 +7749,204 @@ def create_listing_alert():
         "channels": channels,
     }
     serialized_filters = json.dumps(filters, ensure_ascii=False, sort_keys=True)
-    if user_id:
-        existing = db.execute(
-            """
-            SELECT id FROM listing_alerts
-            WHERE user_id = ? AND name = ? AND filters = ?
-            ORDER BY id DESC LIMIT 1
-            """,
-            (user_id, name or "Listing alert", serialized_filters),
-        ).fetchone()
-        if existing:
-            db.execute("UPDATE listing_alerts SET is_active = 1 WHERE id = ?", (existing["id"],))
-            db.commit()
-            return jsonify(ok=True, id=existing["id"], duplicate=True), 200
-    cur = db.execute(
+    scope = f"user:{user_id}" if user_id else f"email:{email}"
+    subscription_key = hashlib.sha256(
+        f"{scope}\n{serialized_filters}".encode("utf-8")
+    ).hexdigest()
+    now = datetime.datetime.utcnow().replace(microsecond=0)
+    now_text = now.isoformat(sep=" ")
+    if _is_postgres():
+        db.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (scope,))
+    else:
+        db.execute("BEGIN IMMEDIATE")
+    db.execute(
         """
-        INSERT INTO listing_alerts (user_id, email, name, filters)
-        VALUES (?, ?, ?, ?)
+        UPDATE listing_alerts
+        SET verification_token_hash = NULL, verification_expires_at = NULL
+        WHERE email_normalized = ? AND is_active = 0
+          AND verification_expires_at IS NOT NULL
+          AND verification_expires_at <= ?
         """,
-        (user_id, email, name or "Listing alert", serialized_filters),
+        (email, now_text),
+    )
+
+    existing = db.execute(
+        """
+        SELECT id, is_active, verification_token_hash, verification_expires_at,
+               verification_sent_at
+        FROM listing_alerts WHERE subscription_key = ?
+        """,
+        (subscription_key,),
+    ).fetchone()
+    if existing and (existing["is_active"] or account_email_verified):
+        if user_id:
+            db.execute(
+                "UPDATE listing_alerts SET is_active = 1, verification_token_hash = NULL,"
+                " verification_expires_at = NULL, verified_at = COALESCE(verified_at, ?)"
+                " WHERE id = ?",
+                (now_text, existing["id"]),
+            )
+        db.commit()
+        if user_id:
+            return jsonify(ok=True, id=existing["id"], duplicate=True), 200
+        return jsonify(ok=True, status="pending"), 202
+
+    count_query = (
+        "SELECT COUNT(*) AS total FROM listing_alerts WHERE user_id = ?"
+        if user_id
+        else "SELECT COUNT(*) AS total FROM listing_alerts WHERE email_normalized = ?"
+    )
+    count_value = user_id if user_id else email
+    count = int(db.execute(
+        count_query + " AND (is_active = 1 OR verification_token_hash IS NOT NULL)",
+        (count_value,),
+    ).fetchone()["total"])
+    cap = ALERT_USER_CAP if user_id else ALERT_ANONYMOUS_EMAIL_CAP
+    if count >= cap and not existing:
+        db.commit()
+        if user_id:
+            return jsonify(error="Досягнуто ліміт збережених пошуків"), 409
+        return jsonify(ok=True, status="pending"), 202
+
+    is_active = int(bool(user_id and account_email_verified))
+    raw_verification_token = None
+    token_hash = None
+    verification_expires = None
+    should_send_verification = False
+    if not is_active:
+        sent_at = existing["verification_sent_at"] if existing else None
+        cooldown_before = (now - datetime.timedelta(minutes=ALERT_VERIFY_COOLDOWN_MINUTES)).isoformat(sep=" ")
+        should_send_verification = not sent_at or sent_at <= cooldown_before
+        if should_send_verification:
+            raw_verification_token = secrets.token_urlsafe(32)
+            token_hash = _token_hash(raw_verification_token)
+            verification_expires = (
+                now + datetime.timedelta(hours=ALERT_VERIFY_TTL_HOURS)
+            ).isoformat(sep=" ")
+
+    db.execute(
+        """
+        INSERT INTO listing_alerts (
+            user_id, email, email_normalized, name, filters, is_active,
+            subscription_key, verification_token_hash, verification_expires_at,
+            verification_sent_at, verified_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(subscription_key) DO UPDATE SET
+            name = excluded.name,
+            verification_token_hash = COALESCE(excluded.verification_token_hash, listing_alerts.verification_token_hash),
+            verification_expires_at = COALESCE(excluded.verification_expires_at, listing_alerts.verification_expires_at),
+            verification_sent_at = COALESCE(excluded.verification_sent_at, listing_alerts.verification_sent_at)
+        """,
+        (
+            user_id, email, email, name or "Listing alert", serialized_filters,
+            is_active, subscription_key, token_hash, verification_expires,
+            now_text if should_send_verification else None,
+            now_text if is_active else None,
+        ),
     )
     db.commit()
-    return jsonify(ok=True, id=cur.lastrowid, duplicate=False), 201
+    created = db.execute(
+        "SELECT id FROM listing_alerts WHERE subscription_key = ?", (subscription_key,)
+    ).fetchone()
+    if should_send_verification and raw_verification_token:
+        send_alert_verification_email(email, raw_verification_token)
+    if user_id and is_active:
+        return jsonify(ok=True, id=created["id"], duplicate=False), 201
+    return jsonify(ok=True, status="pending"), 202
+
+
+@app.route("/api/alerts/verify", methods=["GET"])
+@limiter.limit("20 per hour")
+def verify_listing_alert():
+    token = strip(request.args.get("token"), 500)
+    token_hash = _token_hash(token) if token else ""
+    now = datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ")
+    db = get_db()
+    cursor = db.execute(
+        """
+        UPDATE listing_alerts
+        SET is_active = 1, verified_at = ?, verification_token_hash = NULL,
+            verification_expires_at = NULL
+        WHERE verification_token_hash = ? AND is_active = 0
+          AND verification_expires_at > ?
+        """,
+        (now, token_hash, now),
+    )
+    activated = cursor.rowcount == 1
+    db.commit()
+    message = "Сповіщення підтверджено." if activated else "Посилання недійсне або вже використане."
+    return Response(
+        f"<!doctype html><meta charset=utf-8><title>UA-Dim</title><p>{message}</p>",
+        status=200,
+        content_type="text/html; charset=utf-8",
+    )
+
+
+@app.route("/api/alerts/unsubscribe", methods=["GET", "POST"])
+@limiter.limit("30 per hour")
+def unsubscribe_listing_alert():
+    def hardened_response(response):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+        )
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        return response
+
+    token = strip(request.args.get("token") or request.form.get("token"), 1000)
+    if request.method != "POST":
+        safe_token = escape(token, quote=True)
+        response = Response(
+            "<!doctype html><html lang='uk'><meta charset=utf-8>"
+            "<meta name='robots' content='noindex,nofollow'>"
+            "<title>Відписатися — UA-Dim</title>"
+            "<body><main><h1>Відписатися від сповіщень?</h1>"
+            "<p>Підтвердьте дію кнопкою нижче. Відкриття цього посилання "
+            "не змінює ваші налаштування.</p>"
+            "<form method='post' action='/api/alerts/unsubscribe'>"
+            f"<input type='hidden' name='token' value='{safe_token}'>"
+            "<button type='submit'>Відписатися</button>"
+            "</form></main></body></html>",
+            status=200,
+            content_type="text/html; charset=utf-8",
+        )
+        return hardened_response(response)
+
+    parsed = _parse_alert_action_token(token, "unsubscribe")
+    db = get_db()
+    if parsed:
+        alert_id, version = parsed
+        anchor = db.execute(
+            """
+            SELECT email_normalized
+            FROM listing_alerts
+            WHERE id = ? AND unsubscribe_version = ?
+            """,
+            (alert_id, version),
+        ).fetchone()
+        if anchor:
+            db.execute(
+            """
+            UPDATE listing_alerts
+            SET is_active = 0, verification_token_hash = NULL,
+                verification_expires_at = NULL,
+                unsubscribe_version = unsubscribe_version + 1
+            WHERE email_normalized = ?
+            """,
+                (anchor["email_normalized"],),
+            )
+        db.commit()
+    if request.form:
+        return hardened_response(Response(
+            "<!doctype html><meta charset=utf-8><title>UA-Dim</title>"
+            "<p>Сповіщення вимкнено. Якщо запит уже було оброблено, "
+            "додаткових дій не потрібно.</p>",
+            status=200,
+            content_type="text/html; charset=utf-8",
+        ))
+    return hardened_response(jsonify(ok=True))
 
 
 @app.route("/api/alerts/dispatch", methods=["GET", "POST"])
