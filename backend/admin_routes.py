@@ -2639,12 +2639,12 @@ def admin_audit():
 @require_permission(Permission.SYSTEM_READ)
 def admin_system_health():
     from app import get_db
+    from system_status import get_status
 
     db = get_db()
     db.execute("SELECT 1").fetchone()
-    return jsonify(
-        status="ok",
-        database="ok",
+    payload = get_status(db)
+    payload.update(
         counts={
             "users": int(db.execute("SELECT COUNT(*) FROM users").fetchone()[0]),
             "listings": int(db.execute("SELECT COUNT(*) FROM listings").fetchone()[0]),
@@ -2654,6 +2654,29 @@ def admin_system_health():
         },
         request_id=getattr(g, "request_id", None),
     )
+    return jsonify(payload)
+
+
+@admin_bp.route("/system/health/refresh", methods=["POST"])
+@require_permission(Permission.ADMIN_ONLY)
+def admin_system_health_refresh():
+    from app import get_db
+    from system_status import get_status
+
+    db = get_db()
+    payload = get_status(db, force=True)
+    db.commit()
+    return jsonify(payload)
+
+
+@admin_bp.route("/system/health/refresh/scheduled", methods=["POST"])
+def scheduled_system_health_refresh():
+    from app import get_db
+    from system_status import get_status, scheduler_key_valid
+
+    if not scheduler_key_valid(request.headers.get("X-System-Refresh-Key", "")):
+        return jsonify(error="Unauthorized"), 401
+    return jsonify(get_status(get_db(), force=True))
 
 
 # ─── Reports ────────────────────────────────────────────────────────

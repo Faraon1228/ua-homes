@@ -32,3 +32,26 @@ The backend and browsers discard expected authentication, authorization, validat
 3. In an authenticated staging/admin session, use browser DevTools to run `window.uaSentryCaptureException(new Error('authorized verification'))`. For Flutter/backend, use an authenticated, temporary internal test path or local test transport—not a public endpoint—and then remove it before release. Confirm environment, release, request ID, stack/source mapping and absence of PII.
 4. Check expected 401/403/404/422/429 and offline actions do not create issues. Raise trace rates only after reviewing volume and cost.
 5. Roll back independently by clearing the affected DSN and redeploying/restarting. For immediate volume control, set trace/profile rates to `0`. Revoke `SENTRY_AUTH_TOKEN` to stop map upload; runtime error capture continues. Revert the application commit only if SDK code itself is implicated.
+
+## Admin «Стан системи»
+
+The staff dashboard aggregates production service health, new unresolved
+Sentry error/fatal issues from the last 24 hours, recent failed deploy runs,
+deployed/expected commit SHAs, and notification readiness. Aggregation happens
+only in the backend. Sentry, GitHub, email, and Telegram credentials are never
+returned to the browser. Issue rows expose only title, culprit, severity,
+counts/timestamps, and an allowlisted HTTPS Sentry permalink.
+
+Snapshots are stored in the application database. Read requests never block on
+provider calls and mark snapshots older than `UA_HOMES_STATUS_TTL_SECONDS`
+(15 minutes by default) as stale. Administrators can force a refresh through
+the CSRF-protected UI. The production health workflow
+also refreshes the snapshot when `UA_HOMES_STATUS_REFRESH_KEY` exists in both
+GitHub Actions and Railway. Provider timeouts are bounded; absent credentials
+produce `not_configured`, while provider failures produce `unknown`.
+
+Incident email and optional Telegram messages are transition-based: repeated
+degraded/down snapshots are deduplicated, and a recovery notification is sent
+when status returns to `ok`. Configure `UA_HOMES_STATUS_ALERT_EMAIL` to enable
+email delivery through the existing SendGrid/SMTP sender. No Railway API token
+is used or required.

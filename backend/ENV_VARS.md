@@ -92,12 +92,31 @@ listing reports, and audit reads.
 | `SENTRY_RELEASE` | Release identifier; Railway commit SHA is the fallback | unset |
 | `SENTRY_TRACES_SAMPLE_RATE` | Fraction of backend requests recorded as performance traces (`0..1`) | `0.01` |
 | `SENTRY_PROFILES_SAMPLE_RATE` | Fraction of traced requests profiled (`0..1`) | `0` |
+| `UA_HOMES_SENTRY_API_TOKEN` | Backend-only Sentry API token with project read access for the admin status dashboard | unset |
+| `SENTRY_BACKEND_PROJECT` | Backend Sentry project slug used by the status dashboard | unset |
+| `UA_HOMES_GITHUB_TOKEN` | Backend-only fine-grained token with Actions read access | unset |
+| `UA_HOMES_GITHUB_REPOSITORY` | Repository queried for production deploy runs | `Faraon1228/ua-homes` |
+| `UA_HOMES_DEPLOY_WORKFLOW` | Production deploy workflow filename | `deploy.yml` |
+| `UA_HOMES_STATUS_REFRESH_KEY` | Random shared key for scheduled snapshot refresh; configure identically in Railway and GitHub Actions | unset |
+| `UA_HOMES_STATUS_TTL_SECONDS` | Age after which a cached status snapshot is marked stale | `900` |
+| `UA_HOMES_STATUS_HTTP_TIMEOUT_SECONDS` | Per-provider request timeout, capped at 15 seconds | `5` |
+| `UA_HOMES_RELEASE_VERSION` | Human-readable deployed production version | unset |
+| `UA_HOMES_STATUS_ALERT_EMAIL` | Incident/recovery recipient using the existing email sender | unset |
+| `UA_HOMES_TELEGRAM_BOT_TOKEN` | Optional backend-only Telegram bot token | unset |
+| `UA_HOMES_TELEGRAM_CHAT_ID` | Optional Telegram incident chat | unset |
 
 Every media upload and lead request emits a structured JSON log with request ID,
 route, status, database engine, and API duration. All 5xx responses and requests
 slower than one second are logged as well. Responses expose `Server-Timing` and
 `X-Response-Time-Ms`; `/api/health` reports database engine, storage, distributed
 rate-limit, and error-monitoring readiness without exposing credentials. See `MONITORING.md` for project credentials, privacy filters, rollout, safe verification, and rollback.
+
+The admin-only `GET /api/admin/system/health` serves a durable cached snapshot.
+Administrators can refresh it with the CSRF-protected
+`POST /api/admin/system/health/refresh`; the production workflow uses
+`POST /api/admin/system/health/refresh/scheduled` with
+`X-System-Refresh-Key`. Missing provider credentials are reported as
+`not_configured` and never prevent the dashboard from loading.
 
 ## Rate limiting
 
