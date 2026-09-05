@@ -7886,6 +7886,23 @@ def verify_listing_alert():
 @limiter.limit("30 per hour")
 def unsubscribe_listing_alert():
     token = strip(request.args.get("token") or request.form.get("token"), 1000)
+    if request.method != "POST":
+        safe_token = escape(token, quote=True)
+        return Response(
+            "<!doctype html><html lang='uk'><meta charset=utf-8>"
+            "<meta name='robots' content='noindex,nofollow'>"
+            "<title>Відписатися — UA-Dim</title>"
+            "<body><main><h1>Відписатися від сповіщень?</h1>"
+            "<p>Підтвердьте дію кнопкою нижче. Відкриття цього посилання "
+            "не змінює ваші налаштування.</p>"
+            "<form method='post' action='/api/alerts/unsubscribe'>"
+            f"<input type='hidden' name='token' value='{safe_token}'>"
+            "<button type='submit'>Відписатися</button>"
+            "</form></main></body></html>",
+            status=200,
+            content_type="text/html; charset=utf-8",
+        )
+
     parsed = _parse_alert_action_token(token, "unsubscribe")
     db = get_db()
     if parsed:
@@ -7910,14 +7927,15 @@ def unsubscribe_listing_alert():
                 (anchor["email_normalized"],),
             )
         db.commit()
-    if request.method == "POST":
-        return jsonify(ok=True)
-    return Response(
-        "<!doctype html><meta charset=utf-8><title>UA-Dim</title>"
-        "<p>Сповіщення вимкнено. Якщо посилання вже було використане, додаткових дій не потрібно.</p>",
-        status=200,
-        content_type="text/html; charset=utf-8",
-    )
+    if request.form:
+        return Response(
+            "<!doctype html><meta charset=utf-8><title>UA-Dim</title>"
+            "<p>Сповіщення вимкнено. Якщо запит уже було оброблено, "
+            "додаткових дій не потрібно.</p>",
+            status=200,
+            content_type="text/html; charset=utf-8",
+        )
+    return jsonify(ok=True)
 
 
 @app.route("/api/alerts/dispatch", methods=["GET", "POST"])

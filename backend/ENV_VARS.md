@@ -206,6 +206,13 @@ alerts are consolidated into one recipient email, its one-click unsubscribe
 deactivates all alerts for that normalized recipient address atomically; alerts
 for every other address are unaffected.
 
+The unsubscribe URL in the message body uses a non-mutating `GET` confirmation
+page so mail scanners and link previewers cannot disable alerts. The confirmation
+form submits the signed capability token by `POST`; provider one-click requests
+also use `POST` through `List-Unsubscribe-Post`. No login or cookie-based CSRF
+token is required because the unguessable signed capability is the authorization,
+and POST responses remain non-enumerating and replay-safe.
+
 The startup migration adds nullable normalized-email, idempotency, verification,
 scan-cursor, and unsubscribe-version columns, a channel-delivery receipt table,
 and supporting indexes. Existing active anonymous alerts

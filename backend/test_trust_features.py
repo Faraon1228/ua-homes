@@ -1707,19 +1707,28 @@ class TrustFeatureTests(unittest.TestCase):
         token = app_module._alert_action_token(alert_id, 0, "unsubscribe")
 
         tampered = self.client.get(f"/api/alerts/unsubscribe?token={token}x")
+        confirmation = self.client.get(f"/api/alerts/unsubscribe?token={token}")
+        scanner_retry = self.client.get(f"/api/alerts/unsubscribe?token={token}")
+        scanner_head = self.client.head(f"/api/alerts/unsubscribe?token={token}")
         with sqlite3.connect(TEST_DB) as db:
             self.assertEqual(
                 db.execute("SELECT is_active FROM listing_alerts WHERE id = ?", (alert_id,)).fetchone()[0],
                 1,
             )
+        confirmation_html = confirmation.get_data(as_text=True)
+        self.assertIn("method='post'", confirmation_html)
+        self.assertIn("action='/api/alerts/unsubscribe'", confirmation_html)
+        self.assertIn(f"value='{token}'", confirmation_html)
+        self.assertEqual(scanner_retry.status_code, 200)
+        self.assertEqual(scanner_head.status_code, 200)
         valid = self.client.post(
             f"/api/alerts/unsubscribe?token={token}",
             data="List-Unsubscribe=One-Click",
             content_type="application/x-www-form-urlencoded",
         )
         replay = self.client.post(f"/api/alerts/unsubscribe?token={token}")
-        self.assertEqual(tampered.status_code, valid.status_code)
-        self.assertEqual(valid.get_json(), replay.get_json())
+        self.assertEqual(tampered.status_code, confirmation.status_code)
+        self.assertEqual(valid.status_code, replay.status_code)
         with sqlite3.connect(TEST_DB) as db:
             state = db.execute(
                 "SELECT is_active, unsubscribe_version FROM listing_alerts WHERE id = ?",
@@ -1761,8 +1770,20 @@ class TrustFeatureTests(unittest.TestCase):
         )
         unsubscribe_url = grouped_call.kwargs["unsubscribe_url"]
         token = unsubscribe_url.split("token=", 1)[1]
+        for _ in range(2):
+            scanner_get = self.client.get(
+                f"/api/alerts/unsubscribe?token={token}"
+            )
+            self.assertEqual(scanner_get.status_code, 200)
+        with sqlite3.connect(TEST_DB) as db:
+            active_before_post = db.execute(
+                "SELECT COUNT(*) FROM listing_alerts WHERE is_active = 1"
+            ).fetchone()[0]
+        self.assertEqual(active_before_post, 3)
         response = self.client.post(f"/api/alerts/unsubscribe?token={token}")
+        replay = self.client.post(f"/api/alerts/unsubscribe?token={token}")
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), replay.get_json())
         with sqlite3.connect(TEST_DB) as db:
             grouped_states = db.execute(
                 "SELECT is_active FROM listing_alerts WHERE id IN (?, ?) ORDER BY id",
