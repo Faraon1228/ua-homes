@@ -1739,23 +1739,28 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertIn(f"value='{token}'", confirmation_html)
         self.assertEqual(scanner_retry.status_code, 200)
         self.assertEqual(scanner_head.status_code, 200)
-        self.assertEqual(
-            confirmation.headers["Content-Security-Policy"],
-            "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-        )
-        self.assertEqual(confirmation.headers["Referrer-Policy"], "no-referrer")
-        self.assertEqual(confirmation.headers["Cache-Control"], "no-store")
-        self.assertEqual(confirmation.headers["Pragma"], "no-cache")
-        self.assertEqual(confirmation.headers["X-Robots-Tag"], "noindex, nofollow")
         valid = self.client.post(
             f"/api/alerts/unsubscribe?token={token}",
             data="List-Unsubscribe=One-Click",
             content_type="application/x-www-form-urlencoded",
         )
         replay = self.client.post(f"/api/alerts/unsubscribe?token={token}")
+        tampered_post = self.client.post(
+            f"/api/alerts/unsubscribe?token={token}x"
+        )
+        fallback_post = self.client.post("/api/alerts/unsubscribe")
         self.assertEqual(tampered.status_code, confirmation.status_code)
         self.assertEqual(valid.status_code, replay.status_code)
-        for response in (valid, replay):
+        for response in (
+            tampered,
+            confirmation,
+            scanner_retry,
+            scanner_head,
+            valid,
+            replay,
+            tampered_post,
+            fallback_post,
+        ):
             self.assertEqual(response.headers["Cache-Control"], "no-store")
             self.assertEqual(response.headers["Pragma"], "no-cache")
             self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
