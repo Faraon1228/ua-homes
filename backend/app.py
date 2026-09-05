@@ -7885,6 +7885,16 @@ def verify_listing_alert():
 @app.route("/api/alerts/unsubscribe", methods=["GET", "POST"])
 @limiter.limit("30 per hour")
 def unsubscribe_listing_alert():
+    def hardened_response(response):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+        )
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        return response
+
     token = strip(request.args.get("token") or request.form.get("token"), 1000)
     if request.method != "POST":
         safe_token = escape(token, quote=True)
@@ -7902,13 +7912,7 @@ def unsubscribe_listing_alert():
             status=200,
             content_type="text/html; charset=utf-8",
         )
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
-        )
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["X-Robots-Tag"] = "noindex, nofollow"
-        return response
+        return hardened_response(response)
 
     parsed = _parse_alert_action_token(token, "unsubscribe")
     db = get_db()
@@ -7935,14 +7939,14 @@ def unsubscribe_listing_alert():
             )
         db.commit()
     if request.form:
-        return Response(
+        return hardened_response(Response(
             "<!doctype html><meta charset=utf-8><title>UA-Dim</title>"
             "<p>Сповіщення вимкнено. Якщо запит уже було оброблено, "
             "додаткових дій не потрібно.</p>",
             status=200,
             content_type="text/html; charset=utf-8",
-        )
-    return jsonify(ok=True)
+        ))
+    return hardened_response(jsonify(ok=True))
 
 
 @app.route("/api/alerts/dispatch", methods=["GET", "POST"])

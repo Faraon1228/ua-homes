@@ -1745,6 +1745,8 @@ class TrustFeatureTests(unittest.TestCase):
         )
         self.assertEqual(confirmation.headers["Referrer-Policy"], "no-referrer")
         self.assertEqual(confirmation.headers["Cache-Control"], "no-store")
+        self.assertEqual(confirmation.headers["Pragma"], "no-cache")
+        self.assertEqual(confirmation.headers["X-Robots-Tag"], "noindex, nofollow")
         valid = self.client.post(
             f"/api/alerts/unsubscribe?token={token}",
             data="List-Unsubscribe=One-Click",
@@ -1753,6 +1755,17 @@ class TrustFeatureTests(unittest.TestCase):
         replay = self.client.post(f"/api/alerts/unsubscribe?token={token}")
         self.assertEqual(tampered.status_code, confirmation.status_code)
         self.assertEqual(valid.status_code, replay.status_code)
+        for response in (valid, replay):
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+            self.assertEqual(response.headers["Pragma"], "no-cache")
+            self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
+            self.assertEqual(
+                response.headers["X-Robots-Tag"], "noindex, nofollow"
+            )
+            self.assertEqual(
+                response.headers["Content-Security-Policy"],
+                "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            )
         with sqlite3.connect(TEST_DB) as db:
             state = db.execute(
                 "SELECT is_active, unsubscribe_version FROM listing_alerts WHERE id = ?",
