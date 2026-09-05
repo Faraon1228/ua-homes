@@ -27,6 +27,8 @@ TABLE_ORDER = [
     "push_devices",
     "user_favorites",
     "alert_dispatch_runs",
+    "system_status_snapshots",
+    "system_incidents",
     "lead_funnel_events",
     "lead_funnel_daily_metrics",
     "lead_funnel_listing_metrics",

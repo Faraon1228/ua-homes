@@ -70,6 +70,31 @@ the public listings API, the seller frontend, and the admin login shell when the
 repository variable `UA_HOMES_ADMIN_URL` is configured. It checks three-second
 API latency thresholds and optionally enforces `UA_HOMES_DATABASE_ENGINE`. It
 opens a single GitHub issue when checks fail and closes that issue after recovery.
+It also calls the server-side operational-status refresh with the GitHub Actions
+secret `UA_HOMES_STATUS_REFRESH_KEY`. This secret is sent only as a bearer header
+and must never be put in browser or Netlify configuration.
+
+## Operational system status
+
+The admin-only **Стан системи** screen reads a durable, scrubbed server-side
+snapshot. Provider credentials never reach the browser. Missing credentials are
+shown as `not_configured`; timeouts and stale snapshots are `unknown` or
+`degraded`, never success.
+
+| Variable | Least-privilege purpose |
+|---|---|
+| `UA_HOMES_STATUS_REFRESH_KEY` | Random scheduler bearer key for `POST /api/operations/system-status/refresh`. Rotate with the matching GitHub secret. |
+| `UA_HOMES_STATUS_WEBSITE_URL` | HTTPS public site URL; optional `UA_HOMES_STATUS_WEBSITE_MARKER` verifies a bounded response marker. |
+| `UA_HOMES_STATUS_TTL_SECONDS`, `UA_HOMES_STATUS_TIMEOUT_SECONDS` | Snapshot TTL (30–3600) and provider timeout (1–10 seconds). |
+| `SENTRY_API_TOKEN`, `SENTRY_ORG`, `SENTRY_STATUS_PROJECTS` | Sentry organization/project **read-only** token and explicit comma-separated production projects. `SENTRY_BASE_URL` is optional. |
+| `GITHUB_STATUS_TOKEN`, `GITHUB_STATUS_REPOSITORY` | Fine-grained GitHub token (Actions read + Metadata read) or equivalent GitHub App token, and `owner/repo`. |
+| `UA_HOMES_INCIDENT_EMAILS` | Comma-separated operational recipients; uses existing SendGrid/SMTP settings. |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Optional server-only Bot API token and numeric chat ID. |
+
+Deploy with providers disabled first, verify staff RBAC/redaction in staging, then
+enable Sentry/GitHub reads, email, Telegram, and finally the scheduler. To roll
+back, disable the workflow and remove provider/notification credentials; the
+read endpoint safely reports unavailable providers without schema rollback.
 
 ## Staff access
 
