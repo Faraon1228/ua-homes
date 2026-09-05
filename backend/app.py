@@ -7888,7 +7888,7 @@ def unsubscribe_listing_alert():
     token = strip(request.args.get("token") or request.form.get("token"), 1000)
     if request.method != "POST":
         safe_token = escape(token, quote=True)
-        return Response(
+        response = Response(
             "<!doctype html><html lang='uk'><meta charset=utf-8>"
             "<meta name='robots' content='noindex,nofollow'>"
             "<title>Відписатися — UA-Dim</title>"
@@ -7902,6 +7902,13 @@ def unsubscribe_listing_alert():
             status=200,
             content_type="text/html; charset=utf-8",
         )
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+        )
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        return response
 
     parsed = _parse_alert_action_token(token, "unsubscribe")
     db = get_db()

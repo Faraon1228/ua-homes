@@ -1698,29 +1698,53 @@ class TrustFeatureTests(unittest.TestCase):
             cursor = db.execute(
                 """
                 INSERT INTO listing_alerts (
-                    email, email_normalized, name, filters, is_active
-                ) VALUES ('legacy@example.test', 'legacy@example.test', 'Legacy', '{}', 1)
+                    email, email_normalized, name, filters, is_active,
+                    verification_token_hash, verification_expires_at
+                ) VALUES (
+                    'legacy@example.test', 'legacy@example.test', 'Legacy', '{}', 1,
+                    'preserved-before-post', '2099-01-01 00:00:00'
+                )
                 """
             )
             alert_id = cursor.lastrowid
             db.commit()
         token = app_module._alert_action_token(alert_id, 0, "unsubscribe")
 
+        with sqlite3.connect(TEST_DB) as db:
+            original_state = db.execute(
+                """
+                SELECT is_active, unsubscribe_version, verification_token_hash,
+                       verification_expires_at
+                FROM listing_alerts WHERE id = ?
+                """,
+                (alert_id,),
+            ).fetchone()
         tampered = self.client.get(f"/api/alerts/unsubscribe?token={token}x")
         confirmation = self.client.get(f"/api/alerts/unsubscribe?token={token}")
         scanner_retry = self.client.get(f"/api/alerts/unsubscribe?token={token}")
         scanner_head = self.client.head(f"/api/alerts/unsubscribe?token={token}")
         with sqlite3.connect(TEST_DB) as db:
-            self.assertEqual(
-                db.execute("SELECT is_active FROM listing_alerts WHERE id = ?", (alert_id,)).fetchone()[0],
-                1,
-            )
+            after_scanners = db.execute(
+                """
+                SELECT is_active, unsubscribe_version, verification_token_hash,
+                       verification_expires_at
+                FROM listing_alerts WHERE id = ?
+                """,
+                (alert_id,),
+            ).fetchone()
+        self.assertEqual(after_scanners, original_state)
         confirmation_html = confirmation.get_data(as_text=True)
         self.assertIn("method='post'", confirmation_html)
         self.assertIn("action='/api/alerts/unsubscribe'", confirmation_html)
         self.assertIn(f"value='{token}'", confirmation_html)
         self.assertEqual(scanner_retry.status_code, 200)
         self.assertEqual(scanner_head.status_code, 200)
+        self.assertEqual(
+            confirmation.headers["Content-Security-Policy"],
+            "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+        )
+        self.assertEqual(confirmation.headers["Referrer-Policy"], "no-referrer")
+        self.assertEqual(confirmation.headers["Cache-Control"], "no-store")
         valid = self.client.post(
             f"/api/alerts/unsubscribe?token={token}",
             data="List-Unsubscribe=One-Click",
