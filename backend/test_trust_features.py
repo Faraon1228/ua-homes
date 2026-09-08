@@ -858,6 +858,16 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertTrue(
             all(f'nonce="{first_nonce}"' in attributes for attributes in scripts)
         )
+        self.assertNotRegex(first.get_data(as_text=True), r"\son[a-z]+\s*=")
+        self.assertNotRegex(
+            first.get_data(as_text=True),
+            r"\s(?:href|src)\s*=\s*[\"']javascript:",
+        )
+        self.assertIn('id="copyListingLink"', first.get_data(as_text=True))
+        self.assertIn(
+            "copyBtn.addEventListener('click'",
+            first.get_data(as_text=True),
+        )
 
     def test_cors_live_contract_distinguishes_production_and_native_clients(self):
         canonical = "https://ua-dim.com"
@@ -3683,7 +3693,10 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertNotIn("resp.demo", source)
         with open(os.path.join(web_dir, "real-estate-demo.html"), encoding="utf-8") as handle:
             shell = handle.read()
-        self.assertIn("paymentParams.get('payment') === 'return'", shell)
+        self.assertIn('src="premium-loader.js?', shell)
+        with open(os.path.join(web_dir, "premium-loader.js"), encoding="utf-8") as handle:
+            loader = handle.read()
+        self.assertIn('paymentParams.get("payment") === "return"', loader)
 
     def test_sitemap_includes_legal_pages(self):
         response = self.client.get("/sitemap.xml")

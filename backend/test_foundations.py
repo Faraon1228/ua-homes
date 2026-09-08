@@ -255,19 +255,31 @@ class SecurityPolicyTests(unittest.TestCase):
                 r'<script[^>]+src=["\']https://(?:unpkg\.com|cdn\.tailwindcss\.com)',
             )
             for match in re.finditer(
-                r"<script(?:\s[^>]*)?>([\s\S]*?)</script>",
+                r"<script(?P<attributes>\s[^>]*)?>(?P<content>[\s\S]*?)</script>",
                 html,
                 flags=re.IGNORECASE,
             ):
-                if re.search(r"\bsrc\s*=", match.group(0), flags=re.IGNORECASE):
+                attributes = match.group("attributes") or ""
+                if re.search(r"\bsrc\s*=", attributes, flags=re.IGNORECASE):
                     continue
-                content = match.group(1)
+                content = match.group("content")
                 if not content.strip():
                     continue
                 digest = base64.b64encode(
                     hashlib.sha256(content.encode()).digest()
                 ).decode()
                 self.assertIn(f"'sha256-{digest}'", script_policy)
+
+        inline_with_src_assignment = re.search(
+            r"<script(?P<attributes>\s[^>]*)?>(?P<content>[\s\S]*?)</script>",
+            "<script>const script = {}; script.src = '/local.js';</script>",
+            flags=re.IGNORECASE,
+        )
+        self.assertNotRegex(
+            inline_with_src_assignment.group("attributes") or "",
+            r"\bsrc\s*=",
+        )
+        self.assertIn("script.src", inline_with_src_assignment.group("content"))
 
 
 class TimeHelperTests(unittest.TestCase):

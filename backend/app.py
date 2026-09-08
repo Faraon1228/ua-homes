@@ -9948,7 +9948,7 @@ def listing_page(lid: int):
       <a href="#contact" class="primary-btn">Запитати про об’єкт</a>
       {phone_action_html}
       <a href="{app_link}" class="secondary-btn">До каталогу UA-Dim</a>
-      <button type="button" class="copy-btn" onclick="navigator.clipboard&&navigator.clipboard.writeText(location.href).then(()=>this.textContent='Скопійовано')">Скопіювати посилання</button>
+      <button type="button" class="copy-btn" id="copyListingLink">Скопіювати посилання</button>
     </div>
   </section>
 
@@ -10074,6 +10074,15 @@ def listing_page(lid: int):
     var errorEl = document.getElementById('reportError');
     var successEl = document.getElementById('reportSuccess');
     var submitBtn = document.getElementById('reportSubmit');
+    var copyBtn = document.getElementById('copyListingLink');
+    if (copyBtn) {{
+      copyBtn.addEventListener('click', function() {{
+        if (!navigator.clipboard) return;
+        navigator.clipboard.writeText(location.href).then(function() {{
+          copyBtn.textContent = 'Скопійовано';
+        }});
+      }});
+    }}
     if (!dialog || !openBtn) return;
 
     function getSessionId() {{
