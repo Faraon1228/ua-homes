@@ -232,6 +232,9 @@ def _cors_origins() -> list[str | re.Pattern[str]]:
 def _build_html_csp(nonce: str = "") -> str:
     return build_html_csp(PUBLIC_SITE_URL, API_ORIGIN, nonce=nonce)
 
+def _csp_nonce() -> str:
+    return getattr(g, "csp_nonce", "")
+
 
 def _bootstrap_admin_user(db) -> None:
     if not BOOTSTRAP_ADMIN_EMAIL or not BOOTSTRAP_ADMIN_PASSWORD:
@@ -1490,16 +1493,7 @@ def apply_security_headers(response):
         is_html=response.mimetype == "text/html",
     )
     if "Content-Security-Policy" in headers:
-        nonce = getattr(g, "csp_nonce", secrets.token_urlsafe(24))
-        headers["Content-Security-Policy"] = _build_html_csp(nonce)
-        body = response.get_data(as_text=True)
-        body = re.sub(
-            r"<script(?![^>]*\bnonce=)",
-            f'<script nonce="{nonce}"',
-            body,
-            flags=re.IGNORECASE,
-        )
-        response.set_data(body)
+        headers["Content-Security-Policy"] = _build_html_csp(_csp_nonce())
     for header, value in headers.items():
         response.headers.setdefault(header, value)
 
@@ -8893,7 +8887,7 @@ def _render_development_project_page(slug: str):
   <meta property="og:url" content="%s" />
   <meta property="og:image" content="%s/favicon.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <script type="application/ld+json">%s</script>
+  <script nonce="%s" type="application/ld+json">%s</script>
   <style>
     body{margin:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f8fafc;color:#0f172a}
     .wrap{max-width:1180px;margin:0 auto;padding:24px 16px 48px}
@@ -8972,7 +8966,7 @@ def _render_development_project_page(slug: str):
     </div>
   </div>
 
-  <script>
+  <script nonce="%s">
   (function() {
     const form = document.getElementById('development-lead-form');
     const status = document.getElementById('lead-status');
@@ -9049,7 +9043,8 @@ def _render_development_project_page(slug: str):
         price_from,                      # 11 og description price
         canonical,                      # 12 og url
         base,                            # 13 og image base
-        project_json,                    # 14 ld json
+        _csp_nonce(),                    # 14 ld json nonce
+        project_json,                    # 15 ld json
         escape(project["name"]),        # 15 hero h1
         escape(project["headline"]),     # 16 hero paragraph
         escape(project["city"]),        # 17 chips city
@@ -9060,7 +9055,8 @@ def _render_development_project_page(slug: str):
         floor_plans,                     # 22 floor plans
         highlights,                      # 23 highlights
         escape(project["stage"]),        # 24 stage
-        related_cards,                   # 25 related listings
+        related_cards,                   # 26 related listings
+        _csp_nonce(),                    # 27 lead form script nonce
         json.dumps(api_base, ensure_ascii=False),  # 26 api base
         slug_json,                       # 27 payload slug
         name_json,                       # 28 payload name
@@ -9364,12 +9360,12 @@ def _render_seo_page(city: str, district: str | None):
   <meta name="twitter:title" content="Купити нерухомість — {escape(title_suffix)} | UA-Dim" />
   <meta name="twitter:description" content="Актуальні оголошення в локації {escape(title_suffix)}: {total_count} об'єктів, середня ціна ${avg_price:,}. Сторінка {page} з {total_pages}." />
   <meta name="twitter:image" content="{og_image}" />
-  <script type="application/ld+json">{json_for_html_script(organization_json_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(webpage_json_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(page_json_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(city_dataset_json_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(breadcrumb_json_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(faq_json_ld)}</script>
+  <script nonce="{_csp_nonce()}" type="application/ld+json">{json_for_html_script(organization_json_ld)}</script>
+  <script nonce="{_csp_nonce()}" type="application/ld+json">{json_for_html_script(webpage_json_ld)}</script>
+  <script nonce="{_csp_nonce()}" type="application/ld+json">{json_for_html_script(page_json_ld)}</script>
+  <script nonce="{_csp_nonce()}" type="application/ld+json">{json_for_html_script(city_dataset_json_ld)}</script>
+  <script nonce="{_csp_nonce()}" type="application/ld+json">{json_for_html_script(breadcrumb_json_ld)}</script>
+  <script nonce="{_csp_nonce()}" type="application/ld+json">{json_for_html_script(faq_json_ld)}</script>
   <style>
     body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:900px;margin:0 auto;padding:24px;line-height:1.55;color:#0f172a}}
     a{{color:#2563eb;text-decoration:none}} a:hover{{text-decoration:underline}}
@@ -9674,8 +9670,8 @@ def listing_page(lid: int):
         map_html = f"""
 <div id="map" style="height:300px;border-radius:16px;margin:20px 0"></div>
 <link rel="stylesheet" href="/static/vendor/leaflet-1.9.4/leaflet.css"/>
-<script src="/static/vendor/leaflet-1.9.4/leaflet.js"></script>
-<script>
+<script nonce="{_csp_nonce()}" src="/static/vendor/leaflet-1.9.4/leaflet.js"></script>
+<script nonce="{_csp_nonce()}">
   var m=L.map('map',{{zoomControl:true}}).setView([{lat},{lng}],15);
   L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'© OpenStreetMap'}}).addTo(m);
   var markerIcon=L.divIcon({{
@@ -9856,11 +9852,11 @@ def listing_page(lid: int):
   <meta name="twitter:image" content="{escape(og_image)}"/>
   <meta name="twitter:image:alt" content="{escape(listing['title'])}"/>
   <meta name="twitter:site" content="@ua_homes"/>
-  <script type="application/ld+json">{json_for_html_script(organization_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(webpage_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(breadcrumb_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(listing_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(faq_ld)}</script>
+  <script nonce="{_csp_nonce()}" type="application/ld+json">{json_for_html_script(organization_ld)}</script>
+  <script nonce="{_csp_nonce()}" type="application/ld+json">{json_for_html_script(webpage_ld)}</script>
+  <script nonce="{_csp_nonce()}" type="application/ld+json">{json_for_html_script(breadcrumb_ld)}</script>
+  <script nonce="{_csp_nonce()}" type="application/ld+json">{json_for_html_script(listing_ld)}</script>
+  <script nonce="{_csp_nonce()}" type="application/ld+json">{json_for_html_script(faq_ld)}</script>
   <style>
     *{{box-sizing:border-box}}
     body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;max-width:860px;margin:0 auto;padding:16px 20px 48px;color:#0f172a;background:linear-gradient(180deg,#f8fafc,#eef2ff);line-height:1.55}}
@@ -10063,7 +10059,7 @@ def listing_page(lid: int):
       </form>
     </dialog>
   </div>
-  <script>
+  <script nonce="{_csp_nonce()}">
   (function() {{
     var dialog = document.getElementById('reportDialog');
     var openBtn = document.getElementById('openReportBtn');

@@ -869,6 +869,43 @@ class TrustFeatureTests(unittest.TestCase):
             first.get_data(as_text=True),
         )
 
+        for path in (
+            f"/listing/{self.target_id}",
+            "/seo/%D0%9A%D0%B8%D1%97%D0%B2",
+            "/zhk/river-garden-residence",
+        ):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                nonce = re.search(
+                    r"'nonce-([^']+)'",
+                    response.headers["Content-Security-Policy"],
+                ).group(1)
+                scripts = re.findall(
+                    r"<script\b([^>]*)>",
+                    response.get_data(as_text=True),
+                )
+                self.assertTrue(scripts)
+                self.assertTrue(
+                    all(f'nonce="{nonce}"' in attributes for attributes in scripts)
+                )
+
+    def test_security_headers_do_not_nonce_untrusted_response_scripts(self):
+        with app_module.app.test_request_context("/synthetic-untrusted"):
+            app_module.app.preprocess_request()
+            nonce = app_module.g.csp_nonce
+            response = app_module.Response(
+                '<p>Reflected content</p><script>alert("xss")</script>',
+                mimetype="text/html",
+            )
+            secured = app_module.apply_security_headers(response)
+
+        self.assertIn(
+            f"'nonce-{nonce}'",
+            secured.headers["Content-Security-Policy"],
+        )
+        self.assertIn('<script>alert("xss")</script>', secured.get_data(as_text=True))
+        self.assertNotIn(f'nonce="{nonce}"', secured.get_data(as_text=True))
+
     def test_cors_live_contract_distinguishes_production_and_native_clients(self):
         canonical = "https://ua-dim.com"
         localhost = "http://localhost:5173"
