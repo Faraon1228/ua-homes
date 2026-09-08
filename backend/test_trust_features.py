@@ -843,7 +843,7 @@ class TrustFeatureTests(unittest.TestCase):
             normal_page,
         )
 
-    def test_html_csp_nonce_is_unique_and_matches_every_script(self):
+    def test_html_csp_nonce_is_unique_and_matches_every_author_script(self):
         first = self.client.get(f"/listing/{self.target_id}")
         second = self.client.get(f"/listing/{self.target_id}")
         first_csp = first.headers["Content-Security-Policy"]
@@ -853,11 +853,26 @@ class TrustFeatureTests(unittest.TestCase):
 
         self.assertNotEqual(first_nonce, second_nonce)
         self.assertNotIn("'unsafe-inline'", first_csp.split("style-src", 1)[0])
-        scripts = re.findall(r"<script\b([^>]*)>", first.get_data(as_text=True))
-        self.assertTrue(scripts)
-        self.assertTrue(
-            all(f'nonce="{first_nonce}"' in attributes for attributes in scripts)
+        pages = (
+            first,
+            self.client.get("/seo/%D0%9A%D0%B8%D1%97%D0%B2"),
+            self.client.get("/seo/zhk/river-garden-residence"),
         )
+        expected_script_counts = (6, 6, 2)
+        for response, expected_count in zip(pages, expected_script_counts):
+            with self.subTest(path=response.request.path):
+                nonce = re.search(
+                    r"'nonce-([^']+)'",
+                    response.headers["Content-Security-Policy"],
+                ).group(1)
+                scripts = re.findall(
+                    r"<script\b([^>]*)>",
+                    response.get_data(as_text=True),
+                )
+                self.assertEqual(len(scripts), expected_count)
+                self.assertTrue(
+                    all(f'nonce="{nonce}"' in attributes for attributes in scripts)
+                )
         self.assertNotRegex(first.get_data(as_text=True), r"\son[a-z]+\s*=")
         self.assertNotRegex(
             first.get_data(as_text=True),
@@ -869,42 +884,23 @@ class TrustFeatureTests(unittest.TestCase):
             first.get_data(as_text=True),
         )
 
-        for path in (
-            f"/listing/{self.target_id}",
-            "/seo/%D0%9A%D0%B8%D1%97%D0%B2",
-            "/zhk/river-garden-residence",
-        ):
-            with self.subTest(path=path):
-                response = self.client.get(path)
-                nonce = re.search(
-                    r"'nonce-([^']+)'",
-                    response.headers["Content-Security-Policy"],
-                ).group(1)
-                scripts = re.findall(
-                    r"<script\b([^>]*)>",
-                    response.get_data(as_text=True),
-                )
-                self.assertTrue(scripts)
-                self.assertTrue(
-                    all(f'nonce="{nonce}"' in attributes for attributes in scripts)
-                )
-
-    def test_security_headers_do_not_nonce_untrusted_response_scripts(self):
-        with app_module.app.test_request_context("/synthetic-untrusted"):
-            app_module.app.preprocess_request()
-            nonce = app_module.g.csp_nonce
-            response = app_module.Response(
-                '<p>Reflected content</p><script>alert("xss")</script>',
-                mimetype="text/html",
-            )
+    def test_security_headers_do_not_nonce_arbitrary_response_scripts(self):
+        reflected_body = '<main>reflected</main><script>alert("xss")</script>'
+        with app_module.app.test_request_context("/reflected"):
+            response = app_module.Response(reflected_body, mimetype="text/html")
             secured = app_module.apply_security_headers(response)
 
-        self.assertIn(
-            f"'nonce-{nonce}'",
+        self.assertEqual(secured.get_data(as_text=True), reflected_body)
+        self.assertRegex(
             secured.headers["Content-Security-Policy"],
+            r"script-src 'self' 'nonce-[^']+';",
         )
-        self.assertIn('<script>alert("xss")</script>', secured.get_data(as_text=True))
-        self.assertNotIn(f'nonce="{nonce}"', secured.get_data(as_text=True))
+        script_policy = secured.headers["Content-Security-Policy"].split(
+            "script-src ",
+            1,
+        )[1].split(";", 1)[0]
+        self.assertNotIn("'unsafe-inline'", script_policy)
+        self.assertNotIn("<script nonce=", secured.get_data(as_text=True))
 
     def test_cors_live_contract_distinguishes_production_and_native_clients(self):
         canonical = "https://ua-dim.com"
