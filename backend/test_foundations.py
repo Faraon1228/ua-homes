@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import datetime
+import base64
+import hashlib
 import os
 import re
 import runpy
 import tempfile
 import unittest
+from pathlib import Path
 
 from backend.client_identity import parse_trusted_proxy_cidrs, resolve_client_ip
 from backend.configuration import (
@@ -166,6 +169,18 @@ class SecurityPolicyTests(unittest.TestCase):
         self.assertTrue(
             any(pattern.fullmatch("http://localhost:5173") for pattern in localhost_patterns)
         )
+        production = cors_origins(
+            {"UA_HOMES_ALLOW_NETLIFY_PREVIEW_CORS": "yes"},
+            is_production=True,
+        )
+        self.assertFalse(
+            any(
+                isinstance(origin, re.Pattern)
+                and origin.fullmatch("http://localhost:5173")
+                for origin in production
+            )
+        )
+        self.assertNotIn("https://phase-4.netlify.app", production)
 
         configured = cors_origins(
             {"UA_HOMES_CORS_ORIGINS": " https://one.test, ,https://two.test "}
@@ -207,7 +222,11 @@ class SecurityPolicyTests(unittest.TestCase):
         csp = build_html_csp(
             "https://ua-dim.com/catalog",
             "https://api.ua-dim.com",
+            nonce="test-nonce",
         )
+        self.assertIn("script-src 'self' 'nonce-test-nonce'", csp)
+        self.assertNotIn("'unsafe-inline'", csp.split("style-src", 1)[0])
+        self.assertNotIn("unpkg.com", csp)
         self.assertIn("frame-ancestors 'none'", csp)
         self.assertIn(
             "connect-src 'self' https://api.cloudinary.com "
@@ -216,6 +235,39 @@ class SecurityPolicyTests(unittest.TestCase):
             "https://api.ua-dim.com",
             csp,
         )
+
+    def test_active_static_scripts_are_self_hosted_or_covered_by_csp_hashes(self):
+        repo_dir = Path(__file__).resolve().parent.parent
+        web_dir = repo_dir / "web"
+        netlify = (repo_dir / "netlify.toml").read_text(encoding="utf-8")
+        script_policy = netlify.split("script-src ", 1)[1].split("; ", 1)[0]
+
+        self.assertNotIn("'unsafe-inline'", script_policy)
+        self.assertNotIn("unpkg.com", netlify)
+        self.assertNotIn("cdn.tailwindcss.com", netlify)
+        self.assertFalse((web_dir / "market-upgrade.js").exists())
+        self.assertFalse((web_dir / "react-fallback.js").exists())
+
+        for html_path in web_dir.glob("*.html"):
+            html = html_path.read_text(encoding="utf-8")
+            self.assertNotRegex(
+                html,
+                r'<script[^>]+src=["\']https://(?:unpkg\.com|cdn\.tailwindcss\.com)',
+            )
+            for match in re.finditer(
+                r"<script(?:\s[^>]*)?>([\s\S]*?)</script>",
+                html,
+                flags=re.IGNORECASE,
+            ):
+                if re.search(r"\bsrc\s*=", match.group(0), flags=re.IGNORECASE):
+                    continue
+                content = match.group(1)
+                if not content.strip():
+                    continue
+                digest = base64.b64encode(
+                    hashlib.sha256(content.encode()).digest()
+                ).decode()
+                self.assertIn(f"'sha256-{digest}'", script_policy)
 
 
 class TimeHelperTests(unittest.TestCase):

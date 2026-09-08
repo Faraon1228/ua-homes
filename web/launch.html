@@ -20,25 +20,10 @@
   <meta name="twitter:image" content="favicon.png" />
   <link rel="icon" type="image/png" href="/favicon.png" />
   <link rel="stylesheet" href="/privacy-consent.css?v=20260813-2" />
+  <link rel="stylesheet" href="/ua-homes.css" />
   <script defer src="/privacy-consent.js?v=20260813-1"></script>
   <script defer src="/analytics-loader.js?v=20260813-1"></script>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: { ua: { blue: '#005BBB', yellow: '#FFD700' } },
-          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] }
-        }
-      }
-    }
-    document.addEventListener('DOMContentLoaded', () => {
-      if (!['localhost', '127.0.0.1'].includes(window.location.hostname)) return;
-      document.querySelectorAll('[data-seller-link]').forEach((link) => {
-        link.href = '/seller#add';
-      });
-    });
-  </script>
+  <script defer src="/launch.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
   <style>
@@ -340,14 +325,5 @@
     </div>
   </footer>
 
-  <script>
-    // Smooth scroll
-    document.querySelectorAll('a[href^="#"]').forEach(a => {
-      a.addEventListener('click', e => {
-        const target = document.querySelector(a.getAttribute('href'));
-        if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth' }); }
-      });
-    });
-  </script>
 </body>
 </html>

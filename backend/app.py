@@ -39,7 +39,6 @@ from urllib.parse import quote, unquote, urlencode, urlsplit
 import bcrypt
 import jwt
 from flask import Flask, Response, g, jsonify, request, send_file
-from flask_cors import CORS
 from flask_limiter import Limiter
 from werkzeug.exceptions import RequestEntityTooLarge
 
@@ -228,13 +227,10 @@ def normalize_media_content_type(filename: str, content_type: str | None) -> tup
 
 
 def _cors_origins() -> list[str | re.Pattern[str]]:
-    return cors_origins()
+    return cors_origins(is_production=_production_secret_required())
 
-def _build_html_csp() -> str:
-    return build_html_csp(PUBLIC_SITE_URL, API_ORIGIN)
-
-
-HTML_CSP = _build_html_csp()
+def _build_html_csp(nonce: str = "") -> str:
+    return build_html_csp(PUBLIC_SITE_URL, API_ORIGIN, nonce=nonce)
 
 
 def _bootstrap_admin_user(db) -> None:
@@ -1338,7 +1334,6 @@ def _bootstrap_postgres_admin(cur):
 
 SENTRY_ENABLED = initialize_sentry()
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": _cors_origins()}}, supports_credentials=True, vary_header=True)
 
 # Configure Cloudinary early so api_sign_request has credentials
 if CLOUDINARY_URL:
@@ -1354,6 +1349,7 @@ def assign_request_id():
         g.request_id = incoming_request_id
     else:
         g.request_id = secrets.token_hex(12)
+    g.csp_nonce = secrets.token_urlsafe(24)
     bind_request_context(
         g.request_id,
         request.method,
@@ -1442,6 +1438,13 @@ def _cache_control_for_request() -> str | None:
 
 def _allow_cors_for_request(response: Response) -> Response:
     origin = request.headers.get("Origin", "").strip()
+    for header in (
+        "Access-Control-Allow-Origin",
+        "Access-Control-Allow-Credentials",
+        "Access-Control-Allow-Methods",
+        "Access-Control-Allow-Headers",
+    ):
+        response.headers.pop(header, None)
     if not origin:
         return response
 
@@ -1487,7 +1490,16 @@ def apply_security_headers(response):
         is_html=response.mimetype == "text/html",
     )
     if "Content-Security-Policy" in headers:
-        headers["Content-Security-Policy"] = HTML_CSP
+        nonce = getattr(g, "csp_nonce", secrets.token_urlsafe(24))
+        headers["Content-Security-Policy"] = _build_html_csp(nonce)
+        body = response.get_data(as_text=True)
+        body = re.sub(
+            r"<script(?![^>]*\bnonce=)",
+            f'<script nonce="{nonce}"',
+            body,
+            flags=re.IGNORECASE,
+        )
+        response.set_data(body)
     for header, value in headers.items():
         response.headers.setdefault(header, value)
 
@@ -9661,8 +9673,8 @@ def listing_page(lid: int):
         popup_title = json_for_html_script(escape(listing["title"], quote=True))
         map_html = f"""
 <div id="map" style="height:300px;border-radius:16px;margin:20px 0"></div>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="/static/vendor/leaflet-1.9.4/leaflet.css"/>
+<script src="/static/vendor/leaflet-1.9.4/leaflet.js"></script>
 <script>
   var m=L.map('map',{{zoomControl:true}}).setView([{lat},{lng}],15);
   L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'© OpenStreetMap'}}).addTo(m);
@@ -9827,7 +9839,6 @@ def listing_page(lid: int):
   <link rel="canonical" href="{canonical}"/>
   <link rel="alternate" hreflang="uk-UA" href="{canonical}"/>
   <link rel="alternate" hreflang="x-default" href="{public_app_url()}"/>
-  <link rel="preconnect" href="https://unpkg.com" crossorigin/>
   <link rel="preconnect" href="https://images.unsplash.com" crossorigin/>
   <meta property="og:locale" content="uk_UA"/>
   <meta property="og:type" content="website"/>
