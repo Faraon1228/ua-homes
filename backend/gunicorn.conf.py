@@ -33,6 +33,13 @@ timeout = int(os.environ.get("GUNICORN_TIMEOUT", 30))
 graceful_timeout = 20
 keepalive = 5
 
+# Bound parser work before requests reach Flask.
+limit_request_line = int(os.environ.get("GUNICORN_LIMIT_REQUEST_LINE", 4094))
+limit_request_fields = int(os.environ.get("GUNICORN_LIMIT_REQUEST_FIELDS", 100))
+limit_request_field_size = int(
+    os.environ.get("GUNICORN_LIMIT_REQUEST_FIELD_SIZE", 8190)
+)
+
 # ── Logging ──────────────────────────────────────────────────────────────────
 accesslog = "-"   # stdout
 errorlog  = "-"   # stderr

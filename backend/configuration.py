@@ -21,6 +21,8 @@ class BackendSettings(NamedTuple):
     bootstrap_admin_password: str
     bootstrap_admin_name: str
     redis_url: str | None
+    trusted_proxy_cidrs: str
+    max_content_length: int
 
 
 def parse_bool(value: str | None) -> bool:
@@ -41,16 +43,40 @@ def load_settings(
         or os.path.join(base_dir, "ua_homes.db")
     )
     database_url = optional_value(environment, "DATABASE_URL")
+    public_site_url = environment.get(
+        "UA_HOMES_PUBLIC_URL", ""
+    ).strip().rstrip("/")
     if parse_bool(environment.get("UA_HOMES_REQUIRE_POSTGRES")) and not database_url:
         raise RuntimeError(
             "DATABASE_URL must be set when UA_HOMES_REQUIRE_POSTGRES is enabled."
+        )
+
+    max_content_length_raw = environment.get(
+        "UA_HOMES_MAX_CONTENT_LENGTH", "12582912"
+    ).strip()
+    try:
+        max_content_length = int(max_content_length_raw)
+    except ValueError as exc:
+        raise RuntimeError("UA_HOMES_MAX_CONTENT_LENGTH must be an integer.") from exc
+    if max_content_length < 1_048_576:
+        raise RuntimeError(
+            "UA_HOMES_MAX_CONTENT_LENGTH must be at least 1048576 bytes."
+        )
+
+    redis_url = optional_value(environment, "REDIS_URL")
+    if (
+        production_secret_required(database_url, public_site_url, environment)
+        and not redis_url
+    ):
+        raise RuntimeError(
+            "REDIS_URL must be set for production deployments."
         )
 
     return BackendSettings(
         db_path=db_path,
         database_url=database_url,
         maintenance_mode=parse_bool(environment.get("UA_HOMES_MAINTENANCE_MODE")),
-        public_site_url=environment.get("UA_HOMES_PUBLIC_URL", "").strip().rstrip("/"),
+        public_site_url=public_site_url,
         api_origin=environment.get("UA_HOMES_API", "").strip().rstrip("/"),
         bootstrap_admin_email=environment.get(
             "UA_HOMES_BOOTSTRAP_ADMIN_EMAIL", ""
@@ -62,7 +88,11 @@ def load_settings(
             environment.get("UA_HOMES_BOOTSTRAP_ADMIN_NAME", "Admin").strip()
             or "Admin"
         ),
-        redis_url=optional_value(environment, "REDIS_URL"),
+        redis_url=redis_url,
+        trusted_proxy_cidrs=environment.get(
+            "UA_HOMES_TRUSTED_PROXY_CIDRS", ""
+        ).strip(),
+        max_content_length=max_content_length,
     )
 
 

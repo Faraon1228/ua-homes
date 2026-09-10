@@ -23,6 +23,7 @@ TABLE_ORDER = [
     "listing_images",
     "moderation_log",
     "listing_alerts",
+    "alert_delivery_receipts",
     "push_devices",
     "user_favorites",
     "alert_dispatch_runs",

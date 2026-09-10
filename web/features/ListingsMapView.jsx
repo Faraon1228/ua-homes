@@ -11,7 +11,7 @@ function ensureLeafletLoaded() {
       const link = document.createElement("link");
       link.id = "uah-leaflet-css";
       link.rel = "stylesheet";
-      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      link.href = "/vendor/leaflet-1.9.4/leaflet.css";
       document.head.appendChild(link);
     }
 
@@ -28,7 +28,7 @@ function ensureLeafletLoaded() {
 
     const script = document.createElement("script");
     script.id = "uah-leaflet-js";
-    script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    script.src = "/vendor/leaflet-1.9.4/leaflet.js";
     script.async = true;
     script.onload = () => resolve(window.L);
     script.onerror = () => reject(new Error("Не вдалося завантажити карту"));

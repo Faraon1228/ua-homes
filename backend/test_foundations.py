@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import datetime
+import base64
+import hashlib
 import os
 import re
+import runpy
 import tempfile
 import unittest
+from pathlib import Path
 
+from backend.client_identity import parse_trusted_proxy_cidrs, resolve_client_ip
 from backend.configuration import (
     load_settings,
     production_secret_required,
@@ -50,6 +55,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(configured.bootstrap_admin_email, "admin@example.com")
         self.assertEqual(configured.bootstrap_admin_name, "Admin")
         self.assertEqual(configured.redis_url, "redis://cache")
+        self.assertEqual(configured.max_content_length, 12 * 1024 * 1024)
 
     def test_postgres_requirement_and_production_secret_fail_closed(self):
         with self.assertRaisesRegex(RuntimeError, "DATABASE_URL must be set"):
@@ -85,6 +91,73 @@ class ConfigurationTests(unittest.TestCase):
             "configured-secret",
         )
 
+    def test_production_requires_redis_but_development_does_not(self):
+        production_environments = (
+            {"RAILWAY_ENVIRONMENT_NAME": "production"},
+            {"DATABASE_URL": "postgres://database"},
+            {"UA_HOMES_PUBLIC_URL": "https://ua-dim.com"},
+        )
+        for environment in production_environments:
+            with self.subTest(environment=environment):
+                with self.assertRaisesRegex(RuntimeError, "REDIS_URL must be set"):
+                    load_settings("/tmp", environment)
+        settings = load_settings("/tmp", {"FLASK_ENV": "development"})
+        self.assertIsNone(settings.redis_url)
+        local_site_settings = load_settings(
+            "/tmp", {"UA_HOMES_PUBLIC_URL": "http://localhost:5050"}
+        )
+        self.assertIsNone(local_site_settings.redis_url)
+
+    def test_rejects_unsafe_request_size_configuration(self):
+        with self.assertRaisesRegex(RuntimeError, "must be at least"):
+            load_settings("/tmp", {"UA_HOMES_MAX_CONTENT_LENGTH": "1024"})
+
+
+class ClientIdentityTests(unittest.TestCase):
+    def test_separates_clients_behind_trusted_proxy_chain(self):
+        trusted = parse_trusted_proxy_cidrs("10.0.0.0/8, 192.0.2.0/24")
+        self.assertEqual(
+            resolve_client_ip(
+                "10.2.3.4",
+                "198.51.100.10, 192.0.2.8",
+                trusted,
+            ),
+            "198.51.100.10",
+        )
+        self.assertEqual(
+            resolve_client_ip(
+                "10.2.3.4",
+                "198.51.100.11, 192.0.2.8",
+                trusted,
+            ),
+            "198.51.100.11",
+        )
+
+    def test_ignores_spoofed_or_malformed_forwarding_headers(self):
+        trusted = parse_trusted_proxy_cidrs("10.0.0.0/8")
+        self.assertEqual(
+            resolve_client_ip("203.0.113.9", "198.51.100.4", trusted),
+            "203.0.113.9",
+        )
+        self.assertEqual(
+            resolve_client_ip("10.1.2.3", "garbage, 198.51.100.4", trusted),
+            "10.1.2.3",
+        )
+
+    def test_rejects_invalid_trusted_proxy_configuration(self):
+        with self.assertRaisesRegex(RuntimeError, "Invalid network"):
+            parse_trusted_proxy_cidrs("not-a-network")
+
+
+class GunicornSecurityTests(unittest.TestCase):
+    def test_request_parser_limits_are_conservative(self):
+        config = runpy.run_path(
+            os.path.join(os.path.dirname(__file__), "gunicorn.conf.py")
+        )
+        self.assertEqual(config["limit_request_line"], 4094)
+        self.assertEqual(config["limit_request_fields"], 100)
+        self.assertEqual(config["limit_request_field_size"], 8190)
+
 
 class SecurityPolicyTests(unittest.TestCase):
     def test_allowed_origins_preserve_defaults_overrides_and_preview_opt_in(self):
@@ -96,6 +169,18 @@ class SecurityPolicyTests(unittest.TestCase):
         self.assertTrue(
             any(pattern.fullmatch("http://localhost:5173") for pattern in localhost_patterns)
         )
+        production = cors_origins(
+            {"UA_HOMES_ALLOW_NETLIFY_PREVIEW_CORS": "yes"},
+            is_production=True,
+        )
+        self.assertFalse(
+            any(
+                isinstance(origin, re.Pattern)
+                and origin.fullmatch("http://localhost:5173")
+                for origin in production
+            )
+        )
+        self.assertNotIn("https://phase-4.netlify.app", production)
 
         configured = cors_origins(
             {"UA_HOMES_CORS_ORIGINS": " https://one.test, ,https://two.test "}
@@ -137,7 +222,11 @@ class SecurityPolicyTests(unittest.TestCase):
         csp = build_html_csp(
             "https://ua-dim.com/catalog",
             "https://api.ua-dim.com",
+            nonce="test-nonce",
         )
+        self.assertIn("script-src 'self' 'nonce-test-nonce'", csp)
+        self.assertNotIn("'unsafe-inline'", csp.split("style-src", 1)[0])
+        self.assertNotIn("unpkg.com", csp)
         self.assertIn("frame-ancestors 'none'", csp)
         self.assertIn(
             "connect-src 'self' https://api.cloudinary.com "
@@ -146,6 +235,51 @@ class SecurityPolicyTests(unittest.TestCase):
             "https://api.ua-dim.com",
             csp,
         )
+
+    def test_active_static_scripts_are_self_hosted_or_covered_by_csp_hashes(self):
+        repo_dir = Path(__file__).resolve().parent.parent
+        web_dir = repo_dir / "web"
+        netlify = (repo_dir / "netlify.toml").read_text(encoding="utf-8")
+        script_policy = netlify.split("script-src ", 1)[1].split("; ", 1)[0]
+
+        self.assertNotIn("'unsafe-inline'", script_policy)
+        self.assertNotIn("unpkg.com", netlify)
+        self.assertNotIn("cdn.tailwindcss.com", netlify)
+        self.assertFalse((web_dir / "market-upgrade.js").exists())
+        self.assertFalse((web_dir / "react-fallback.js").exists())
+
+        for html_path in web_dir.glob("*.html"):
+            html = html_path.read_text(encoding="utf-8")
+            self.assertNotRegex(
+                html,
+                r'<script[^>]+src=["\']https://(?:unpkg\.com|cdn\.tailwindcss\.com)',
+            )
+            for match in re.finditer(
+                r"<script(?P<attributes>\s[^>]*)?>(?P<content>[\s\S]*?)</script>",
+                html,
+                flags=re.IGNORECASE,
+            ):
+                attributes = match.group("attributes") or ""
+                if re.search(r"\bsrc\s*=", attributes, flags=re.IGNORECASE):
+                    continue
+                content = match.group("content")
+                if not content.strip():
+                    continue
+                digest = base64.b64encode(
+                    hashlib.sha256(content.encode()).digest()
+                ).decode()
+                self.assertIn(f"'sha256-{digest}'", script_policy)
+
+        inline_with_src_assignment = re.search(
+            r"<script(?P<attributes>\s[^>]*)?>(?P<content>[\s\S]*?)</script>",
+            "<script>const script = {}; script.src = '/local.js';</script>",
+            flags=re.IGNORECASE,
+        )
+        self.assertNotRegex(
+            inline_with_src_assignment.group("attributes") or "",
+            r"\bsrc\s*=",
+        )
+        self.assertIn("script.src", inline_with_src_assignment.group("content"))
 
 
 class TimeHelperTests(unittest.TestCase):

@@ -6,9 +6,12 @@ from collections.abc import Mapping
 from urllib.parse import urlsplit
 
 
-DEFAULT_CORS_ORIGINS: tuple[str | re.Pattern[str], ...] = (
+LOCAL_CORS_ORIGINS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"),
     re.compile(r"^https://(localhost|127\.0\.0\.1)(:\d+)?$"),
+)
+
+PRODUCTION_CORS_ORIGINS: tuple[str, ...] = (
     "https://ua-homes.netlify.app",
     "https://ua-dim.netlify.app",
     "https://ua-dom.com",
@@ -39,21 +42,31 @@ def response_security_headers(*, is_secure: bool, is_html: bool) -> dict[str, st
 
 def cors_origins(
     environment: Mapping[str, str] | None = None,
+    *,
+    is_production: bool = False,
 ) -> list[str | re.Pattern[str]]:
     environment = os.environ if environment is None else environment
     configured = environment.get("UA_HOMES_CORS_ORIGINS", "").strip()
     if configured:
         return [origin.strip() for origin in configured.split(",") if origin.strip()]
 
-    origins = list(DEFAULT_CORS_ORIGINS)
+    origins: list[str | re.Pattern[str]] = list(PRODUCTION_CORS_ORIGINS)
+    if not is_production:
+        origins = [*LOCAL_CORS_ORIGINS, *origins]
     if environment.get(
         "UA_HOMES_ALLOW_NETLIFY_PREVIEW_CORS", ""
-    ).strip().lower() in {"1", "true", "yes"}:
+    ).strip().lower() in {"1", "true", "yes"} and not is_production:
         origins.append(re.compile(r"^https://[a-z0-9-]+\.netlify\.app$"))
     return origins
 
 
-def build_html_csp(public_site_url: str = "", api_origin: str = "") -> str:
+def build_html_csp(
+    public_site_url: str = "",
+    api_origin: str = "",
+    *,
+    nonce: str = "",
+) -> str:
+    nonce_source = f" 'nonce-{nonce}'" if nonce else ""
     connect_sources = [
         "'self'",
         "https://api.cloudinary.com",
@@ -78,8 +91,10 @@ def build_html_csp(public_site_url: str = "", api_origin: str = "") -> str:
         "form-action 'self'; "
         "img-src 'self' data: blob: https://res.cloudinary.com https://*.amazonaws.com https://*.cloudfront.net https://images.unsplash.com https://picsum.photos https://fastly.picsum.photos https://*.tile.openstreetmap.org; "
         "media-src 'self' blob: https://res.cloudinary.com https://*.amazonaws.com https://*.cloudfront.net; "
-        "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.tailwindcss.com; "
-        "style-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; "
+        f"script-src 'self'{nonce_source}; "
+        # Backend templates still use inline style attributes. Script execution is
+        # nonce-gated independently while those styles are migrated incrementally.
+        "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
         f"connect-src {' '.join(connect_sources)}; "
         "font-src 'self' data:; "
         "worker-src 'self' blob:; "

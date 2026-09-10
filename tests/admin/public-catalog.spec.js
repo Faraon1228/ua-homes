@@ -17,6 +17,47 @@ async function mockCatalog(page, handler) {
   await page.route("**/api/listings?*", handler);
 }
 
+test("premium and marketplace loaders remain active as self-hosted scripts", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    class ImmediateIntersectionObserver {
+      constructor(callback) {
+        this.callback = callback;
+      }
+      observe() {
+        this.callback([{ isIntersecting: true }]);
+      }
+      disconnect() {}
+    }
+    window.IntersectionObserver = ImmediateIntersectionObserver;
+  });
+  await mockCatalog(page, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ listings: [], total: 0, has_more: false }),
+    }),
+  );
+  const loadedScripts = [];
+  page.on("request", (request) => {
+    if (/premium\.js|marketplace-extensions\.js/.test(request.url())) {
+      loadedScripts.push(request.url());
+    }
+  });
+
+  await page.goto("/real-estate-demo.html?payment=return&order_id=smoke-order");
+  await expect.poll(() => loadedScripts.some((url) => url.includes("premium.js"))).toBe(true);
+
+  await page.evaluate(() => window.dispatchEvent(new Event("uah:catalog-settled")));
+  await expect
+    .poll(() => loadedScripts.some((url) => url.includes("marketplace-extensions.js")))
+    .toBe(true);
+
+  await page.evaluate(() => window.uaPremium.open());
+  await expect(page.locator("#ua-premium-modal")).toBeVisible();
+});
+
 test("public catalog loads mocked listings and sends hero search at the API boundary", async ({
   page,
 }) => {
