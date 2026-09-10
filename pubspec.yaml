@@ -30,15 +30,15 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  google_maps_flutter: ^2.5.0 # Для інтеграції карти
-  image_picker: ^0.8.8+7        # Для вибору фото/відео з галереї
+  google_maps_flutter: ^2.18.0 # Для інтеграції карти
+  image_picker: ^1.2.3        # Для вибору фото/відео з галереї
   hive: ^2.2.3                 # Для локальної бази даних
   hive_flutter: ^1.1.0         # Для ініціалізації Hive у Flutter
   path_provider: ^2.0.0        # Для збереження обраних історій у локальному сховищі
   path: ^1.8.0
   provider: ^6.0.0             # Для управління станом додатку
-  video_player: ^2.6.0         # Для відтворення відео-історій
-  http: ^0.13.6
+  video_player: ^2.14.0         # Для відтворення відео-історій
+  http: ^1.6.0
   cupertino_icons: ^1.0.2
 dev_dependencies:
   flutter_test:
