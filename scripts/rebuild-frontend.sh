@@ -151,6 +151,7 @@ cat > "$TW_CONFIG" <<JS
 module.exports = {
   content: [
     '${WEB_DIR}/real-estate-demo.html',
+    '${WEB_DIR}/launch.html',
     '${WEB_DIR}/real-estate-app.js',
     '${WEB_DIR}/RealEstateApp.jsx',
   ],
@@ -186,6 +187,8 @@ BUILD_ID=$(
       "$WEB_DIR/real-estate-demo.html" "$WEB_DIR/ua-homes-manifest.json" \
       "$WEB_DIR/privacy.html" "$WEB_DIR/terms.html" "$WEB_DIR/cookie-policy.html" \
       "$WEB_DIR/privacy-consent.css" "$WEB_DIR/privacy-consent.js" \
+      "$WEB_DIR/premium-loader.js" "$WEB_DIR/marketplace-loader.js" \
+      "$WEB_DIR/launch.html" "$WEB_DIR/launch.js" \
       "$WEB_DIR/monitoring.js" "$WEB_DIR/vendor/react.production.min.js" \
       "$WEB_DIR/vendor/react-dom.production.min.js"
     find "$WEB_DIR/chunks" -type f -name '*.js' -print |
@@ -207,6 +210,10 @@ BUILD_ID=$(
   printf "  '/real-estate-app.js',\n"
   printf "  '/seller-app.js',\n"
   printf "  '/ua-homes.css',\n"
+  printf "  '/premium-loader.js',\n"
+  printf "  '/marketplace-loader.js',\n"
+  printf "  '/vendor/leaflet-1.9.4/leaflet.css',\n"
+  printf "  '/vendor/leaflet-1.9.4/leaflet.js',\n"
   find "$WEB_DIR/chunks" -type f -name '*.js' -print |
     sort |
     sed "s#^$WEB_DIR#  '#; s#\$#',#"

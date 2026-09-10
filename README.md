@@ -215,7 +215,13 @@ POST   /logout                # Вихід
 - JWT токени з 24-годинним терміном дії
 - Rate-limiting на бекенді
 - CORS обмежені дозволеними origin-ами
-- Базові security headers і CSP увімкнені на фронтенді
+- У production CORS дозволяє лише канонічні UA-Dim origin-и. Точний override
+  задається через `UA_HOMES_CORS_ORIGINS`; localhost і wildcard Netlify preview
+  доступні лише поза production (`UA_HOMES_ALLOW_NETLIFY_PREVIEW_CORS=true`).
+  Native Flutter/mobile Bearer-клієнти без заголовка `Origin` не блокуються.
+- Backend HTML використовує унікальний nonce CSP на кожну відповідь; статичний
+  Netlify shell дозволяє inline script лише за SHA-256 hash. `style-src
+  'unsafe-inline'` тимчасово збережено для наявних inline style-атрибутів.
 - Немає чутливих даних у фронтенді
 
 ## 📱 Мобільна оптимізація

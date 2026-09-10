@@ -39,7 +39,6 @@ from urllib.parse import quote, unquote, urlencode, urlsplit
 import bcrypt
 import jwt
 from flask import Flask, Response, g, jsonify, request, send_file
-from flask_cors import CORS
 from flask_limiter import Limiter
 from werkzeug.exceptions import RequestEntityTooLarge
 
@@ -228,13 +227,10 @@ def normalize_media_content_type(filename: str, content_type: str | None) -> tup
 
 
 def _cors_origins() -> list[str | re.Pattern[str]]:
-    return cors_origins()
+    return cors_origins(is_production=_production_secret_required())
 
-def _build_html_csp() -> str:
-    return build_html_csp(PUBLIC_SITE_URL, API_ORIGIN)
-
-
-HTML_CSP = _build_html_csp()
+def _build_html_csp(nonce: str = "") -> str:
+    return build_html_csp(PUBLIC_SITE_URL, API_ORIGIN, nonce=nonce)
 
 
 def _bootstrap_admin_user(db) -> None:
@@ -1338,12 +1334,19 @@ def _bootstrap_postgres_admin(cur):
 
 SENTRY_ENABLED = initialize_sentry()
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": _cors_origins()}}, supports_credentials=True, vary_header=True)
 
 # Configure Cloudinary early so api_sign_request has credentials
 if CLOUDINARY_URL:
     import cloudinary
     cloudinary.config(secure=True)  # Auto-loads from CLOUDINARY_URL environment variable
+
+
+def csp_nonce() -> str:
+    nonce = getattr(g, "csp_nonce", None)
+    if nonce is None:
+        nonce = secrets.token_urlsafe(24)
+        g.csp_nonce = nonce
+    return nonce
 
 
 @app.before_request
@@ -1354,6 +1357,7 @@ def assign_request_id():
         g.request_id = incoming_request_id
     else:
         g.request_id = secrets.token_hex(12)
+    g.csp_nonce = secrets.token_urlsafe(24)
     bind_request_context(
         g.request_id,
         request.method,
@@ -1442,6 +1446,13 @@ def _cache_control_for_request() -> str | None:
 
 def _allow_cors_for_request(response: Response) -> Response:
     origin = request.headers.get("Origin", "").strip()
+    for header in (
+        "Access-Control-Allow-Origin",
+        "Access-Control-Allow-Credentials",
+        "Access-Control-Allow-Methods",
+        "Access-Control-Allow-Headers",
+    ):
+        response.headers.pop(header, None)
     if not origin:
         return response
 
@@ -1487,7 +1498,7 @@ def apply_security_headers(response):
         is_html=response.mimetype == "text/html",
     )
     if "Content-Security-Policy" in headers:
-        headers["Content-Security-Policy"] = HTML_CSP
+        headers["Content-Security-Policy"] = _build_html_csp(csp_nonce())
     for header, value in headers.items():
         response.headers.setdefault(header, value)
 
@@ -8861,7 +8872,8 @@ def _render_development_project_page(slug: str):
         "description": project["headline"],
         "amenityFeature": [{"@type": "LocationFeatureSpecification", "name": item} for item in project["highlights"]],
     }
-    project_json = json.dumps(project_json_ld, ensure_ascii=False)
+    nonce = csp_nonce()
+    project_json = json_for_html_script(project_json_ld)
     slug_json = json.dumps(project["slug"], ensure_ascii=False)
     name_json = json.dumps(project["name"], ensure_ascii=False)
     city_json = json.dumps(project["city"], ensure_ascii=False)
@@ -8881,7 +8893,7 @@ def _render_development_project_page(slug: str):
   <meta property="og:url" content="%s" />
   <meta property="og:image" content="%s/favicon.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <script type="application/ld+json">%s</script>
+  <script nonce="%s" type="application/ld+json">%s</script>
   <style>
     body{margin:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f8fafc;color:#0f172a}
     .wrap{max-width:1180px;margin:0 auto;padding:24px 16px 48px}
@@ -8960,7 +8972,7 @@ def _render_development_project_page(slug: str):
     </div>
   </div>
 
-  <script>
+  <script nonce="%s">
   (function() {
     const form = document.getElementById('development-lead-form');
     const status = document.getElementById('lead-status');
@@ -9037,24 +9049,26 @@ def _render_development_project_page(slug: str):
         price_from,                      # 11 og description price
         canonical,                      # 12 og url
         base,                            # 13 og image base
-        project_json,                    # 14 ld json
-        escape(project["name"]),        # 15 hero h1
-        escape(project["headline"]),     # 16 hero paragraph
-        escape(project["city"]),        # 17 chips city
-        escape(project["district"]),    # 18 chips district
-        price_from,                      # 19 chips price
-        escape(project["delivery"]),     # 20 chips delivery
-        public_app,                      # 21 back to search
-        floor_plans,                     # 22 floor plans
-        highlights,                      # 23 highlights
-        escape(project["stage"]),        # 24 stage
-        related_cards,                   # 25 related listings
-        json.dumps(api_base, ensure_ascii=False),  # 26 api base
-        slug_json,                       # 27 payload slug
-        name_json,                       # 28 payload name
-        city_json,                       # 29 payload city
-        district_json,                   # 30 payload district
-        slug_json,                       # 31 analytics slug
+        nonce,                           # 14 ld json nonce
+        project_json,                    # 15 ld json
+        escape(project["name"]),        # 16 hero h1
+        escape(project["headline"]),     # 17 hero paragraph
+        escape(project["city"]),        # 18 chips city
+        escape(project["district"]),    # 19 chips district
+        price_from,                      # 20 chips price
+        escape(project["delivery"]),     # 21 chips delivery
+        public_app,                      # 22 back to search
+        floor_plans,                     # 23 floor plans
+        highlights,                      # 24 highlights
+        escape(project["stage"]),        # 25 stage
+        related_cards,                   # 26 related listings
+        nonce,                           # 27 lead script nonce
+        json.dumps(api_base, ensure_ascii=False),  # 28 api base
+        slug_json,                       # 29 payload slug
+        name_json,                       # 30 payload name
+        city_json,                       # 31 payload city
+        district_json,                   # 32 payload district
+        slug_json,                       # 33 analytics slug
     )
     return Response(html, mimetype="text/html; charset=utf-8")
 
@@ -9331,6 +9345,7 @@ def _render_seo_page(city: str, district: str | None):
         pagination_nav.append(f'<a href="{canonical_path}?{urlencode({"page": page + 1})}">Наступна →</a>')
     pagination_nav_html = " ".join(pagination_nav)
 
+    nonce = csp_nonce()
     html = f"""<!doctype html>
 <html lang="uk">
 <head>
@@ -9352,12 +9367,12 @@ def _render_seo_page(city: str, district: str | None):
   <meta name="twitter:title" content="Купити нерухомість — {escape(title_suffix)} | UA-Dim" />
   <meta name="twitter:description" content="Актуальні оголошення в локації {escape(title_suffix)}: {total_count} об'єктів, середня ціна ${avg_price:,}. Сторінка {page} з {total_pages}." />
   <meta name="twitter:image" content="{og_image}" />
-  <script type="application/ld+json">{json_for_html_script(organization_json_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(webpage_json_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(page_json_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(city_dataset_json_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(breadcrumb_json_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(faq_json_ld)}</script>
+  <script nonce="{nonce}" type="application/ld+json">{json_for_html_script(organization_json_ld)}</script>
+  <script nonce="{nonce}" type="application/ld+json">{json_for_html_script(webpage_json_ld)}</script>
+  <script nonce="{nonce}" type="application/ld+json">{json_for_html_script(page_json_ld)}</script>
+  <script nonce="{nonce}" type="application/ld+json">{json_for_html_script(city_dataset_json_ld)}</script>
+  <script nonce="{nonce}" type="application/ld+json">{json_for_html_script(breadcrumb_json_ld)}</script>
+  <script nonce="{nonce}" type="application/ld+json">{json_for_html_script(faq_json_ld)}</script>
   <style>
     body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:900px;margin:0 auto;padding:24px;line-height:1.55;color:#0f172a}}
     a{{color:#2563eb;text-decoration:none}} a:hover{{text-decoration:underline}}
@@ -9654,6 +9669,7 @@ def listing_page(lid: int):
         )
 
     # Map embed (Leaflet inline for standalone page)
+    nonce = csp_nonce()
     map_html = ""
     if listing.get("latitude") and listing.get("longitude"):
         lat, lng = listing["latitude"], listing["longitude"]
@@ -9661,9 +9677,9 @@ def listing_page(lid: int):
         popup_title = json_for_html_script(escape(listing["title"], quote=True))
         map_html = f"""
 <div id="map" style="height:300px;border-radius:16px;margin:20px 0"></div>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script>
+<link rel="stylesheet" href="/static/vendor/leaflet-1.9.4/leaflet.css"/>
+<script nonce="{nonce}" src="/static/vendor/leaflet-1.9.4/leaflet.js"></script>
+<script nonce="{nonce}">
   var m=L.map('map',{{zoomControl:true}}).setView([{lat},{lng}],15);
   L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'© OpenStreetMap'}}).addTo(m);
   var markerIcon=L.divIcon({{
@@ -9827,7 +9843,6 @@ def listing_page(lid: int):
   <link rel="canonical" href="{canonical}"/>
   <link rel="alternate" hreflang="uk-UA" href="{canonical}"/>
   <link rel="alternate" hreflang="x-default" href="{public_app_url()}"/>
-  <link rel="preconnect" href="https://unpkg.com" crossorigin/>
   <link rel="preconnect" href="https://images.unsplash.com" crossorigin/>
   <meta property="og:locale" content="uk_UA"/>
   <meta property="og:type" content="website"/>
@@ -9845,11 +9860,11 @@ def listing_page(lid: int):
   <meta name="twitter:image" content="{escape(og_image)}"/>
   <meta name="twitter:image:alt" content="{escape(listing['title'])}"/>
   <meta name="twitter:site" content="@ua_homes"/>
-  <script type="application/ld+json">{json_for_html_script(organization_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(webpage_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(breadcrumb_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(listing_ld)}</script>
-  <script type="application/ld+json">{json_for_html_script(faq_ld)}</script>
+  <script nonce="{nonce}" type="application/ld+json">{json_for_html_script(organization_ld)}</script>
+  <script nonce="{nonce}" type="application/ld+json">{json_for_html_script(webpage_ld)}</script>
+  <script nonce="{nonce}" type="application/ld+json">{json_for_html_script(breadcrumb_ld)}</script>
+  <script nonce="{nonce}" type="application/ld+json">{json_for_html_script(listing_ld)}</script>
+  <script nonce="{nonce}" type="application/ld+json">{json_for_html_script(faq_ld)}</script>
   <style>
     *{{box-sizing:border-box}}
     body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;max-width:860px;margin:0 auto;padding:16px 20px 48px;color:#0f172a;background:linear-gradient(180deg,#f8fafc,#eef2ff);line-height:1.55}}
@@ -9937,7 +9952,7 @@ def listing_page(lid: int):
       <a href="#contact" class="primary-btn">Запитати про об’єкт</a>
       {phone_action_html}
       <a href="{app_link}" class="secondary-btn">До каталогу UA-Dim</a>
-      <button type="button" class="copy-btn" onclick="navigator.clipboard&&navigator.clipboard.writeText(location.href).then(()=>this.textContent='Скопійовано')">Скопіювати посилання</button>
+      <button type="button" class="copy-btn" id="copyListingLink">Скопіювати посилання</button>
     </div>
   </section>
 
@@ -10052,7 +10067,7 @@ def listing_page(lid: int):
       </form>
     </dialog>
   </div>
-  <script>
+  <script nonce="{nonce}">
   (function() {{
     var dialog = document.getElementById('reportDialog');
     var openBtn = document.getElementById('openReportBtn');
@@ -10063,6 +10078,15 @@ def listing_page(lid: int):
     var errorEl = document.getElementById('reportError');
     var successEl = document.getElementById('reportSuccess');
     var submitBtn = document.getElementById('reportSubmit');
+    var copyBtn = document.getElementById('copyListingLink');
+    if (copyBtn) {{
+      copyBtn.addEventListener('click', function() {{
+        if (!navigator.clipboard) return;
+        navigator.clipboard.writeText(location.href).then(function() {{
+          copyBtn.textContent = 'Скопійовано';
+        }});
+      }});
+    }}
     if (!dialog || !openBtn) return;
 
     function getSessionId() {{

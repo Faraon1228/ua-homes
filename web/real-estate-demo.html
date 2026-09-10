@@ -75,10 +75,10 @@
       } catch (_err) {}
     })();
   </script>
-  <link rel="preload" as="style" href="ua-homes.css?v=perf-66c78f2985a0"/>
+  <link rel="preload" as="style" href="ua-homes.css?v=perf-67b1a249c2b4"/>
   <link rel="preload" as="script" href="vendor/react.production.min.js?v=e7ca5f4"/>
   <link rel="preload" as="script" href="vendor/react-dom.production.min.js?v=e7ca5f4"/>
-  <link rel="stylesheet" href="ua-homes.css?v=perf-66c78f2985a0"/>
+  <link rel="stylesheet" href="ua-homes.css?v=perf-67b1a249c2b4"/>
   <link rel="stylesheet" href="privacy-consent.css?v=20260813-2"/>
   <script defer src="privacy-consent.js?v=20260813-1"></script>
   <script type="module" src="/monitoring.js"></script>
@@ -379,97 +379,15 @@
     window.addEventListener("beforeunload", flushFinalVitals);
   })();
 </script>
-<script defer src="app-loader.js?v=perf-66c78f2985a0"></script>
+<script defer src="app-loader.js?v=perf-67b1a249c2b4"></script>
 <script defer src="analytics-loader.js?v=20260813-1"></script>
-<script>
-  (function () {
-    let loadPromise = null;
-    const premiumStub = {
-      open: (...args) => loadPremium()
-        .then(() => window.uaPremium.open(...args))
-        .catch(() => {
-          window.location.href = 'premium.html';
-        }),
-    };
-    window.uaPremium = premiumStub;
-
-    function loadPremium() {
-      if (loadPromise) return loadPromise;
-      loadPromise = new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = 'premium.js?v=ua-premium-08-payment-hardening-20260813';
-        script.async = true;
-        script.onload = resolve;
-        script.onerror = () => {
-          loadPromise = null;
-          reject(new Error('Не вдалося завантажити тарифи'));
-        };
-        document.body.appendChild(script);
-      });
-      return loadPromise;
-    }
-
-    const paymentParams = new URLSearchParams(window.location.search);
-    if (paymentParams.get('payment') === 'return' && paymentParams.get('order_id')) {
-      loadPremium().catch(() => {});
-    }
-
-    window.addEventListener('uah:meaningful-interaction', (event) => {
-      const detail = event.detail;
-      loadPremium().then(() => {
-        window.dispatchEvent(new CustomEvent('uah:meaningful-interaction', { detail }));
-      }).catch(() => {});
-    }, { once: true });
-    const loadPremiumAfterScroll = () => {
-      if (window.scrollY < Math.max(320, window.innerHeight * 0.55)) return;
-      window.removeEventListener('scroll', loadPremiumAfterScroll);
-      loadPremium().catch(() => {});
-    };
-    window.addEventListener('scroll', loadPremiumAfterScroll, { passive: true });
-  })();
-</script>
+<script defer src="premium-loader.js?v=20260908-1"></script>
 <div id="marketplace-extensions-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 <div id="marketplace-extensions-root">
   <div id="marketplace-extensions-sentinel" style="height:1px" aria-hidden="true"></div>
 </div>
 </main>
-<script>
-  (function () {
-    if (document.documentElement.classList.contains('seller-page')) return;
-    let loaded = false;
-    const sentinel = document.getElementById('marketplace-extensions-sentinel');
-    const loadExtensions = () => {
-      if (loaded) return;
-      loaded = true;
-      sentinel?.remove();
-      const script = document.createElement('script');
-      script.src = 'marketplace-extensions.js?v=ua-marketplace-extensions-03-20260813';
-      script.async = true;
-      script.crossOrigin = 'anonymous';
-      script.addEventListener('load', () => {
-        const status = document.getElementById('marketplace-extensions-status');
-        if (status) status.textContent = 'Додаткові сервіси завантажено.';
-      }, { once: true });
-      document.body.appendChild(script);
-    };
-
-    const observeExtensions = () => {
-      if ('IntersectionObserver' in window) {
-        const observer = new IntersectionObserver((entries) => {
-          if (!entries.some((entry) => entry.isIntersecting)) return;
-          observer.disconnect();
-          loadExtensions();
-        }, { rootMargin: '800px 0px' });
-        observer.observe(sentinel);
-      } else {
-        window.addEventListener('scroll', loadExtensions, { once: true, passive: true });
-      }
-    };
-    window.addEventListener('uah:catalog-settled', () => {
-      window.requestAnimationFrame(() => window.requestAnimationFrame(observeExtensions));
-    }, { once: true });
-  })();
-</script>
+<script defer src="marketplace-loader.js?v=20260908-1"></script>
 <footer class="border-t border-slate-200 bg-slate-950 px-4 py-8 text-slate-300">
   <div class="mx-auto flex max-w-7xl flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
     <div>

@@ -787,7 +787,7 @@ class TrustFeatureTests(unittest.TestCase):
 
                 page = self.client.get(f"/listing/{self.target_id}").get_data(as_text=True)
                 map_script_match = re.search(
-                    r"<script>\s+var m=L\.map.*?</script>",
+                    r'<script nonce="[^"]+">\s+var m=L\.map.*?</script>',
                     page,
                     flags=re.DOTALL,
                 )
@@ -818,7 +818,7 @@ class TrustFeatureTests(unittest.TestCase):
                 self.assertNotIn("<img src=x onerror=", page)
                 self.assertNotIn("</script><script", map_script)
                 json_ld_blocks = re.findall(
-                    r'<script type="application/ld\+json">(.*?)</script>',
+                    r'<script nonce="[^"]+" type="application/ld\+json">(.*?)</script>',
                     page,
                     flags=re.DOTALL,
                 )
@@ -843,6 +843,101 @@ class TrustFeatureTests(unittest.TestCase):
             normal_page,
         )
 
+    def test_html_csp_nonce_is_unique_and_matches_every_author_script(self):
+        first = self.client.get(f"/listing/{self.target_id}")
+        second = self.client.get(f"/listing/{self.target_id}")
+        first_csp = first.headers["Content-Security-Policy"]
+        second_csp = second.headers["Content-Security-Policy"]
+        first_nonce = re.search(r"'nonce-([^']+)'", first_csp).group(1)
+        second_nonce = re.search(r"'nonce-([^']+)'", second_csp).group(1)
+
+        self.assertNotEqual(first_nonce, second_nonce)
+        self.assertNotIn("'unsafe-inline'", first_csp.split("style-src", 1)[0])
+        pages = (
+            first,
+            self.client.get("/seo/%D0%9A%D0%B8%D1%97%D0%B2"),
+            self.client.get("/seo/zhk/river-garden-residence"),
+        )
+        expected_script_counts = (6, 6, 2)
+        for response, expected_count in zip(pages, expected_script_counts):
+            with self.subTest(path=response.request.path):
+                nonce = re.search(
+                    r"'nonce-([^']+)'",
+                    response.headers["Content-Security-Policy"],
+                ).group(1)
+                scripts = re.findall(
+                    r"<script\b([^>]*)>",
+                    response.get_data(as_text=True),
+                )
+                self.assertEqual(len(scripts), expected_count)
+                self.assertTrue(
+                    all(f'nonce="{nonce}"' in attributes for attributes in scripts)
+                )
+        self.assertNotRegex(first.get_data(as_text=True), r"\son[a-z]+\s*=")
+        self.assertNotRegex(
+            first.get_data(as_text=True),
+            r"\s(?:href|src)\s*=\s*[\"']javascript:",
+        )
+        self.assertIn('id="copyListingLink"', first.get_data(as_text=True))
+        self.assertIn(
+            "copyBtn.addEventListener('click'",
+            first.get_data(as_text=True),
+        )
+
+    def test_security_headers_do_not_nonce_arbitrary_response_scripts(self):
+        reflected_body = '<main>reflected</main><script>alert("xss")</script>'
+        with app_module.app.test_request_context("/reflected"):
+            response = app_module.Response(reflected_body, mimetype="text/html")
+            secured = app_module.apply_security_headers(response)
+
+        self.assertEqual(secured.get_data(as_text=True), reflected_body)
+        self.assertRegex(
+            secured.headers["Content-Security-Policy"],
+            r"script-src 'self' 'nonce-[^']+';",
+        )
+        script_policy = secured.headers["Content-Security-Policy"].split(
+            "script-src ",
+            1,
+        )[1].split(";", 1)[0]
+        self.assertNotIn("'unsafe-inline'", script_policy)
+        self.assertNotIn("<script nonce=", secured.get_data(as_text=True))
+
+    def test_cors_live_contract_distinguishes_production_and_native_clients(self):
+        canonical = "https://ua-dim.com"
+        localhost = "http://localhost:5173"
+        evil = "https://evil.example"
+        with mock.patch.object(app_module, "_production_secret_required", return_value=True):
+            for origin in (canonical, localhost, evil):
+                response = self.client.options(
+                    "/api/listings",
+                    headers={
+                        "Origin": origin,
+                        "Access-Control-Request-Method": "GET",
+                        "Access-Control-Request-Headers": "Authorization",
+                    },
+                )
+                if origin == canonical:
+                    self.assertEqual(
+                        response.headers["Access-Control-Allow-Origin"], canonical
+                    )
+                    self.assertEqual(
+                        response.headers["Access-Control-Allow-Credentials"], "true"
+                    )
+                    self.assertIn(
+                        "Authorization",
+                        response.headers["Access-Control-Allow-Headers"],
+                    )
+                else:
+                    self.assertNotIn(
+                        "Access-Control-Allow-Origin", response.headers
+                    )
+
+            native = self.client.get(
+                "/api/listings",
+                headers={"Authorization": "Bearer native-client-token"},
+            )
+            self.assertNotIn("Access-Control-Allow-Origin", native.headers)
+
     def test_seo_json_ld_cannot_be_terminated_by_listing_data(self):
         title = "Attack </script><script>alert(1)</script>\u2028line\u2029paragraph"
         with sqlite3.connect(TEST_DB) as db:
@@ -854,13 +949,13 @@ class TrustFeatureTests(unittest.TestCase):
 
         page = self.client.get("/seo/%D0%9A%D0%B8%D1%97%D0%B2").get_data(as_text=True)
         json_ld_blocks = re.findall(
-            r'<script type="application/ld\+json">(.*?)</script>',
+            r'<script nonce="[^"]+" type="application/ld\+json">(.*?)</script>',
             page,
             flags=re.DOTALL,
         )
 
         self.assertEqual(len(json_ld_blocks), 6)
-        self.assertEqual(page.count('<script type="application/ld+json">'), 6)
+        self.assertEqual(page.count('type="application/ld+json">'), 6)
         self.assertEqual(page.count("</script>"), 6)
         self.assertNotIn("</script><script>alert(1)</script>", page)
         self.assertNotIn("\u2028", "".join(json_ld_blocks))
@@ -3631,7 +3726,10 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertNotIn("resp.demo", source)
         with open(os.path.join(web_dir, "real-estate-demo.html"), encoding="utf-8") as handle:
             shell = handle.read()
-        self.assertIn("paymentParams.get('payment') === 'return'", shell)
+        self.assertIn('src="premium-loader.js?', shell)
+        with open(os.path.join(web_dir, "premium-loader.js"), encoding="utf-8") as handle:
+            loader = handle.read()
+        self.assertIn('paymentParams.get("payment") === "return"', loader)
 
     def test_sitemap_includes_legal_pages(self):
         response = self.client.get("/sitemap.xml")
