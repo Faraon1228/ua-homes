@@ -26,10 +26,16 @@ def main():
         "python3 scripts/validate-deploy-workflow.py" in validation_job,
         "frontend validation must enforce this deployment contract",
     )
-    require("actions/upload-artifact@v4" in validation_job, "validated web/ must be uploaded")
+    require(
+        re.search(r"actions/upload-artifact@[0-9a-f]{40} # v4", validation_job),
+        "validated web/ must be uploaded",
+    )
     require("include-hidden-files: true" in validation_job, "web/.well-known must be deployed")
     require("needs: validate-frontend" in deploy_job, "deploy must wait for frontend validation")
-    require("actions/download-artifact@v4" in deploy_job, "deploy must use validated web/")
+    require(
+        re.search(r"actions/download-artifact@[0-9a-f]{40} # v4", deploy_job),
+        "deploy must use validated web/",
+    )
 
     main_only_condition = (
         "if: github.ref == 'refs/heads/main' "
