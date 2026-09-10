@@ -32,3 +32,14 @@ The backend and browsers discard expected authentication, authorization, validat
 3. In an authenticated staging/admin session, use browser DevTools to run `window.uaSentryCaptureException(new Error('authorized verification'))`. For Flutter/backend, use an authenticated, temporary internal test path or local test transport—not a public endpoint—and then remove it before release. Confirm environment, release, request ID, stack/source mapping and absence of PII.
 4. Check expected 401/403/404/422/429 and offline actions do not create issues. Raise trace rates only after reviewing volume and cost.
 5. Roll back independently by clearing the affected DSN and redeploying/restarting. For immediate volume control, set trace/profile rates to `0`. Revoke `SENTRY_AUTH_TOKEN` to stop map upload; runtime error capture continues. Revert the application commit only if SDK code itself is implicated.
+
+## Operational status panel
+
+The admin-only status panel aggregates a bounded Sentry issues query, GitHub
+Actions `deploy.yml` history, public-site readiness, in-process API/database
+readiness, and push dispatch freshness. It keeps only scrubbed titles, types,
+timestamps, counts, SHA values, and allowlisted Sentry/GitHub links in a durable
+snapshot. It never stores provider payloads, stack traces, request data, or user
+identifiers. The scheduler calls the protected operations endpoint; GET requests
+have no notification side effects. See `backend/ENV_VARS.md` for token scopes,
+rotation, rollout, and rollback.

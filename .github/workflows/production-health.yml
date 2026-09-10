@@ -22,6 +22,7 @@ jobs:
       SELLER_URL: https://ua-dim.com/seller
       ADMIN_URL: ${{ vars.UA_HOMES_ADMIN_URL }}
       EXPECTED_DATABASE_ENGINE: ${{ vars.UA_HOMES_DATABASE_ENGINE }}
+      STATUS_REFRESH_KEY: ${{ secrets.UA_HOMES_STATUS_REFRESH_KEY }}
     steps:
       - name: Check production services
         id: health
@@ -97,6 +98,21 @@ jobs:
              fi
           else
              echo "SKIP admin frontend (UA_HOMES_ADMIN_URL is not configured)" | tee -a health-report.txt
+          fi
+
+          if [ -n "$STATUS_REFRESH_KEY" ]; then
+            if curl --fail --silent --show-error --max-time 15 \
+              -X POST "$BACKEND_URL/api/operations/system-status/refresh" \
+              -H "Authorization: Bearer $STATUS_REFRESH_KEY" \
+              --output /dev/null
+            then
+              echo "OK application status refresh" | tee -a health-report.txt
+            else
+              echo "FAIL application status refresh" | tee -a health-report.txt
+              failures=1
+            fi
+          else
+            echo "SKIP application status refresh (UA_HOMES_STATUS_REFRESH_KEY is not configured)" | tee -a health-report.txt
           fi
 
           cat health-report.txt >> "$GITHUB_STEP_SUMMARY"

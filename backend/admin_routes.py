@@ -2639,21 +2639,29 @@ def admin_audit():
 @require_permission(Permission.SYSTEM_READ)
 def admin_system_health():
     from app import get_db
+    from system_status import current_snapshot
 
-    db = get_db()
-    db.execute("SELECT 1").fetchone()
-    return jsonify(
-        status="ok",
-        database="ok",
-        counts={
-            "users": int(db.execute("SELECT COUNT(*) FROM users").fetchone()[0]),
-            "listings": int(db.execute("SELECT COUNT(*) FROM listings").fetchone()[0]),
-            "pending_reports": int(db.execute(
-                "SELECT COUNT(*) FROM listing_reports WHERE status = 'pending'"
-            ).fetchone()[0]),
-        },
-        request_id=getattr(g, "request_id", None),
-    )
+    snapshot = current_snapshot(get_db())
+    if snapshot is None:
+        return jsonify(error="System status snapshot is unavailable"), 503
+    snapshot["request_id"] = getattr(g, "request_id", None)
+    return jsonify(snapshot)
+
+
+@admin_bp.route("/system/health/refresh", methods=["POST"])
+@limiter.limit("6 per hour")
+@require_permission(Permission.SYSTEM_READ)
+def admin_refresh_system_health():
+    """Refresh operational status without exposing provider credentials to browsers."""
+    from app import get_db
+    from system_status import refresh
+
+    snapshot, refreshed = refresh(get_db(), notify=False)
+    if snapshot is None:
+        return jsonify(error="System status refresh is already in progress"), 429
+    snapshot["refresh_started"] = refreshed
+    snapshot["request_id"] = getattr(g, "request_id", None)
+    return jsonify(snapshot), 200 if refreshed else 429
 
 
 # ─── Reports ────────────────────────────────────────────────────────

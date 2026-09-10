@@ -210,6 +210,52 @@ test("administrator sees privileged operational sections", async ({ page }) => {
   ).toBeVisible();
 });
 
+test("administrator reads and refreshes the privacy-safe system status", async ({ page }) => {
+  await mockSessionAndOverview(page, admin);
+  const snapshot = {
+    contract_version: 1,
+    overall_status: "degraded",
+    generated_at: "2026-09-04T00:00:00+00:00",
+    stale: true,
+    production_version: { backend: "backend-sha", frontend: "frontend-sha", status: "degraded" },
+    notification_channels: { email_configured: true, telegram_configured: false },
+    components: {
+      website: { status: "ok", latency_ms: 41 },
+      api: { status: "ok" },
+      database: { status: "ok", engine: "postgresql", latency_ms: 2 },
+      push: { status: "unknown" },
+      sentry: {
+        status: "ok", critical_new_count: 1, open_url: "https://sentry.io/organizations/ua-homes/issues/",
+        recent_issues: [{ title: "Safe error", type: "Error", project: "production", first_seen: "2026-09-04", url: "https://sentry.io/organizations/ua-homes/issues/1/" }],
+      },
+      deployments: {
+        status: "degraded",
+        recent_failures: [{ conclusion: "failure", sha: "failed-sha", created_at: "2026-09-04", url: "https://github.com/example/ua-homes/actions/runs/1" }],
+      },
+    },
+  };
+  let refreshHeaders;
+  await page.route("**/api/admin/system/health", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(snapshot) }),
+  );
+  await page.route("**/api/admin/system/health/refresh", async (route) => {
+    refreshHeaders = route.request().headers();
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...snapshot, stale: false }) });
+  });
+
+  await page.goto("/admin/dashboard.html#/health");
+  await expect(page.getByRole("heading", { name: "Основні сервіси" })).toBeVisible();
+  await expect(page.getByText("Знімок: 2026-09-04T00:00:00+00:00 (застарілий)")).toBeVisible();
+  await expect(page.getByText("Нових критичних проблем:")).toBeVisible();
+  const sentryLink = page.getByRole("link", { name: "Відкрити в Sentry" });
+  await expect(sentryLink).toHaveAttribute("target", "_blank");
+  await expect(sentryLink).toHaveAttribute("rel", /noopener/);
+  await page.getByRole("button", { name: "Оновити", exact: true }).click();
+  await expect.poll(() => refreshHeaders?.["x-csrf-token"]).toBe("csrf_token_for_browser_tests_123456");
+  const results = await new AxeBuilder({ page }).include("#main-content").analyze();
+  expect(results.violations).toEqual([]);
+});
+
 test("moderation exposes retry state and protects reasoned actions with CSRF", async ({ page }) => {
   await mockSessionAndOverview(page);
   let queueRequests = 0;
