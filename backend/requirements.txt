@@ -1,3 +1,6 @@
+# Source-of-intent version ranges. CI and Railway install from the pinned,
+# hash-verified backend/requirements.lock.txt instead — after editing this
+# file, regenerate it with scripts/regenerate-backend-lock.sh.
 flask>=3.0.0
 flask-cors>=4.0.0
 PyJWT>=2.8.0

@@ -1,8 +1,13 @@
 # Root railway.toml — tells Railway to deploy the backend/ subdirectory
+#
+# Railway's active service config actually comes from backend/railway.toml
+# (rootDirectory=backend, configFile=/backend/railway.toml per the linked
+# service). This root file is kept in sync as a safety net against
+# dashboard/config drift — always update both files together.
 
 [build]
 builder = "nixpacks"
-buildCommand = "pip install -r requirements.txt"
+buildCommand = "pip install --require-hashes -r backend/requirements.lock.txt"
 watchPatterns = ["backend/**"]
 
 [deploy]

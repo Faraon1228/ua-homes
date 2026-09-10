@@ -23,8 +23,8 @@ jobs:
       run:
         working-directory: apps/ua_dim
     steps:
-      - uses: actions/checkout@v5
-      - uses: subosito/flutter-action@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: "3.47.0"
           cache: true
@@ -241,7 +241,7 @@ jobs:
             --api-key "$ASC_KEY_ID" \
             --api-issuer "$ASC_ISSUER_ID" \
             --p8-file-path "$ASC_KEY_PATH"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: ua-dim-ios-ipa
           path: apps/ua_dim/build/ios/store/*.ipa
