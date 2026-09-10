@@ -205,6 +205,38 @@ class AdminPanelTests(unittest.TestCase):
         self.assertTrue(snapshot["stale"])
         self.assertEqual(snapshot["overall_status"], "unknown")
 
+    def test_incident_insert_tolerates_a_concurrent_fingerprint_insert(self):
+        data = {
+            "generated_at": "2026-09-10T06:00:00+00:00",
+            "components": {
+                "website": {"status": "down", "detail": "unavailable"},
+            },
+        }
+        database = sqlite3.connect(TEST_DB)
+        database.row_factory = sqlite3.Row
+
+        class StaleReadConnection:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def execute(self, query, params=()):
+                cursor = self.connection.execute(query, params)
+                if query.lstrip().startswith("SELECT id, status, severity"):
+                    return mock.Mock(fetchone=mock.Mock(return_value=None))
+                return cursor
+
+            def commit(self):
+                self.connection.commit()
+
+        stale_connection = StaleReadConnection(database)
+        system_status_module._incident_updates(stale_connection, data, notify=False)
+        system_status_module._incident_updates(stale_connection, data, notify=False)
+        count = database.execute(
+            "SELECT COUNT(*) FROM system_incidents WHERE component = 'website'"
+        ).fetchone()[0]
+        database.close()
+        self.assertEqual(count, 1)
+
     def test_push_status_accepts_legacy_naive_dispatch_timestamp(self):
         database = sqlite3.connect(TEST_DB)
         database.row_factory = sqlite3.Row

@@ -299,8 +299,29 @@ def _incident_updates(db, data: dict[str, Any], notify: bool) -> None:
                 (severity, summary, data["generated_at"], row_values["id"]),
             )
         else:
-            db.execute("INSERT INTO system_incidents (fingerprint, component, severity, summary, first_seen_at, last_seen_at, status) VALUES (?, ?, ?, ?, ?, ?, 'open')",
-                       (fingerprint, name, severity, summary, data["generated_at"], data["generated_at"]))
+            db.execute(
+                """
+                INSERT INTO system_incidents (
+                    fingerprint, component, severity, summary,
+                    first_seen_at, last_seen_at, status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'open')
+                ON CONFLICT(fingerprint) DO UPDATE SET
+                    component = excluded.component,
+                    severity = excluded.severity,
+                    summary = excluded.summary,
+                    last_seen_at = excluded.last_seen_at,
+                    resolved_at = NULL,
+                    status = 'open'
+                """,
+                (
+                    fingerprint,
+                    name,
+                    severity,
+                    summary,
+                    data["generated_at"],
+                    data["generated_at"],
+                ),
+            )
             row_values = None
         if notify and severity == "critical" and _notification_due(row_values):
             _notify_incident(db, fingerprint, name, severity, summary, data)
