@@ -26,6 +26,33 @@ UA_TEST_WEBKIT=1 npm run test:admin -- tests/admin/homepage-buildings.spec.js --
 WebKit and mobile viewport tests check the web UI, not the actual native app or
 its authentication/media bridges; device testing remains a separate release check.
 
+## Listing back navigation
+
+The visible **Назад** button is inside the shared Flask listing page. An ordinary
+same-tab catalog link records that catalog entry's filters, search, sort, loaded
+page count, scroll and focused link in browser history. Back restores that entry
+even when the WebView has discarded the original document. Recommendations and
+the contact anchor retain the same return destination; unrelated tabs and direct
+deep links fall back to `/app`, not an external referrer.
+
+Android system Back delegates to the same listing handler. The iOS UI uses the
+same in-page button within the existing native `SafeArea`. Publishing this feature
+requires both rebuilt web assets and the Flask backend; the Android system-back
+change additionally requires a new UA-Dim binary. Existing binaries receive the
+in-page button from the website/backend release.
+
+The focused browser suite renders real Flask responses in a temporary test
+database, so install the backend test dependencies first. From the repository root:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --require-hashes -r backend/requirements.lock.txt
+UA_TEST_PYTHON=.venv/bin/python UA_TEST_WEBKIT=1 npm run test:admin -- tests/admin/listing-back.spec.js
+```
+
+This covers Chromium/WebKit desktop and mobile viewports, including execution of
+the native back JavaScript, but does not replace Android/iOS device validation.
+
 ## Commands
 
 ```bash
