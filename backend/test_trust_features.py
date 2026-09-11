@@ -113,6 +113,27 @@ class TrustFeatureTests(unittest.TestCase):
             ignored_body_response.get_json()["code"], "request_too_large"
         )
 
+    def test_local_report_cache_is_bounded_and_lru(self):
+        with mock.patch.object(app_module, "REDIS_URL", None):
+            app_module._REPORT_CACHE.clear()
+            app_module.cached_json_set("old", {"value": "old"}, 60)
+            app_module.cached_json_set("recent", {"value": "recent"}, 60)
+            self.assertEqual(
+                app_module.cached_json_get("old"), {"value": "old"}
+            )
+            for index in range(app_module._REPORT_CACHE_MAX_ENTRIES - 1):
+                app_module.cached_json_set(f"key-{index}", index, 60)
+
+            self.assertIsNone(app_module.cached_json_get("recent"))
+            self.assertEqual(
+                app_module.cached_json_get("old"), {"value": "old"}
+            )
+            self.assertEqual(
+                len(app_module._REPORT_CACHE),
+                app_module._REPORT_CACHE_MAX_ENTRIES,
+            )
+            app_module._REPORT_CACHE.clear()
+
     def test_public_write_hotspots_have_focused_limits(self):
         view_statuses = [
             self.client.post(f"/api/listings/{self.target_id}/view").status_code
