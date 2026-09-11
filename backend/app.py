@@ -1423,6 +1423,23 @@ def enforce_maintenance_mode():
     return None
 
 
+@app.before_request
+def enforce_edge_origin_token():
+    """Require the private edge token for API traffic when configured."""
+    configured_token = os.environ.get("UA_HOMES_EDGE_TOKEN", "").strip()
+    if (
+        configured_token
+        and request.path.startswith("/api/")
+        and request.path != "/api/health"
+        and not hmac.compare_digest(
+            request.headers.get("X-UA-Edge-Token", ""),
+            configured_token,
+        )
+    ):
+        return jsonify(error="Direct API origin access is not allowed.", code="edge_required"), 403
+    return None
+
+
 # Rate-limiter storage: Redis when available (multi-worker safe), else in-memory.
 _limiter_storage = f"redis://{REDIS_URL.replace('redis://','')}" if REDIS_URL else "memory://"
 if REDIS_URL and not REDIS_URL.startswith("redis://"):

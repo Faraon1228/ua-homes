@@ -2,13 +2,8 @@
   publish = "web"
   command = "echo 'Static site — no build needed'"
 
-# Proxy API calls to the Railway backend.
-[[redirects]]
-  from = "/api/*"
-  to = "https://backend-production-51964.up.railway.app/api/:splat"
-  status = 200
-  force = true
-
+# API traffic is proxied by the Cloudflare Worker at the ua-dim.com route.
+# Keep the Railway origin URL out of the public Netlify redirect config.
 [[redirects]]
   from = "/api-backend/*"
   to = "https://backend-production-51964.up.railway.app/:splat"
