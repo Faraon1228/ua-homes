@@ -25,5 +25,15 @@ module.exports = defineConfig({
       name: "mobile-chromium",
       use: { ...devices["Pixel 7"] },
     },
+    ...(process.env.UA_TEST_WEBKIT === "1" ? [
+      {
+        name: "desktop-webkit",
+        use: { ...devices["Desktop Safari"] },
+      },
+      {
+        name: "mobile-webkit",
+        use: { ...devices["iPhone 13"] },
+      },
+    ] : []),
   ],
 });

@@ -49,20 +49,26 @@ self.addEventListener('fetch', e => {
   // Let the browser enforce the page's CSP for CDN assets. Fetching them from
   // the worker would instead apply the worker's connect-src policy.
   if (url.origin !== self.location.origin) return;
-  const coreAsset = ['script', 'style', 'worker'].includes(e.request.destination);
+  // The homepage artwork belongs to the versioned shell, not the listing image cache.
+  const homepageArtwork = url.pathname === '/images/silver-silhouette.svg';
+  const coreAsset = ['script', 'style', 'worker'].includes(e.request.destination) ||
+    homepageArtwork;
 
   if (e.request.method === 'GET' && coreAsset) {
+    const cachedAsset = () => homepageArtwork
+      ? caches.open(CACHE).then(cache => cache.match(e.request))
+      : caches.match(e.request, { ignoreSearch: true });
     e.respondWith(
       fetch(e.request)
         .then(resp => {
           if (resp.status !== 200) {
-            return caches.match(e.request, { ignoreSearch: true }).then(cached => cached || resp);
+            return cachedAsset().then(cached => cached || resp);
           }
           caches.open(CACHE).then(cache => cache.put(e.request, resp.clone()));
           return resp;
         })
         .catch(() =>
-          caches.match(e.request, { ignoreSearch: true }).then(cached => cached || Response.error())
+          cachedAsset().then(cached => cached || Response.error())
         )
     );
     return;
