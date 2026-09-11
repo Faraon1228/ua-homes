@@ -27,13 +27,13 @@ def main():
         "frontend validation must enforce this deployment contract",
     )
     require(
-        re.search(r"actions/upload-artifact@[0-9a-f]{40} # v4", validation_job),
+        re.search(r"actions/upload-artifact@[0-9a-f]{40} # v[0-9]+", validation_job),
         "validated web/ must be uploaded",
     )
     require("include-hidden-files: true" in validation_job, "web/.well-known must be deployed")
     require("needs: validate-frontend" in deploy_job, "deploy must wait for frontend validation")
     require(
-        re.search(r"actions/download-artifact@[0-9a-f]{40} # v4", deploy_job),
+        re.search(r"actions/download-artifact@[0-9a-f]{40} # v[0-9]+", deploy_job),
         "deploy must use validated web/",
     )
 
