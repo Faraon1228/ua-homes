@@ -30,6 +30,7 @@ import tempfile
 import threading
 import time
 import sys
+from collections import OrderedDict
 from decimal import Decimal, InvalidOperation
 from html import escape
 from functools import wraps
@@ -117,7 +118,9 @@ REDIS_URL = _SETTINGS.redis_url
 TRUSTED_PROXY_NETWORKS = parse_trusted_proxy_cidrs(_SETTINGS.trusted_proxy_cidrs)
 _REDIS_CACHE = None
 _REDIS_CACHE_DISABLED = False
-_REPORT_CACHE: dict[str, tuple[float, object]] = {}
+_REPORT_CACHE_MAX_ENTRIES = 1024
+_REPORT_CACHE: OrderedDict[str, tuple[float, object]] = OrderedDict()
+_REPORT_CACHE_LOCK = threading.Lock()
 
 # S3 Configuration for Direct Upload (Presigned URLs) — solves scaling issue with base64 encoding
 # Supports: AWS S3, Cloudinary, MinIO, or any S3-compatible storage
@@ -457,14 +460,17 @@ def cached_json_get(key: str):
             return None
         return json.loads(payload)
 
-    cached = _REPORT_CACHE.get(key)
-    if not cached:
-        return None
-    expires_at, value = cached
-    if expires_at <= time.time():
-        _REPORT_CACHE.pop(key, None)
-        return None
-    return value
+    now = time.time()
+    with _REPORT_CACHE_LOCK:
+        cached = _REPORT_CACHE.get(key)
+        if not cached:
+            return None
+        expires_at, value = cached
+        if expires_at <= now:
+            _REPORT_CACHE.pop(key, None)
+            return None
+        _REPORT_CACHE.move_to_end(key)
+        return value
 
 
 def cached_json_set(key: str, value, ttl_seconds: int) -> None:
@@ -476,7 +482,15 @@ def cached_json_set(key: str, value, ttl_seconds: int) -> None:
         except Exception as exc:
             app.logger.warning("Redis cache write failed for %s: %s", key, exc)
 
-    _REPORT_CACHE[key] = (time.time() + ttl_seconds, value)
+    with _REPORT_CACHE_LOCK:
+        _REPORT_CACHE[key] = (time.time() + ttl_seconds, value)
+        _REPORT_CACHE.move_to_end(key)
+        now = time.time()
+        for cached_key, (cached_expires_at, _) in list(_REPORT_CACHE.items()):
+            if cached_expires_at <= now:
+                _REPORT_CACHE.pop(cached_key, None)
+        while len(_REPORT_CACHE) > _REPORT_CACHE_MAX_ENTRIES:
+            _REPORT_CACHE.popitem(last=False)
 
 
 def cache_delete_prefix(prefix: str) -> None:
@@ -489,8 +503,9 @@ def cache_delete_prefix(prefix: str) -> None:
         except Exception as exc:
             app.logger.warning("Redis cache delete failed for %s: %s", prefix, exc)
 
-    for key in [key for key in _REPORT_CACHE if key.startswith(prefix)]:
-        _REPORT_CACHE.pop(key, None)
+    with _REPORT_CACHE_LOCK:
+        for key in [key for key in _REPORT_CACHE if key.startswith(prefix)]:
+            _REPORT_CACHE.pop(key, None)
 
 
 def _refresh_lead_funnel_summaries(db) -> None:
