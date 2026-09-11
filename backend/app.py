@@ -9737,6 +9737,8 @@ def listing_page(lid: int):
 
     # Map embed (Leaflet inline for standalone page)
     nonce = csp_nonce()
+    with open(os.path.join(app.static_folder, "listing-navigation.js"), encoding="utf-8") as navigation_file:
+        listing_navigation_script = navigation_file.read()
     map_html = ""
     if listing.get("latitude") and listing.get("longitude"):
         lat, lng = listing["latitude"], listing["longitude"]
@@ -9989,10 +9991,18 @@ def listing_page(lid: int):
     .primary-btn,.secondary-btn,.copy-btn{{display:inline-flex;min-height:44px;align-items:center;justify-content:center;border-radius:12px;font-weight:700;font-size:14px;cursor:pointer}}
     .primary-btn{{background:#2563eb;color:#fff;padding:12px 20px}}
     .secondary-btn,.copy-btn{{background:#f8fafc;color:#1e293b;padding:10px 16px;border:1px solid #e2e8f0}}
+    .listing-navigation{{position:sticky;top:0;z-index:1000;padding:calc(8px + env(safe-area-inset-top,0px)) 0 8px;background:#f8fafc}}
+    #listing-back{{min-width:112px;gap:8px;background:#fff;border:2px solid #334155;color:#0f172a}}
+    #listing-back:hover{{background:#e2e8f0}}
+    #listing-back:focus-visible{{outline:3px solid #2563eb;outline-offset:3px}}
     @media(max-width:700px){{body{{padding-right:16px;padding-left:16px}} .hero{{padding:16px}} .hero-summary{{align-items:flex-start;flex-direction:column;gap:12px}} .hero-facts{{justify-content:flex-start}} .hero-actions{{display:grid;grid-template-columns:1fr 1fr}} .primary-btn{{grid-column:1/-1}} .primary-btn,.secondary-btn,.copy-btn{{padding-right:10px;padding-left:10px;text-align:center}} .meta-grid{{grid-template-columns:repeat(2,1fr)}} .detail-grid,.contact-grid{{grid-template-columns:1fr}}}}
   </style>
 </head>
 <body>
+  <nav class="listing-navigation" aria-label="Повернення до оголошень">
+    <button type="button" class="secondary-btn" id="listing-back" data-catalog-url="{public_app_base_url()}/app"><span aria-hidden="true">←</span> Назад</button>
+  </nav>
+  <script nonce="{nonce}">{listing_navigation_script}</script>
   <nav class="breadcrumbs">
     <a href="{public_app_url()}">UA-Dim</a><span>›</span>
     <a href="{city_link}">{escape(listing["city"])}</a><span>›</span>

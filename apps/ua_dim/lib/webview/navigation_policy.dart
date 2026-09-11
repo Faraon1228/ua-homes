@@ -1,5 +1,15 @@
 const Set<String> uaDimProductionHosts = {'ua-dim.com', 'www.ua-dim.com'};
 
+const String uaDimListingBackScript = '''
+  (() => {
+    if (typeof window.uaListingBack === 'function') {
+      return window.uaListingBack();
+    }
+    window.location.replace('/app');
+    return true;
+  })()
+''';
+
 enum UaDimNavigationTarget { internal, external }
 
 class UaDimNavigationPolicy {

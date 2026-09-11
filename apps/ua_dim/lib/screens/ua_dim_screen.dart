@@ -111,6 +111,12 @@ class _UaDimScreenState extends State<UaDimScreen> {
             });
           },
           onNavigationRequest: _handleNavigationRequest,
+          onUrlChange: (change) {
+            final uri = Uri.tryParse(change.url ?? '');
+            if (mounted && uri != null && _navigationPolicy.isInternal(uri)) {
+              setState(() => _currentUri = uri);
+            }
+          },
         ),
       );
     _initializeMobileSession();
@@ -504,6 +510,10 @@ class _UaDimScreenState extends State<UaDimScreen> {
   }
 
   Future<void> _goBack() async {
+    if (_navigationPolicy.isListing(_currentUri)) {
+      await _controller.runJavaScript(uaDimListingBackScript);
+      return;
+    }
     if (!_canGoBack) return;
     await _controller.goBack();
     final canGoBack = await _controller.canGoBack();
@@ -537,7 +547,7 @@ class _UaDimScreenState extends State<UaDimScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: !_canGoBack,
+      canPop: !_canGoBack && !_navigationPolicy.isListing(_currentUri),
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _goBack();
       },

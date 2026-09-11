@@ -16,6 +16,7 @@ import {
   submitAuth,
 } from "./lib/authSession.js";
 import { fetchCatalogListings } from "./lib/catalogApi.js";
+import "../backend/static/listing-navigation.js";
 
 const LazyListingsMapView = React.lazy(() =>
   import("./features/ListingsMapView.jsx")
@@ -1125,6 +1126,8 @@ function getListingPipeline(listing) {
 
 function getStored(key, fallback) {
   if (typeof window === "undefined") return fallback;
+  const entryValue = window.uaListingNavigation.readCatalog()?.stored?.[key];
+  if (typeof entryValue === "string") return entryValue;
   if (key === "uaDim.authToken" && window.UaDimAuth?.postMessage) {
     return window.sessionStorage.getItem(key) ?? window.localStorage.getItem(key) ?? fallback;
   }
@@ -1657,6 +1660,7 @@ function ListingCard({ property, favorite, onToggleFavorite, onOpenTrust, priori
 
 export default function RealEstateApp() {
   const sellerCabinetMode = __UA_SELLER_BUILD__ === true;
+  const catalogRestoreRef = useRef(sellerCabinetMode ? null : window.uaListingNavigation.readCatalog());
   const keywordInputRef = useRef(null);
   const mobileFiltersTriggerRef = useRef(null);
   const mobileFiltersDrawerRef = useRef(null);
@@ -2000,6 +2004,36 @@ export default function RealEstateApp() {
     [cityFilter, propertyTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, sortBy, keywordSearch]
   );
 
+  const catalogSnapshotRef = useRef(null);
+  catalogSnapshotRef.current = {
+    count: liveCatalogListings.length,
+    stored: {
+      "re.cityFilter": cityFilter,
+      "re.propertyType": propertyTypeFilter,
+      "re.onlyEOselya": String(onlyEOselya),
+      "re.showFavoritesOnly": String(showFavoritesOnly),
+      "re.minPrice": minPrice,
+      "re.maxPrice": maxPrice,
+      "re.minRooms": minRooms,
+      "re.maxRooms": maxRooms,
+      "re.minArea": minArea,
+      "re.maxArea": maxArea,
+      "re.sortBy": sortBy,
+      [KEYWORD_SEARCH_KEY]: keywordSearch,
+      [RESULTS_VIEW_MODE_KEY]: resultsView,
+    },
+  };
+  useEffect(() => {
+    if (sellerCabinetMode) return undefined;
+    return window.uaListingNavigation.bindCatalog(() => catalogSnapshotRef.current);
+  }, [sellerCabinetMode]);
+
+  useEffect(() => {
+    if (catalogLoading || !catalogLoaded || catalogError || !catalogRestoreRef.current) return;
+    window.uaListingNavigation.restorePosition(catalogRestoreRef.current);
+    catalogRestoreRef.current = null;
+  }, [catalogLoading, catalogLoaded, catalogError]);
+
   const loadCatalogListings = async (fresh = false, append = false) => {
     const request = catalogRequestRef.current.begin();
     if (append) {
@@ -2020,7 +2054,7 @@ export default function RealEstateApp() {
         }
       }
 
-      const data = await fetchCatalogListings({
+      const filters = {
         cityFilter,
         propertyTypeFilter,
         onlyEOselya,
@@ -2034,7 +2068,8 @@ export default function RealEstateApp() {
         keywordSearch,
         showFavoritesOnly,
         favoriteIds,
-      }, {
+      };
+      let data = await fetchCatalogListings(filters, {
         limit: CATALOG_PAGE_SIZE,
         offset: append ? liveCatalogListings.length : 0,
         append,
@@ -2043,6 +2078,20 @@ export default function RealEstateApp() {
       });
       if (!catalogRequestRef.current.isLatest(request.id)) return;
       const rows = Array.isArray(data.listings) ? data.listings : [];
+      const cities = data.facets?.cities;
+      const restoreCount = !append && !fresh ? catalogRestoreRef.current?.count || 0 : 0;
+      while (data.has_more && rows.length > 0 && rows.length < restoreCount) {
+        data = await fetchCatalogListings(filters, {
+          limit: CATALOG_PAGE_SIZE,
+          offset: rows.length,
+          append: true,
+          fresh,
+          signal: request.signal,
+        });
+        if (!catalogRequestRef.current.isLatest(request.id)) return;
+        if (!Array.isArray(data.listings) || !data.listings.length) break;
+        rows.push(...data.listings);
+      }
       const mapped = rows.map(mapListingToProperty);
       setLiveCatalogListings((current) => {
         if (!append) return mapped;
@@ -2052,7 +2101,7 @@ export default function RealEstateApp() {
       setCatalogLoaded(true);
       setCatalogTotal(Number(data.total) || 0);
       setCatalogHasMore(Boolean(data.has_more));
-      if (Array.isArray(data.facets?.cities)) setCatalogCities(data.facets.cities);
+      if (Array.isArray(cities)) setCatalogCities(cities);
     } catch (error) {
       if (error?.name === "AbortError" || !catalogRequestRef.current.isLatest(request.id)) return;
       setCatalogError(error.message || "Не вдалося завантажити оголошення");

@@ -33,6 +33,18 @@ postgres_migration = importlib.import_module("migrate_sqlite_to_postgres")
 
 
 class TrustFeatureTests(unittest.TestCase):
+    def test_listing_has_accessible_back_control_and_nonce_protected_navigation(self):
+        response = self.client.get(f"/listing/{self.target_id}")
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertRegex(html, r'<button type="button"[^>]+id="listing-back"[^>]+>.*Назад</button>')
+        self.assertIn('aria-label="Повернення до оголошень"', html)
+        self.assertIn('env(safe-area-inset-top,0px)', html)
+        self.assertIn('window.uaListingBack', html)
+        self.assertIn('data-catalog-url=', html)
+        self.assertIn('/app"><span aria-hidden="true">', html)
+        self.assertRegex(html, r'<script nonce="[^"]+">\(function \(\)')
+
     @classmethod
     def tearDownClass(cls):
         TEST_DIR.cleanup()
@@ -879,7 +891,7 @@ class TrustFeatureTests(unittest.TestCase):
             self.client.get("/seo/%D0%9A%D0%B8%D1%97%D0%B2"),
             self.client.get("/seo/zhk/river-garden-residence"),
         )
-        expected_script_counts = (6, 6, 2)
+        expected_script_counts = (7, 6, 2)
         for response, expected_count in zip(pages, expected_script_counts):
             with self.subTest(path=response.request.path):
                 nonce = re.search(
