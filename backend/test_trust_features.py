@@ -125,6 +125,21 @@ class TrustFeatureTests(unittest.TestCase):
             ignored_body_response.get_json()["code"], "request_too_large"
         )
 
+    def test_edge_token_blocks_direct_api_origin_when_configured(self):
+        with mock.patch.dict(os.environ, {"UA_HOMES_EDGE_TOKEN": "edge-test-token"}):
+            blocked = self.client.get("/api/listings")
+            self.assertEqual(blocked.status_code, 403)
+            self.assertEqual(blocked.get_json()["code"], "edge_required")
+
+            allowed = self.client.get(
+                "/api/listings",
+                headers={"X-UA-Edge-Token": "edge-test-token"},
+            )
+            self.assertNotEqual(allowed.status_code, 403)
+
+            health = self.client.get("/api/health")
+            self.assertNotEqual(health.status_code, 403)
+
     def test_local_report_cache_is_bounded_and_lru(self):
         with mock.patch.object(app_module, "REDIS_URL", None):
             app_module._REPORT_CACHE.clear()
