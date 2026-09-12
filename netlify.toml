@@ -2,12 +2,12 @@
   publish = "web"
   command = "echo 'Static site — no build needed'"
 
-# Proxy API calls to the Railway backend.
-[[redirects]]
-  from = "/api/*"
-  to = "https://backend-production-51964.up.railway.app/api/:splat"
-  status = 200
-  force = true
+# API requests are handled by netlify/edge-functions/api-proxy.ts.
+# The route is intentionally enabled only after UA_HOMES_EDGE_TOKEN is
+# configured in Netlify and verified against the Railway origin.
+[[edge_functions]]
+  function = "api-proxy"
+  path = "/api/*"
 
 [[redirects]]
   from = "/api-backend/*"
