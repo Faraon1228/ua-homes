@@ -75,10 +75,10 @@
       } catch (_err) {}
     })();
   </script>
-  <link rel="preload" as="style" href="ua-homes.css?v=perf-060a2905fdfb"/>
+  <link rel="preload" as="style" href="ua-homes.css?v=perf-d66737699466"/>
   <link rel="preload" as="script" href="vendor/react.production.min.js?v=e7ca5f4"/>
   <link rel="preload" as="script" href="vendor/react-dom.production.min.js?v=e7ca5f4"/>
-  <link rel="stylesheet" href="ua-homes.css?v=perf-060a2905fdfb"/>
+  <link rel="stylesheet" href="ua-homes.css?v=perf-d66737699466"/>
   <link rel="stylesheet" href="privacy-consent.css?v=20260813-2"/>
   <script defer src="privacy-consent.js?v=20260813-1"></script>
   <script type="module" src="/monitoring.js"></script>
@@ -140,27 +140,29 @@
         <div class="hidden text-xs font-semibold text-blue-700 sm:block">Пошук нерухомості</div>
       </div>
     </a>
-    <a
-      id="header-auth-cta"
-      href="/seller"
-      aria-label="Увійти або зареєструватися"
-      class="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-2xl bg-blue-600 px-3 text-sm font-black text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 sm:px-4"
-    >
-      <svg aria-hidden="true" viewBox="0 0 24 24" class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.5 20.12a7.5 7.5 0 0 1 15 0A17.93 17.93 0 0 1 12 21.75a17.93 17.93 0 0 1-7.5-1.63Z"/>
-      </svg>
-      <span data-header-auth-mobile class="sm:hidden">Увійти</span>
-      <span data-header-auth-desktop class="hidden sm:inline">Увійти / Зареєструватися</span>
-    </a>
+    <div id="header-actions" class="flex shrink-0 items-center gap-2">
+      <a
+        id="header-auth-cta"
+        href="/seller"
+        aria-label="Увійти або зареєструватися"
+        class="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-2xl bg-blue-600 px-3 text-sm font-black text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 sm:px-4"
+      >
+        <svg aria-hidden="true" viewBox="0 0 24 24" class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.5 20.12a7.5 7.5 0 0 1 15 0A17.93 17.93 0 0 1 12 21.75a17.93 17.93 0 0 1-7.5-1.63Z"/>
+        </svg>
+        <span data-header-auth-mobile class="sm:hidden">Увійти</span>
+        <span data-header-auth-desktop class="hidden sm:inline">Увійти / Зареєструватися</span>
+      </a>
+    </div>
   </div>
 </header>
 <main id="main-content" tabindex="-1">
 <section data-role="homepage-hero" aria-labelledby="homepage-title" class="flex min-h-[calc(100svh-69px)] items-center overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(37,99,235,.28),transparent_42%),linear-gradient(145deg,#0f172a_0%,#1e3a8a_52%,#0f766e_100%)]">
   <div class="homepage-house-art homepage-house-art-left" aria-hidden="true">
-    <img src="/images/silver-silhouette.svg?v=perf-060a2905fdfb" alt="" width="1600" height="900" draggable="false" decoding="async" fetchpriority="low"/>
+    <img src="/images/silver-silhouette.svg?v=perf-d66737699466" alt="" width="1600" height="900" draggable="false" decoding="async" fetchpriority="low"/>
   </div>
   <div class="homepage-house-art homepage-house-art-right" aria-hidden="true">
-    <img src="/images/silver-silhouette.svg?v=perf-060a2905fdfb" alt="" width="1600" height="900" draggable="false" decoding="async" fetchpriority="low"/>
+    <img src="/images/silver-silhouette.svg?v=perf-d66737699466" alt="" width="1600" height="900" draggable="false" decoding="async" fetchpriority="low"/>
   </div>
   <div class="mx-auto w-full max-w-5xl px-4 py-12 sm:py-16">
     <div class="mx-auto max-w-3xl text-center">
@@ -385,7 +387,7 @@
     window.addEventListener("beforeunload", flushFinalVitals);
   })();
 </script>
-<script defer src="app-loader.js?v=perf-060a2905fdfb"></script>
+<script defer src="app-loader.js?v=perf-d66737699466"></script>
 <script defer src="analytics-loader.js?v=20260813-1"></script>
 <script defer src="premium-loader.js?v=20260908-1"></script>
 <div id="marketplace-extensions-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>

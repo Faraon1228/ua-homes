@@ -157,6 +157,53 @@ test("public app clears cached auth when profile refresh returns 401", async ({ 
     .toEqual({ token: null, user: null });
 });
 
+test("seller dashboard shows a red logout action next to catalog navigation", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("uaDim.authToken", "seller-token");
+    localStorage.setItem(
+      "uaDim.currentUser",
+      JSON.stringify({ id: 7, name: "Продавець", email: "seller@example.test", account_type: "owner" }),
+    );
+  });
+  await page.route("**/api/auth/me", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        user: { id: 7, name: "Продавець", email: "seller@example.test", account_type: "owner" },
+      }),
+    }),
+  );
+  await page.route("**/api/inquiries", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ inquiries: [] }) }),
+  );
+  await page.route("**/api/listings?*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ listings: [], total: 0, has_more: false }),
+    }),
+  );
+
+  await page.goto("/real-estate-demo.html?seller=1");
+
+  await expect(page.locator("#header-auth-cta")).toHaveAttribute("href", "/real-estate-demo.html");
+  const logout = page.locator("#header-logout-cta");
+  await expect(logout).toBeVisible();
+  await expect(logout).toHaveClass(/bg-rose-600/);
+
+  await logout.click();
+  await expect(logout).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        token: localStorage.getItem("uaDim.authToken"),
+        user: localStorage.getItem("uaDim.currentUser"),
+      })),
+    )
+    .toEqual({ token: null, user: null });
+});
+
 test("seller edits stored photos as previews without exposing Cloudinary URLs", async ({ page }) => {
   const firstPhoto = "https://res.cloudinary.com/ua-dim/image/upload/v1/listings/first.jpg";
   const secondPhoto = "https://res.cloudinary.com/ua-dim/image/upload/v1/listings/second.jpg";
