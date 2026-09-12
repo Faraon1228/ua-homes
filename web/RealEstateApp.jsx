@@ -2232,7 +2232,9 @@ export default function RealEstateApp() {
   useEffect(() => {
     const authCta = document.getElementById("header-auth-cta");
     const brandLink = document.getElementById("header-brand-link");
+    const previousLogoutCta = document.getElementById("header-logout-cta");
     if (brandLink) brandLink.setAttribute("href", getCatalogHref());
+    previousLogoutCta?.remove();
     if (!authCta) return undefined;
 
     const mobileLabel = authCta.querySelector("[data-header-auth-mobile]");
@@ -2242,7 +2244,21 @@ export default function RealEstateApp() {
       if (desktopLabel) desktopLabel.textContent = "До каталогу";
       authCta.setAttribute("href", getCatalogHref());
       authCta.setAttribute("aria-label", "Повернутися до каталогу житла");
-      return undefined;
+      if (!currentUser) return undefined;
+
+      const headerActions = document.getElementById("header-actions") || authCta.parentElement;
+      const logoutCta = document.createElement("button");
+      logoutCta.id = "header-logout-cta";
+      logoutCta.type = "button";
+      logoutCta.className =
+        "inline-flex min-h-11 shrink-0 items-center justify-center rounded-2xl bg-rose-600 px-4 text-sm font-black text-white shadow-lg shadow-rose-600/20 transition hover:bg-rose-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-700";
+      logoutCta.textContent = "Вийти";
+      logoutCta.addEventListener("click", logoutProfile);
+      headerActions?.insertBefore(logoutCta, authCta.nextSibling);
+      return () => {
+        logoutCta.removeEventListener("click", logoutProfile);
+        logoutCta.remove();
+      };
     }
 
     const accessibleLabel = currentUser ? "Відкрити кабінет продавця" : "Увійти або зареєструватися";
