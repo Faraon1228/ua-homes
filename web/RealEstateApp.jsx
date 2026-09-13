@@ -13,6 +13,7 @@ import {
   getAllSettlements,
   inferRegionForCity,
   normalizeRegionName,
+  isCityInRegion,
 } from "./lib/uaGeography.js";
 import { ApiError, buildApiUrl, createLatestRequest } from "./lib/apiClient.js";
 import {
