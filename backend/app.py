@@ -1097,10 +1097,8 @@ def _init_postgres_db():
 
             CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_listings_city ON listings(city);
-            CREATE INDEX IF NOT EXISTS idx_listings_region ON listings(region);
             CREATE INDEX IF NOT EXISTS idx_listings_status_created_at ON listings(status, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_listings_status_city ON listings(status, city);
-            CREATE INDEX IF NOT EXISTS idx_listings_status_region ON listings(status, region);
             CREATE INDEX IF NOT EXISTS idx_listings_status_listing_type ON listings(status, listing_type);
             CREATE INDEX IF NOT EXISTS idx_listings_status_agency_slug ON listings(status, agency_slug);
             CREATE INDEX IF NOT EXISTS idx_listings_agency_created_at ON listings(agency_slug, created_at DESC);
@@ -1171,6 +1169,14 @@ def _init_postgres_db():
             ALTER TABLE listings ADD COLUMN IF NOT EXISTS videos TEXT NOT NULL DEFAULT '[]';
             ALTER TABLE listings ADD COLUMN IF NOT EXISTS last_confirmed_at TEXT;
             ALTER TABLE listings ADD COLUMN IF NOT EXISTS freshness_reminder_sent_at TEXT;
+        """)
+        # The region column may not exist until the migration above runs (on
+        # databases created before the region/settlement feature), so its
+        # indexes must be created afterwards rather than in the initial
+        # CREATE TABLE IF NOT EXISTS / CREATE INDEX block above.
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_listings_region ON listings(region);
+            CREATE INDEX IF NOT EXISTS idx_listings_status_region ON listings(status, region);
         """)
         # Email / phone verification columns and password-reset columns (stage-2 auth hardening).
         cur.execute("""
