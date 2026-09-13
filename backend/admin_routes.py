@@ -307,8 +307,13 @@ def parse_csv_row(row, row_number):
     property_type = (row.get("property_type") or "квартира").strip() or "квартира"
     condition_type = (row.get("condition_type") or "вторинка").strip() or "вторинка"
 
+    region = str(row.get("region") or row.get("oblast") or "").strip()[:100]
+    if not region and str(row.get("city") or "").strip():
+        from app import _infer_region_from_city
+        region = _infer_region_from_city(str(row.get("city")).strip()) or ""
     listing = {
         "title": str(row.get("title")).strip()[:200],
+        "region": region,
         "city": str(row.get("city")).strip()[:100],
         "district": str(row.get("district")).strip()[:100],
         "property_type": property_type[:50],
@@ -365,9 +370,12 @@ def build_listing_filters(args, allow_ids=False):
             clauses.append(f"id IN ({','.join('?' for _ in ids)})")
             params.extend(ids)
 
+    region = (args.get("region") or "").strip()
     city = (args.get("city") or "").strip()
     status = (args.get("status") or "").strip()
     search = (args.get("search") or "").strip()
+    if len(region) > 100:
+        raise ValueError("region must be at most 100 characters")
     if len(city) > 100:
         raise ValueError("city must be at most 100 characters")
     if status and status not in {"draft", "published", "pending", "rejected", "archived"}:
@@ -375,6 +383,11 @@ def build_listing_filters(args, allow_ids=False):
     if len(search) > 120:
         raise ValueError("search must be at most 120 characters")
 
+    if region and region != "Всі":
+        from app import normalize_region_name
+        norm_region = normalize_region_name(region)
+        clauses.append("(region = ? OR (COALESCE(region, '') = '' AND city = ?))")
+        params.extend([norm_region, region])
     if city:
         clauses.append("city = ?")
         params.append(city)
@@ -705,7 +718,7 @@ def admin_get_listings():
         return jsonify(error=str(exc)), 400
     
     query = """
-        SELECT id, title, city, district, price, rooms, area, status, 
+        SELECT id, title, region, city, district, price, rooms, area, status, 
                created_at, views, e_oselya, images, listing_highlights, capture_mode,
                property_type, condition_type, listing_status, source, has_photo_tour, has_video_tour
         FROM listings WHERE 1=1
@@ -770,15 +783,22 @@ def admin_create_listing():
     if listing_status not in {'active', 'sold', 'removed'}:
         return jsonify(error="Invalid listing lifecycle status"), 400
     now = datetime.datetime.utcnow().isoformat(timespec='seconds')
+    from app import _infer_region_from_city, normalize_region_name
+    region = str(data.get('region') or data.get('oblast') or '').strip()
+    if not region:
+        region = _infer_region_from_city(data['city']) or ''
+    if region:
+        region = normalize_region_name(region)
 
     cur = db.execute("""
         INSERT INTO listings 
-        (title, city, district, property_type, condition_type, price, rooms, area,
+        (title, region, city, district, property_type, condition_type, price, rooms, area,
         floor, total_floors, year_built, e_oselya, description, status, listing_status, moderation_status, moderation_updated_at, published_at, user_id,
         latitude, longitude, source, has_photo_tour, has_video_tour, listing_highlights, capture_mode)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         data['title'],
+        region,
         data['city'],
         data['district'],
         data.get('property_type', 'квартира'),
@@ -824,7 +844,7 @@ def admin_get_listing(listing_id):
     
     db = get_db()
     listing = db.execute(
-        """SELECT id, title, city, district, price, rooms, area, floor,
+        """SELECT id, title, region, city, district, price, rooms, area, floor,
                   total_floors, year_built, e_oselya, description, status,
                   listing_status,
                   property_type, condition_type, latitude, longitude, views,
@@ -911,11 +931,11 @@ def admin_update_listing(listing_id):
     params = []
     
     allowed_fields = [
-        'title', 'city', 'district', 'price', 'rooms', 'area',
+        'title', 'region', 'city', 'district', 'price', 'rooms', 'area',
         'floor', 'total_floors', 'year_built', 'e_oselya',
         'description', 'property_type', 'condition_type',
-    'latitude', 'longitude', 'status', 'listing_status',
-    'source', 'has_photo_tour', 'has_video_tour', 'listing_highlights', 'capture_mode'
+        'latitude', 'longitude', 'status', 'listing_status',
+        'source', 'has_photo_tour', 'has_video_tour', 'listing_highlights', 'capture_mode'
     ]
     
     for field in allowed_fields:

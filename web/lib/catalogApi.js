@@ -7,6 +7,7 @@ export function buildCatalogQuery(filters, { limit, offset, append }) {
     offset,
     sort: filters.sortBy,
     includeFacets: append ? undefined : 1,
+    region: filters.regionFilter && filters.regionFilter !== "Всі" ? filters.regionFilter : undefined,
     city: filters.cityFilter === "Всі" ? undefined : filters.cityFilter,
     type: filters.propertyTypeFilter === "Всі" ? undefined : filters.propertyTypeFilter,
     eOselya: filters.onlyEOselya ? 1 : undefined,
@@ -16,7 +17,7 @@ export function buildCatalogQuery(filters, { limit, offset, append }) {
     maxRooms: filters.maxRooms,
     minArea: filters.minArea,
     maxArea: filters.maxArea,
-    search: filters.keywordSearch.trim() || undefined,
+    search: (filters.keywordSearch || "").trim() || undefined,
   };
   if (filters.showFavoritesOnly) query.ids = filters.favoriteIds.join(",");
   return query;

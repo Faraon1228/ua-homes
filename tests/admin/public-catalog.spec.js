@@ -96,6 +96,51 @@ test("public catalog loads mocked listings and sends hero search at the API boun
   await expect(page.locator("#results")).toBeFocused();
 });
 
+test("public catalog filters by Ukrainian region and settlement selector", async ({
+  page,
+}) => {
+  const requests = [];
+  await mockCatalog(page, async (route) => {
+    const url = new URL(route.request().url());
+    requests.push(Object.fromEntries(url.searchParams));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        listings: [{ ...listing, region: "Київська", city: "Буча" }],
+        total: 1,
+        has_more: false,
+        facets: { regions: ["Київська", "Львівська"], cities: ["Буча", "Київ"] },
+      }),
+    });
+  });
+
+  await page.goto("/real-estate-demo.html");
+  await expect(page.getByRole("heading", { name: "Показано 1 з 1" })).toBeVisible();
+  const regionSelect = page.locator("#filter-region");
+  if (!(await regionSelect.isVisible())) {
+    await page.getByRole("button", { name: /Фільтри/ }).first().click();
+  }
+  await expect(regionSelect).toBeVisible();
+  await page.locator("#filter-region").selectOption("Київська");
+
+  await expect
+    .poll(() => requests.find((r) => r.region === "Київська"))
+    .toMatchObject({
+      status: "published",
+      region: "Київська",
+    });
+
+  await page.locator("#filter-city").selectOption("Буча");
+  await expect
+    .poll(() => requests.find((r) => r.region === "Київська" && r.city === "Буча"))
+    .toMatchObject({
+      status: "published",
+      region: "Київська",
+      city: "Буча",
+    });
+});
+
 test("public catalog exposes a deterministic retry path after an API failure", async ({
   page,
 }) => {

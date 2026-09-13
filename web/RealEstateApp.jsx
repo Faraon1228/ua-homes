@@ -6,6 +6,14 @@ import {
   normalizePropertyType,
   resolveSortByForEOselya,
 } from "./realEstateFilters";
+import {
+  UKRAINIAN_REGIONS,
+  formatRegionOptionLabel,
+  getSettlementsForRegion,
+  getAllSettlements,
+  inferRegionForCity,
+  normalizeRegionName,
+} from "./lib/uaGeography.js";
 import { ApiError, buildApiUrl, createLatestRequest } from "./lib/apiClient.js";
 import {
   clearAuthSessionCache,
@@ -179,6 +187,7 @@ const SELLER_CABINET_PATH = "/seller";
 function searchFiltersToAlertPayload(name, filters) {
   return {
     name,
+    region: filters.regionFilter && filters.regionFilter !== "Всі" ? filters.regionFilter : null,
     city: filters.cityFilter && filters.cityFilter !== "Всі" ? filters.cityFilter : null,
     type: filters.propertyType && filters.propertyType !== "Всі" ? filters.propertyType : null,
     eOselya: Boolean(filters.onlyEOselya),
@@ -201,6 +210,7 @@ function alertToSavedSearch(alert) {
     serverId: alert.id,
     name: alert.name || "Збережений пошук",
     filters: {
+      regionFilter: filters.region || "Всі",
       cityFilter: filters.city || "Всі",
       propertyType: filters.type || "Всі",
       onlyEOselya: Boolean(filters.eOselya),
@@ -255,6 +265,7 @@ function formatPlanQuota(usage) {
 function createInitialListingForm(initialValues = {}) {
   return {
     title: "",
+    region: "Київська",
     city: "Київ",
     district: "",
     propertyType: "квартира",
@@ -271,6 +282,36 @@ function createInitialListingForm(initialValues = {}) {
     images: [],
     videos: [],
     ...initialValues,
+  };
+}
+
+function mapListingToForm(listing) {
+  const city = listing?.city || "Київ";
+  const region = listing?.region || inferRegionForCity(city) || "Київська";
+  return {
+    title: listing?.title || "",
+    region,
+    city,
+    district: listing?.district || "",
+    propertyType: listing?.propertyType || listing?.property_type || "квартира",
+    conditionType: listing?.conditionType || listing?.condition_type || "вторинка",
+    listingType: listing?.listingType || listing?.listing_type || "sale",
+    price: listing?.price != null ? String(listing.price) : "",
+    rooms: listing?.rooms != null ? String(listing.rooms) : "",
+    area: listing?.area != null ? String(listing.area) : "",
+    floor: listing?.floor != null ? String(listing.floor) : "1",
+    totalFloors:
+      listing?.totalFloors != null || listing?.total_floors != null
+        ? String(listing.totalFloors ?? listing.total_floors)
+        : "1",
+    yearBuilt:
+      listing?.yearBuilt != null || listing?.year_built != null
+        ? String(listing.yearBuilt ?? listing.year_built)
+        : "",
+    eOselya: Boolean(listing?.eOselya ?? listing?.e_oselya),
+    description: listing?.description || "",
+    images: Array.isArray(listing?.images) ? listing.images.filter(Boolean) : [],
+    videos: Array.isArray(listing?.videos) ? listing.videos.filter(Boolean) : [],
   };
 }
 
@@ -328,10 +369,12 @@ function mapListingToProperty(listing) {
       : Number(listing.longitude);
 
   const normalizedPropertyType = normalizePropertyType(listing?.property_type || listing?.propertyType || "");
+  const region = listing?.region || inferRegionForCity(listing?.city) || "";
 
   return {
     id: listing?.id ?? 0,
     title: listing?.title || "Оголошення без назви",
+    region,
     city: listing?.city || "",
     district: listing?.district || "",
     price: Number(listing?.price || 0),
@@ -382,9 +425,16 @@ function formatPricePerSquareMeter(price, area) {
 
 function formatListingAddress(property) {
   const city = String(property?.city || "").trim();
+  const region = String(property?.region || "").trim();
   const district = String(property?.district || "").trim();
   const parts = [];
-  if (city) parts.push(`м. ${city}`);
+  if (city) {
+    const isSpecialType = /^(селище|село|смт|м\.)/i.test(city);
+    parts.push(isSpecialType ? city : `м. ${city}`);
+  }
+  if (region && region !== city && region !== "Всі") {
+    parts.push(`${region} обл.`);
+  }
   if (district) parts.push(/район/i.test(district) ? district : `${district} район`);
   return parts.length ? parts.join(", ") : "Адресу не вказано";
 }
@@ -1065,29 +1115,6 @@ function ListingsMapView({ properties, onShowList }) {
   );
 }
 
-function mapListingToForm(listing) {
-  const images = Array.isArray(listing?.images) ? listing.images.filter(Boolean).slice(0, 8) : [];
-
-  return {
-    title: listing?.title || "",
-    city: listing?.city || "Київ",
-    district: listing?.district || "",
-    propertyType: listing?.property_type || listing?.propertyType || "квартира",
-    conditionType: listing?.condition_type || listing?.conditionType || "вторинка",
-    listingType: listing?.listing_type || listing?.listingType || "sale",
-    price: listing?.price != null ? String(listing.price) : "",
-    rooms: listing?.rooms != null ? String(listing.rooms) : "",
-    area: listing?.area != null ? String(listing.area) : "",
-    floor: listing?.floor != null ? String(listing.floor) : "1",
-    totalFloors: listing?.total_floors != null ? String(listing.total_floors) : "1",
-    yearBuilt: listing?.year_built != null ? String(listing.year_built) : "",
-    eOselya: Boolean(listing?.e_oselya ?? listing?.eOselya),
-    description: listing?.description || "",
-    images,
-    videos: Array.isArray(listing?.videos) ? listing.videos.filter(Boolean).slice(0, 2) : [],
-  };
-}
-
 function getListingStatusLabel(listing) {
   if (listing?.status === "published" && listing?.listing_status === "active") return "Активне";
   if (listing?.status === "published") return "Опубліковано";
@@ -1192,9 +1219,12 @@ function allowMockCatalogFallback() {
 
 function describeSearchState(filters, keywordSearch) {
   const parts = [];
+  if (filters.regionFilter && filters.regionFilter !== "Всі") {
+    parts.push(`${filters.regionFilter} область`);
+  }
   if (filters.cityFilter && filters.cityFilter !== "Всі") {
     parts.push(filters.cityFilter);
-  } else {
+  } else if (!filters.regionFilter || filters.regionFilter === "Всі") {
     parts.push("Вся Україна");
   }
   if (filters.propertyType && filters.propertyType !== "Всі") {
@@ -1673,6 +1703,7 @@ export default function RealEstateApp() {
   const listingCloseRef = useRef(null);
   const deleteDialogRef = useRef(null);
   const deleteCancelRef = useRef(null);
+  const [regionFilter, setRegionFilter] = useState(() => getStored("re.regionFilter", "Всі"));
   const [cityFilter, setCityFilter] = useState(() => getStored("re.cityFilter", "Всі"));
   const [propertyTypeFilter, setPropertyTypeFilter] = useState(() => getStored("re.propertyType", "Всі"));
   const [onlyEOselya, setOnlyEOselya] = useState(
@@ -1871,14 +1902,27 @@ export default function RealEstateApp() {
     return [];
   }, [catalogError, catalogLoaded, liveCatalogListings]);
 
+  const availableSettlements = useMemo(() => {
+    if (regionFilter && regionFilter !== "Всі") {
+      const regionPlaces = getSettlementsForRegion(regionFilter);
+      const catalogMatching = catalogProperties
+        .filter((p) => p.region === regionFilter || isCityInRegion(p.city, regionFilter))
+        .map((p) => p.city)
+        .filter(Boolean);
+      return Array.from(new Set([...regionPlaces, ...catalogMatching])).sort((a, b) => a.localeCompare(b, "uk"));
+    }
+    return Array.from(
+      new Set([
+        ...catalogCities,
+        ...catalogProperties.map((property) => property.city),
+        ...getAllSettlements(),
+      ].filter(Boolean))
+    ).sort((left, right) => left.localeCompare(right, "uk"));
+  }, [regionFilter, catalogCities, catalogProperties]);
+
   const cities = useMemo(
-    () => [
-      "Всі",
-      ...Array.from(
-        new Set([...catalogCities, ...catalogProperties.map((property) => property.city)].filter(Boolean))
-      ).sort((left, right) => left.localeCompare(right, "uk")),
-    ],
-    [catalogCities, catalogProperties]
+    () => ["Всі", ...availableSettlements],
+    [availableSettlements]
   );
   const activeMyListingsCount = useMemo(
     () => myListings.filter((item) => item.status === "published" && item.listing_status === "active").length,
@@ -1989,6 +2033,7 @@ export default function RealEstateApp() {
 
   const searchFilters = useMemo(
     () => ({
+      regionFilter,
       cityFilter,
       propertyType: propertyTypeFilter,
       onlyEOselya,
@@ -2001,13 +2046,14 @@ export default function RealEstateApp() {
       sortBy,
       keywordSearch,
     }),
-    [cityFilter, propertyTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, sortBy, keywordSearch]
+    [regionFilter, cityFilter, propertyTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, sortBy, keywordSearch]
   );
 
   const catalogSnapshotRef = useRef(null);
   catalogSnapshotRef.current = {
     count: liveCatalogListings.length,
     stored: {
+      "re.regionFilter": regionFilter,
       "re.cityFilter": cityFilter,
       "re.propertyType": propertyTypeFilter,
       "re.onlyEOselya": String(onlyEOselya),
@@ -2055,6 +2101,7 @@ export default function RealEstateApp() {
       }
 
       const filters = {
+        regionFilter,
         cityFilter,
         propertyTypeFilter,
         onlyEOselya,
@@ -2138,6 +2185,7 @@ export default function RealEstateApp() {
     return () => window.clearTimeout(timeout);
   }, [
     sellerCabinetMode,
+    regionFilter,
     cityFilter,
     propertyTypeFilter,
     onlyEOselya,
@@ -2196,6 +2244,7 @@ export default function RealEstateApp() {
   }, []);
 
   useEffect(() => {
+    window.localStorage.setItem("re.regionFilter", regionFilter);
     window.localStorage.setItem("re.cityFilter", cityFilter);
     window.localStorage.setItem("re.propertyType", propertyTypeFilter);
     window.localStorage.setItem("re.onlyEOselya", String(onlyEOselya));
@@ -2210,6 +2259,7 @@ export default function RealEstateApp() {
     window.localStorage.setItem("re.favoriteIds", JSON.stringify(favoriteIds));
     window.localStorage.setItem(SAVED_SEARCHES_KEY, JSON.stringify(savedSearches.slice(0, MAX_SAVED_SEARCHES)));
   }, [
+    regionFilter,
     cityFilter,
     propertyTypeFilter,
     onlyEOselya,
@@ -2645,7 +2695,8 @@ export default function RealEstateApp() {
   };
   const activeFilters = useMemo(() => {
     const items = [];
-    if (cityFilter !== "Всі") items.push({ key: "cityFilter", label: `Місто: ${cityFilter}` });
+    if (regionFilter !== "Всі") items.push({ key: "regionFilter", label: `Область: ${regionFilter}` });
+    if (cityFilter !== "Всі") items.push({ key: "cityFilter", label: `Місто/селище: ${cityFilter}` });
     if (propertyTypeFilter !== "Всі") {
       const selectedType = PROPERTY_TYPE_OPTIONS.find((option) => option.value === propertyTypeFilter);
       items.push({ key: "propertyType", label: `Тип: ${selectedType?.label || propertyTypeFilter}` });
@@ -2662,7 +2713,7 @@ export default function RealEstateApp() {
     }
     if (keywordSearch.trim()) items.push({ key: "keywordSearch", label: `Пошук: "${keywordSearch.trim()}"` });
     return items;
-  }, [cityFilter, propertyTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, keywordSearch]);
+  }, [regionFilter, cityFilter, propertyTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, keywordSearch]);
 
   const toggleFavorite = async (property) => {
     const wasFavorite = favoriteIds.includes(property.id);
@@ -2689,6 +2740,7 @@ export default function RealEstateApp() {
   };
 
   const resetFilters = () => {
+    setRegionFilter("Всі");
     setCityFilter("Всі");
     setPropertyTypeFilter("Всі");
     setOnlyEOselya(false);
@@ -2704,8 +2756,9 @@ export default function RealEstateApp() {
 
   const oneClickChips = useMemo(
     () => [
-      { label: "Київ", action: () => setCityFilter("Київ") },
-      { label: "Львів", action: () => setCityFilter("Львів") },
+      { label: "Київ", action: () => { setRegionFilter("Київська"); setCityFilter("Київ"); } },
+      { label: "Львів", action: () => { setRegionFilter("Львівська"); setCityFilter("Львів"); } },
+      { label: "Одеса", action: () => { setRegionFilter("Одеська"); setCityFilter("Одеса"); } },
       { label: "єОселя", action: () => setOnlyEOselya((current) => !current) },
       { label: "1-2 кімн.", action: () => { setMinRooms("1"); setMaxRooms("2"); } },
       { label: "до $100k", action: () => { setMinPrice(""); setMaxPrice("100000"); } },
@@ -2718,6 +2771,7 @@ export default function RealEstateApp() {
 
   const clearSavedFilters = () => {
     STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
+    window.localStorage.removeItem("re.regionFilter");
     window.localStorage.removeItem("re.showFavoritesOnly");
     window.localStorage.removeItem("re.favoriteIds");
     window.localStorage.removeItem(SAVED_SEARCHES_KEY);
@@ -2731,6 +2785,7 @@ export default function RealEstateApp() {
 
   const applyScenario = (scenario) => {
     const { filters } = scenario;
+    if ("regionFilter" in filters) setRegionFilter(filters.regionFilter);
     if ("cityFilter" in filters) setCityFilter(filters.cityFilter);
     if ("propertyTypeFilter" in filters) setPropertyTypeFilter(filters.propertyTypeFilter);
     if ("onlyEOselya" in filters) setOnlyEOselya(filters.onlyEOselya);
@@ -2862,7 +2917,10 @@ export default function RealEstateApp() {
 
   const openSavedSearch = (entry) => {
     const next = entry.filters || {};
+    if ("regionFilter" in next) setRegionFilter(next.regionFilter);
+    else if ("region" in next) setRegionFilter(next.region);
     if ("cityFilter" in next) setCityFilter(next.cityFilter);
+    else if ("city" in next) setCityFilter(next.city);
     if ("propertyType" in next) setPropertyTypeFilter(next.propertyType);
     if ("onlyEOselya" in next) setOnlyEOselya(next.onlyEOselya);
     if ("minPrice" in next) setMinPrice(next.minPrice);
@@ -2880,6 +2938,7 @@ export default function RealEstateApp() {
   };
 
   const clearActiveFilter = (key) => {
+    if (key === "regionFilter") setRegionFilter("Всі");
     if (key === "cityFilter") setCityFilter("Всі");
     if (key === "propertyType") setPropertyTypeFilter("Всі");
     if (key === "onlyEOselya") setOnlyEOselya(false);
@@ -3255,6 +3314,7 @@ export default function RealEstateApp() {
         : [];
       const payload = {
         title: listingForm.title.trim(),
+        region: listingForm.region || inferRegionForCity(listingForm.city) || "Київська",
         city: listingForm.city.trim(),
         district: listingForm.district.trim(),
         propertyType: listingForm.propertyType,
@@ -4551,7 +4611,33 @@ export default function RealEstateApp() {
 
               <div className="mt-4 grid grid-cols-1 gap-4">
                 <div>
-                  <label htmlFor="filter-city" className="text-xs font-bold uppercase tracking-wide text-slate-600">Місто</label>
+                  <label htmlFor="filter-region" className="text-xs font-bold uppercase tracking-wide text-slate-600">Область</label>
+                  <select
+                    id="filter-region"
+                    value={regionFilter}
+                    onChange={(e) => {
+                      const selected = e.target.value;
+                      setRegionFilter(selected);
+                      if (selected !== "Всі") {
+                        const settlements = getSettlementsForRegion(selected);
+                        if (cityFilter !== "Всі" && !settlements.some((s) => s.toLowerCase() === cityFilter.toLowerCase())) {
+                          setCityFilter("Всі");
+                        }
+                      }
+                    }}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                  >
+                    <option value="Всі">Всі області України</option>
+                    {UKRAINIAN_REGIONS.map((region) => (
+                      <option key={region} value={region}>
+                        {formatRegionOptionLabel(region)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label htmlFor="filter-city" className="text-xs font-bold uppercase tracking-wide text-slate-600">Населений пункт</label>
                   <select
                     id="filter-city"
                     value={cityFilter}
@@ -4560,7 +4646,11 @@ export default function RealEstateApp() {
                   >
                     {cities.map((city) => (
                       <option key={city} value={city}>
-                        {city === "Всі" ? "Всі міста України" : city}
+                        {city === "Всі"
+                          ? regionFilter !== "Всі"
+                            ? `Всі населені пункти (${regionFilter} обл.)`
+                            : "Всі населені пункти України"
+                          : city}
                       </option>
                     ))}
                   </select>
@@ -4943,6 +5033,15 @@ export default function RealEstateApp() {
                     </button>
                   </div>
                   <button
+                    ref={mobileFiltersTriggerRef}
+                    id="mobile-filters-trigger"
+                    type="button"
+                    onClick={() => setShowMobileFilters(true)}
+                    className="inline-flex min-h-[44px] items-center rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700 transition hover:bg-blue-100 lg:hidden"
+                  >
+                    🔎 Фільтри
+                  </button>
+                  <button
                     type="button"
                     onClick={() => setShowFavoritesOnly((current) => !current)}
                     aria-pressed={showFavoritesOnly}
@@ -5244,15 +5343,51 @@ export default function RealEstateApp() {
                 />
               </div>
               <div>
-                <label htmlFor="listing-city" className="text-xs font-bold uppercase tracking-wide text-slate-600">Місто</label>
+                <label htmlFor="listing-region" className="text-xs font-bold uppercase tracking-wide text-slate-600">Область</label>
+                <select
+                  id="listing-region"
+                  required
+                  value={listingForm.region || "Київська"}
+                  onChange={(event) => {
+                    const newRegion = event.target.value;
+                    updateListingField("region", newRegion);
+                    const settlements = getSettlementsForRegion(newRegion);
+                    if (settlements.length && !settlements.includes(listingForm.city)) {
+                      updateListingField("city", settlements[0]);
+                    }
+                  }}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                >
+                  {UKRAINIAN_REGIONS.map((reg) => (
+                    <option key={reg} value={reg}>
+                      {formatRegionOptionLabel(reg)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="listing-city" className="text-xs font-bold uppercase tracking-wide text-slate-600">Населений пункт (місто / селище)</label>
                 <input
                   id="listing-city"
                   required
+                  list="listing-settlements-list"
                   value={listingForm.city}
-                  onChange={(event) => updateListingField("city", event.target.value)}
+                  onChange={(event) => {
+                    const place = event.target.value;
+                    updateListingField("city", place);
+                    const autoRegion = inferRegionForCity(place);
+                    if (autoRegion && autoRegion !== listingForm.region) {
+                      updateListingField("region", autoRegion);
+                    }
+                  }}
                   placeholder="Київ"
                   className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"
                 />
+                <datalist id="listing-settlements-list">
+                  {(getSettlementsForRegion(listingForm.region) || []).map((place) => (
+                    <option key={place} value={place} />
+                  ))}
+                </datalist>
               </div>
               <div>
                 <label htmlFor="listing-district" className="text-xs font-bold uppercase tracking-wide text-slate-600">Район</label>

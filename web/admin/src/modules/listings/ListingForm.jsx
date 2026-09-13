@@ -119,7 +119,10 @@ export function ListingForm({ listingId, onSaved, onCancel }) {
   return (
     <form className="listing-form" onSubmit={handleSubmit} noValidate>
       <datalist id="ua-city-options">
-        {(centers.allCenters || []).map((city) => (
+        {(form.region && centers.regionData?.[form.region]?.centers
+          ? centers.regionData[form.region].centers
+          : centers.allCenters || []
+        ).map((city) => (
           <option key={city} value={city} />
         ))}
       </datalist>
@@ -134,7 +137,27 @@ export function ListingForm({ listingId, onSaved, onCancel }) {
             required
           />
         </FormField>
-        <FormField label="Місто" error={errors.city} required hint="Почніть вводити — підкажемо варіанти">
+        <FormField label="Область" error={errors.region}>
+          <select
+            value={form.region || ""}
+            onChange={(e) => {
+              const selectedRegion = e.target.value;
+              update("region", selectedRegion);
+              const regionCenters = centers.regionData?.[selectedRegion]?.centers || [];
+              if (regionCenters.length && !regionCenters.includes(form.city)) {
+                update("city", regionCenters[0]);
+              }
+            }}
+          >
+            <option value="">Оберіть область...</option>
+            {(centers.regions || []).map((reg) => (
+              <option key={reg} value={reg}>
+                {reg} {reg.includes("Крим") ? "" : "область"}
+              </option>
+            ))}
+          </select>
+        </FormField>
+        <FormField label="Населений пункт (місто / селище)" error={errors.city} required hint="Почніть вводити — підкажемо варіанти">
           <input
             type="text"
             list="ua-city-options"

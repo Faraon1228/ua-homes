@@ -146,7 +146,11 @@ export function Listings({ staff, openListingId, onConsumeOpenListingId, initial
           </button>
         ),
       },
-      { key: "location", header: "Локація", render: (row) => `${row.city}, ${row.district}` },
+      {
+        key: "location",
+        header: "Локація",
+        render: (row) => `${row.region ? `${row.region} обл., ` : ""}${row.city}, ${row.district}`,
+      },
       { key: "price", header: "Ціна", render: (row) => formatPrice(row.price) },
       { key: "specs", header: "Кімнати / м²", render: (row) => `${row.rooms} к. · ${row.area} м²` },
       {
