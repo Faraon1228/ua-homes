@@ -1,7 +1,10 @@
+import { isCityInRegion, normalizeRegionName, inferRegionForCity } from "./lib/uaGeography.js";
+
 export const DEFAULT_SORT = "price-desc";
 export const EOSELYA_SORT = "price-asc";
 
 export const STORAGE_KEYS = [
+  "re.regionFilter",
   "re.cityFilter",
   "re.propertyType",
   "re.onlyEOselya",
@@ -44,6 +47,7 @@ export function resolveSortByForEOselya(previousSort, onlyEOselya) {
 
 export function filterAndSortProperties(properties, filters) {
   const {
+    regionFilter = "Всі",
     cityFilter = "Всі",
     propertyType = "Всі",
     onlyEOselya = false,
@@ -61,6 +65,11 @@ export function filterAndSortProperties(properties, filters) {
   const keywordTerms = keyword ? keyword.split(/\s+/).filter(Boolean) : [];
 
   const filtered = properties.filter((item) => {
+    const itemRegion = item.region || inferRegionForCity(item.city) || "";
+    const matchRegion =
+      regionFilter === "Всі" ||
+      (itemRegion && normalizeRegionName(itemRegion) === normalizeRegionName(regionFilter)) ||
+      isCityInRegion(item.city, regionFilter);
     const matchCity = cityFilter === "Всі" || item.city === cityFilter;
     const normalizedPropertyType = normalizePropertyType(item.propertyType);
     const matchPropertyType = propertyType === "Всі" || normalizedPropertyType === propertyType;
@@ -74,11 +83,12 @@ export function filterAndSortProperties(properties, filters) {
 
     const matchMinArea = minArea === "" || item.area >= Number(minArea);
     const matchMaxArea = maxArea === "" || item.area <= Number(maxArea);
-    const searchableText = `${item.title} ${item.city} ${item.district}`.toLowerCase();
+    const searchableText = `${item.title} ${item.region || ""} ${item.city} ${item.district}`.toLowerCase();
     const matchKeyword =
       !keywordTerms.length || keywordTerms.every((term) => searchableText.includes(term));
 
     return (
+      matchRegion &&
       matchCity &&
       matchPropertyType &&
       matchEOselya &&
@@ -96,7 +106,7 @@ export function filterAndSortProperties(properties, filters) {
     if (sortBy === "relevance") {
       const score = (item) => {
         if (!keywordTerms.length) return 0;
-        const text = `${item.title} ${item.city} ${item.district}`.toLowerCase();
+        const text = `${item.title} ${item.region || ""} ${item.city} ${item.district}`.toLowerCase();
         let value = 0;
         if (text.includes(keyword)) value += 10;
         keywordTerms.forEach((term) => {
@@ -104,6 +114,7 @@ export function filterAndSortProperties(properties, filters) {
           if (item.title.toLowerCase().includes(term)) value += 2;
           if (item.district.toLowerCase().includes(term)) value += 1;
           if (item.city.toLowerCase().includes(term)) value += 1;
+          if (item.region && item.region.toLowerCase().includes(term)) value += 1;
         });
         return value;
       };

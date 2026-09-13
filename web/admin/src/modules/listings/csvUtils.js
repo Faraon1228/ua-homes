@@ -56,6 +56,7 @@ export function parseCsvPreview(text, maxRows = 10) {
 
 export const CSV_TEMPLATE_HEADER = [
   "title",
+  "region",
   "city",
   "district",
   "price",
@@ -77,6 +78,7 @@ export const CSV_TEMPLATE_HEADER = [
 export function buildCsvTemplate() {
   const sampleRow = [
     "Затишна 2-кімнатна квартира",
+    "Київська",
     "Київ",
     "Печерський",
     "125000",

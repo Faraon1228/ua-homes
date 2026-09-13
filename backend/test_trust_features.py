@@ -27,9 +27,16 @@ os.environ["UA_HOMES_SECRET"] = "stage-five-test-secret-at-least-32-bytes"
 os.environ.pop("DATABASE_URL", None)
 
 app_module = importlib.import_module("app")
+app_module.DB_PATH = TEST_DB
 media_migration = importlib.import_module("migrate_legacy_listing_media")
 operations_backup = importlib.import_module("operations_backup")
 postgres_migration = importlib.import_module("migrate_sqlite_to_postgres")
+
+
+def setUpModule():
+    if not os.path.exists(TEST_DB):
+        os.makedirs(os.path.dirname(TEST_DB), exist_ok=True)
+    app_module.init_db()
 
 
 class TrustFeatureTests(unittest.TestCase):
@@ -546,6 +553,7 @@ class TrustFeatureTests(unittest.TestCase):
             headers=self._auth(self.admin_token),
             json={
                 "title": "Admin-created listing",
+                "region": "Львівська",
                 "city": "Львів",
                 "district": "Галицький",
                 "price": 125_000,
@@ -560,13 +568,83 @@ class TrustFeatureTests(unittest.TestCase):
         listing_id = response.get_json()["id"]
         with sqlite3.connect(TEST_DB) as database:
             row = database.execute(
-                "SELECT title, user_id, status, latitude, longitude FROM listings WHERE id = ?",
+                "SELECT title, user_id, status, latitude, longitude, region, city FROM listings WHERE id = ?",
                 (listing_id,),
             ).fetchone()
         self.assertEqual(
             row,
-            ("Admin-created listing", self.admin_id, "draft", 49.84, 24.03),
+            ("Admin-created listing", self.admin_id, "draft", 49.84, 24.03, "Львівська", "Львів"),
         )
+
+    def test_listing_region_and_place_persistence_and_filtering(self):
+        # Create listing with explicit region and settlement
+        create_resp = self.client.post(
+            "/api/listings",
+            headers=self._auth(self.admin_token),
+            json={
+                "title": "Квартира в Бучі біля парку",
+                "region": "Київська",
+                "city": "Буча",
+                "district": "Центральний",
+                "price": 65_000,
+                "rooms": 2,
+                "area": 55.0,
+                "publishNow": True,
+            },
+        )
+        self.assertEqual(create_resp.status_code, 201, create_resp.get_json())
+        created_listing = create_resp.get_json()["listing"]
+        self.assertEqual(created_listing["region"], "Київська")
+        self.assertEqual(created_listing["city"], "Буча")
+        bucha_id = created_listing["id"]
+
+        # Filter by region only
+        region_search = self.client.get("/api/listings?region=Київська&status=published").get_json()
+        ids_in_kyiv_region = [item["id"] for item in region_search["listings"]]
+        self.assertIn(bucha_id, ids_in_kyiv_region)
+
+        # Filter by other region should not include this listing
+        lviv_search = self.client.get("/api/listings?region=Львівська&status=published").get_json()
+        ids_in_lviv_region = [item["id"] for item in lviv_search["listings"]]
+        self.assertNotIn(bucha_id, ids_in_lviv_region)
+
+        # Filter by region + settlement
+        exact_search = self.client.get("/api/listings?region=Київська&city=Буча&status=published").get_json()
+        self.assertTrue(any(item["id"] == bucha_id for item in exact_search["listings"]))
+
+        # Facets return both regions and cities
+        facets_resp = self.client.get("/api/listings?includeFacets=1").get_json()
+        self.assertIn("facets", facets_resp)
+        self.assertIn("regions", facets_resp["facets"])
+        self.assertIn("cities", facets_resp["facets"])
+        self.assertIn("Київська", facets_resp["facets"]["regions"])
+        self.assertIn("Буча", facets_resp["facets"]["cities"])
+
+    def test_legacy_city_listing_resolves_region_and_matches_region_filter(self):
+        with sqlite3.connect(TEST_DB) as database:
+            cursor = database.execute(
+                """
+                INSERT INTO listings (
+                    user_id, title, city, district, price, rooms, area, status,
+                    moderation_status, listing_verification_status, region
+                ) VALUES (?, 'Legacy Odesa flat', 'Одеса', 'Приморський', 75000, 2, 48,
+                          'published', 'approved', 'unverified', NULL)
+                """,
+                (self.owner_id,),
+            )
+            legacy_id = cursor.lastrowid
+            database.commit()
+
+        # Getting the listing resolves the region from the city
+        get_resp = self.client.get(f"/api/listings/{legacy_id}")
+        self.assertEqual(get_resp.status_code, 200)
+        listing_data = get_resp.get_json()["listing"]
+        self.assertEqual(listing_data["region"], "Одеська")
+        self.assertEqual(listing_data["city"], "Одеса")
+
+        # Filtering by region matches the legacy listing
+        region_resp = self.client.get("/api/listings?region=Одеська&status=published").get_json()
+        self.assertTrue(any(item["id"] == legacy_id for item in region_resp["listings"]))
 
     def test_suspended_users_and_admins_cannot_authenticate(self):
         with sqlite3.connect(TEST_DB) as database:

@@ -99,9 +99,9 @@ export function ListingDetailDrawer({ listingId, open, onClose, onChanged, staff
           <TabPanel id="details" idBase="listing-detail" active={tab === "details"}>
             <dl className="detail-grid">
               <div>
-                <dt>Місто / район</dt>
+                <dt>Область / місто / район</dt>
                 <dd>
-                  {listing.city}, {listing.district}
+                  {listing.region ? `${listing.region} обл., ` : ""}{listing.city}, {listing.district}
                 </dd>
               </div>
               <div>

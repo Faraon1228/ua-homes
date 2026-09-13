@@ -1,6 +1,7 @@
 export function buildListingPayload(form, { isCreate }) {
   const base = {
     title: form.title.trim(),
+    region: (form.region || "").trim(),
     city: form.city.trim(),
     district: form.district.trim(),
     price: Number(form.price),
@@ -39,6 +40,7 @@ export function buildListingPayload(form, { isCreate }) {
 
 export const EMPTY_LISTING_FORM = {
   title: "",
+  region: "",
   city: "",
   district: "",
   price: "",
@@ -76,6 +78,7 @@ export function listingToForm(listing) {
   }
   return {
     title: listing.title || "",
+    region: listing.region || "",
     city: listing.city || "",
     district: listing.district || "",
     price: String(listing.price ?? ""),
