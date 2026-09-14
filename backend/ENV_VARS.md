@@ -9,6 +9,16 @@
 | `UA_HOMES_CORS_ORIGINS` | Comma-separated allowed browser origins | `https://ua-dim.com,https://www.ua-dim.com,https://ua-dom.com,https://ua-homes.netlify.app` |
 | `UA_HOMES_ALLOW_NETLIFY_PREVIEW_CORS` | Allow `*.netlify.app` preview origins when true (`1/true/yes`) | `false` |
 
+## Cloudflare API origin protection
+
+| Variable | Location | Description |
+|---|---|---|
+| `UA_HOMES_EDGE_TOKEN` | Railway + Cloudflare Worker secret | Shared random secret required by every `/api/*` request except public `/api/health`. |
+
+Set the same value in Railway and with `wrangler secret put
+UA_HOMES_EDGE_TOKEN`; never put it in browser code, Netlify configuration, or
+Git. See `CLOUDFLARE_ORIGIN_PROTECTION.md` for safe rollout and verification.
+
 ## Database
 
 | Variable | Description | Default |

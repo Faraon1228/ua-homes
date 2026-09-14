@@ -27,6 +27,10 @@ def main():
         "frontend validation must enforce this deployment contract",
     )
     require(
+        "python3 scripts/validate-cloudflare-origin-protection.py" in validation_job,
+        "frontend validation must check the Cloudflare API Worker contract",
+    )
+    require(
         re.search(r"actions/upload-artifact@[0-9a-f]{40} # v[0-9]+", validation_job),
         "validated web/ must be uploaded",
     )
