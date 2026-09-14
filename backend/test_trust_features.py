@@ -138,6 +138,13 @@ class TrustFeatureTests(unittest.TestCase):
             self.assertEqual(blocked.status_code, 403)
             self.assertEqual(blocked.get_json()["code"], "edge_required")
 
+            incorrect_token = self.client.get(
+                "/api/listings",
+                headers={"X-UA-Edge-Token": "incorrect-token"},
+            )
+            self.assertEqual(incorrect_token.status_code, 403)
+            self.assertEqual(incorrect_token.get_json()["code"], "edge_required")
+
             allowed = self.client.get(
                 "/api/listings",
                 headers={"X-UA-Edge-Token": "edge-test-token"},

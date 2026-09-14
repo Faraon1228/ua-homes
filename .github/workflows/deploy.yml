@@ -31,6 +31,7 @@ jobs:
           python3 scripts/validate-assetlinks.py
           python3 scripts/validate-netlify-admin-config.py
           python3 scripts/validate-deploy-workflow.py
+          python3 scripts/validate-cloudflare-origin-protection.py
       - name: Build static site with private source maps
         env:
           SENTRY_GENERATE_SOURCEMAPS: "1"

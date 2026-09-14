@@ -2,12 +2,8 @@
   publish = "web"
   command = "echo 'Static site — no build needed'"
 
-# API requests are handled by netlify/edge-functions/api-proxy.ts.
-# The route is intentionally enabled only after UA_HOMES_EDGE_TOKEN is
-# configured in Netlify and verified against the Railway origin.
-[[edge_functions]]
-  function = "api-proxy"
-  path = "/api/*"
+# API requests are handled by the Cloudflare Worker at the public domain.
+# Keep Railway out of a Netlify redirect so the origin token is never exposed.
 
 [[redirects]]
   from = "/api-backend/*"

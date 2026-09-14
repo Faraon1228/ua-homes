@@ -1,0 +1,12 @@
+name = "ua-dim-api"
+main = "ua-dim-api-worker.js"
+compatibility_date = "2026-09-14"
+
+# Configure these routes only after the secret exists in both Cloudflare and Railway.
+routes = [
+  { pattern = "ua-dim.com/api/*", zone_name = "ua-dim.com" },
+  { pattern = "www.ua-dim.com/api/*", zone_name = "ua-dim.com" },
+]
+
+# Set the real value with `wrangler secret put UA_HOMES_EDGE_TOKEN`.
+# Never commit the token.
