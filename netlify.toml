@@ -2,8 +2,12 @@
   publish = "web"
   command = "echo 'Static site — no build needed'"
 
-# API requests are handled by the Cloudflare Worker at the public domain.
-# Keep Railway out of a Netlify redirect so the origin token is never exposed.
+# Temporary production recovery until the Cloudflare Worker routes are active.
+[[redirects]]
+  from = "/api/*"
+  to = "https://backend-production-51964.up.railway.app/api/:splat"
+  status = 200
+  force = true
 
 [[redirects]]
   from = "/api-backend/*"

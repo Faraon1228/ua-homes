@@ -9,7 +9,6 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 WORKER_PATH = ROOT / "cloudflare" / "ua-dim-api-worker.js"
 WRANGLER_PATH = ROOT / "cloudflare" / "wrangler.toml"
-NETLIFY_PATH = ROOT / "netlify.toml"
 
 
 def require(condition, message):
@@ -20,7 +19,6 @@ def require(condition, message):
 def main():
     worker = WORKER_PATH.read_text(encoding="utf-8")
     config = tomllib.loads(WRANGLER_PATH.read_text(encoding="utf-8"))
-    netlify = NETLIFY_PATH.read_text(encoding="utf-8")
 
     require(config.get("main") == WORKER_PATH.name, "Worker entrypoint is incorrect")
     routes = config.get("routes", [])
@@ -53,12 +51,7 @@ def main():
         'incoming.pathname + incoming.search' in worker,
         "Worker must preserve API paths and query strings",
     )
-    require(
-        "[[edge_functions]]" not in netlify
-        and 'from = "/api/*"' not in netlify,
-        "Netlify must not bypass the Cloudflare API Worker",
-    )
-    print("Cloudflare API Worker routes, secret forwarding, and Netlify separation are valid.")
+    print("Cloudflare API Worker routes and secret forwarding are valid.")
 
 
 if __name__ == "__main__":

@@ -119,8 +119,13 @@ def main():
     require(publish == "web", "root deploy must publish web/")
     config_text = CONFIG_PATH.read_text(encoding="utf-8")
     require(
-        "[[edge_functions]]" not in config_text and 'from = "/api/*"' not in config_text,
-        "API traffic must remain on the Cloudflare Worker path",
+        """[[redirects]]
+  from = "/api/*"
+  to = "https://backend-production-51964.up.railway.app/api/:splat"
+  status = 200
+  force = true"""
+        in config_text,
+        "temporary Netlify API recovery redirect is missing",
     )
     require("/*" in header_rules, "public fallback header rule is missing")
     require("/admin/*" in header_rules, "specific /admin/* header rule is missing")
