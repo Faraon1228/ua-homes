@@ -169,7 +169,7 @@ S3_REGION=us-east-1
 ```javascript
 import { S3Uploader } from './s3-upload.js';
 
-const uploader = new S3Uploader('/api-backend');
+const uploader = new S3Uploader('/api');
 
 async function uploadImage(fileInput) {
   const file = fileInput.files[0];
@@ -220,7 +220,7 @@ document.getElementById('add-listing').addEventListener('submit', async (e) => {
   }
   
   // Submit with S3 URLs instead of base64
-  fetch('/api-backend/listings', {
+  fetch('/api/listings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -266,7 +266,7 @@ tail -f backend/logs/app.log | grep presigned
 
 ```javascript
 // In browser console
-const uploader = new S3Uploader('/api-backend');
+const uploader = new S3Uploader('/api');
 const url = await uploader.requestPresignedUrl(
   new File(['test'], 'test.jpg', { type: 'image/jpeg' })
 );

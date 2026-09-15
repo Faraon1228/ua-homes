@@ -69,14 +69,14 @@ photo-large.avif      (e.g., 90 KB)
 
 ```javascript
 // After S3 upload succeeds
-const uploader = new S3Uploader('/api-backend');
+const uploader = new S3Uploader('/api');
 
 // 1. Upload original to S3
 const result = await uploader.upload(file);
 const originalUrl = result.url;  // https://bucket.../photo.jpg
 
 // 2. Create optimized variants
-const optimized = await fetch('/api-backend/images/optimize', {
+const optimized = await fetch('/api/images/optimize', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   credentials: 'include',
@@ -179,7 +179,7 @@ git push
 
 3. Test:
 ```bash
-curl -X POST https://ua-dim.com/api-backend/images/optimize \
+curl -X POST https://ua-dim.com/api/images/optimize \
   -H "Authorization: Bearer YOUR_JWT" \
   -H "Content-Type: application/json" \
   -d '{"key": "listings/123/abc/photo.jpg"}'
