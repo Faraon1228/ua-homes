@@ -32,7 +32,8 @@ jobs:
       BACKUP_TOKEN: ${{ secrets.UA_HOMES_BACKUP_TOKEN }}
       BACKUP_ENCRYPTION_KEY: ${{ secrets.UA_HOMES_BACKUP_ENCRYPTION_KEY }}
       DATABASE_URL: ${{ secrets.UA_HOMES_DATABASE_URL }}
-      BACKEND_URL: https://backend-production-51964.up.railway.app
+      API_URL: https://ua-dim.com
+      EDGE_TOKEN: ${{ secrets.UA_HOMES_EDGE_TOKEN }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -41,6 +42,7 @@ jobs:
           test -n "$BACKUP_ENCRYPTION_KEY" || { echo "UA_HOMES_BACKUP_ENCRYPTION_KEY is missing"; exit 1; }
           if [ -z "$DATABASE_URL" ]; then
             test -n "$BACKUP_TOKEN" || { echo "UA_HOMES_BACKUP_TOKEN is missing"; exit 1; }
+            test -n "$EDGE_TOKEN" || { echo "UA_HOMES_EDGE_TOKEN is missing"; exit 1; }
           fi
 
       - name: Create consistent database snapshot
@@ -69,8 +71,9 @@ jobs:
               --max-time 120 \
               --header "Authorization: Bearer $BACKUP_TOKEN" \
               --dump-header backup-headers.txt \
+              --header "X-UA-Edge-Token: $EDGE_TOKEN" \
               --output backup.sqlite3 \
-              "$BACKEND_URL/api/operations/backup"
+              "$API_URL/api/operations/backup"
 
             SERVER_SHA="$(
               awk 'tolower($1) == "x-backup-sha256:" {gsub("\r", "", $2); print $2}' backup-headers.txt
