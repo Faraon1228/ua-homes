@@ -1,0 +1,15 @@
+[build]
+  publish = "web"
+  edge_functions = "netlify/edge-functions"
+
+[[redirects]]
+  from = "/api-backend/*"
+  to = "https://backend-production-51964.up.railway.app/:splat"
+  status = 200
+  force = true
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Content-Security-Policy = "default-src 'self';"
+
