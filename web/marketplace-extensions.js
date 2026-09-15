@@ -271,7 +271,9 @@
     const configured =
       window.UA_HOMES_API ||
       '__UA_HOMES_API__';
-    if (configured && configured !== '__UA_HOMES_API__') return configured.replace(/\/$/, '');
+    if (configured && configured !== '__UA_HOMES_API__') {
+      return configured.replace(/\/api\/?$/, '').replace(/\/+$/, '');
+    }
     if (location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(location.hostname)) {
       return 'http://localhost:5050';
     }
