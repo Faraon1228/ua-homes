@@ -1,5 +1,11 @@
 # Cloudflare API origin protection
 
+> **Note:** `ua-dim.com` is delegated to Netlify DNS, so this Cloudflare
+> Worker cannot currently front the domain. The active `/api/*` proxy is the
+> Netlify Edge Function described in `NETLIFY_EDGE_PROXY.md`. This document
+> and the Worker in `cloudflare/` are kept for reference/future use if the
+> domain is ever moved to Cloudflare.
+
 Cloudflare Workers proxy browser requests for `/api/*` to Railway and attach a
 shared `X-UA-Edge-Token`. Railway rejects every other API request when
 `UA_HOMES_EDGE_TOKEN` is configured. `/api/health` intentionally remains public
@@ -39,8 +45,7 @@ for Railway and external availability checks.
 
 The Worker returns `503` with `code=edge_not_configured` when its secret is
 missing, rather than forwarding an unauthenticated request. Deploy and verify
-the Worker before removing any existing proxy with access to the token. The
-Netlify frontend remains a static SPA; it no longer proxies `/api/*`.
+the Worker before removing any existing proxy with access to the token.
 
 Add Cloudflare WAF/rate-limit rules for `/api/auth/*`, `/api/analytics/*`, and
 `/api/listings/*`. Retain the backend Redis-backed limiter as the second layer.
