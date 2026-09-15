@@ -2,13 +2,19 @@
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlsplit
-import ast
 import re
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "netlify.toml"
 ADMIN_ROOT = ROOT / "web" / "admin"
+EDGE_FUNCTION_NAME = "api-proxy"
+EDGE_FUNCTION_ROUTE = "/api/*"
+EDGE_FUNCTIONS_DIR = "netlify/edge-functions"
+EDGE_FUNCTION_PATH = ROOT / EDGE_FUNCTIONS_DIR / f"{EDGE_FUNCTION_NAME}.ts"
+EDGE_PROXY_DOC_PATH = ROOT / "NETLIFY_EDGE_PROXY.md"
+CLOUDFLARE_DOC_PATH = ROOT / "CLOUDFLARE_ORIGIN_PROTECTION.md"
 
 
 def require(condition, message):
@@ -25,44 +31,18 @@ def parse_directives(policy):
     return directives
 
 
-def parse_assignment(line):
-    key, separator, raw_value = line.partition("=")
-    require(separator, f"invalid Netlify assignment: {line!r}")
-    return key.strip(), ast.literal_eval(raw_value.strip())
-
-
 def parse_netlify_config(text):
-    publish_match = re.search(
-        r"(?ms)^\[build\]\s*$(.*?)(?=^\[|\Z)",
-        text,
-    )
-    require(publish_match, "root [build] config is missing")
-    publish = None
-    for line in publish_match.group(1).splitlines():
-        if line.strip().startswith("publish"):
-            _key, publish = parse_assignment(line)
-
+    config = tomllib.loads(text)
+    build = config.get("build", {})
+    require(isinstance(build, dict), "root [build] config is missing")
     header_rules = {}
-    for block in re.split(r"(?m)^\[\[headers\]\]\s*$", text)[1:]:
-        block = re.split(r"(?m)^\[\[", block, maxsplit=1)[0]
-        path = None
-        values = {}
-        in_values = False
-        for line in block.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            if stripped == "[headers.values]":
-                in_values = True
-                continue
-            key, value = parse_assignment(stripped)
-            if key == "for" and not in_values:
-                path = value
-            elif in_values:
-                values[key] = value
+    for rule in config.get("headers", []):
+        path = rule.get("for")
+        values = rule.get("values", {})
         require(path, "header rule is missing its path")
+        require(isinstance(values, dict), f"header rule {path!r} is missing values")
         header_rules[path] = values
-    return publish, header_rules
+    return build, header_rules, config.get("edge_functions", []), config.get("redirects", [])
 
 
 def is_same_origin_asset(value):
@@ -95,6 +75,66 @@ class AdminShellParser(HTMLParser):
             require(is_same_origin_asset(href), f"{self.path}: external stylesheet {href!r}")
 
 
+def validate_edge_api_proxy(build, edge_functions, redirects):
+    require(
+        build.get("edge_functions") == EDGE_FUNCTIONS_DIR,
+        "Netlify build config must load checked-in edge functions",
+    )
+    require(
+        any(
+            rule.get("path") == EDGE_FUNCTION_ROUTE
+            and rule.get("function") == EDGE_FUNCTION_NAME
+            for rule in edge_functions
+        ),
+        "api-proxy edge function must route /api/*",
+    )
+    require(
+        all(rule.get("from") != EDGE_FUNCTION_ROUTE for rule in redirects),
+        "conflicting /api/* redirect must not coexist with the edge proxy",
+    )
+
+    edge_proxy = EDGE_FUNCTION_PATH.read_text(encoding="utf-8")
+    require(
+        re.search(r'Netlify\.env\.get\("UA_HOMES_EDGE_TOKEN"\)\?\.trim\(\)', edge_proxy),
+        "api-proxy must read the edge token from a Netlify secret",
+    )
+    require(
+        'headers.set("X-UA-Edge-Token", edgeToken)' in edge_proxy,
+        "api-proxy must forward the edge token to Railway",
+    )
+    require(
+        'code: "edge_not_configured"' in edge_proxy and "{ status: 503 }" in edge_proxy,
+        "api-proxy must fail closed when its edge token is absent",
+    )
+    require(
+        "incoming.pathname + incoming.search" in edge_proxy,
+        "api-proxy must preserve API paths and query strings",
+    )
+    require(
+        re.search(r"export const config:\s*Config\s*=\s*\{[\s\S]*path:\s*\"/api/\*\"", edge_proxy),
+        "api-proxy source config must declare the /api/* route",
+    )
+
+    edge_doc = EDGE_PROXY_DOC_PATH.read_text(encoding="utf-8")
+    require(
+        str(EDGE_FUNCTION_PATH.relative_to(ROOT)) in edge_doc,
+        "Netlify edge proxy documentation must name the api-proxy source",
+    )
+    require(
+        "UA_HOMES_EDGE_TOKEN" in edge_doc and "edge_not_configured" in edge_doc,
+        "Netlify edge proxy documentation must cover secret setup and fail-closed behavior",
+    )
+    require(
+        "old unauthenticated" in edge_doc and "removed" in edge_doc,
+        "Netlify edge proxy documentation must record that the legacy /api/* redirect is removed",
+    )
+    cloudflare_doc = CLOUDFLARE_DOC_PATH.read_text(encoding="utf-8")
+    require(
+        "NETLIFY_EDGE_PROXY.md" in cloudflare_doc,
+        "Cloudflare origin-protection documentation must point to the active Netlify proxy",
+    )
+
+
 def validate_admin_shells():
     for path in (ADMIN_ROOT / "login.html", ADMIN_ROOT / "dashboard.html"):
         parser = AdminShellParser(path.relative_to(ROOT))
@@ -115,18 +155,10 @@ def main():
         "web/admin/netlify.toml is ignored by the canonical root deploy and must not return",
     )
 
-    publish, header_rules = parse_netlify_config(CONFIG_PATH.read_text(encoding="utf-8"))
-    require(publish == "web", "root deploy must publish web/")
     config_text = CONFIG_PATH.read_text(encoding="utf-8")
-    require(
-        """[[redirects]]
-  from = "/api/*"
-  to = "https://backend-production-51964.up.railway.app/api/:splat"
-  status = 200
-  force = true"""
-        in config_text,
-        "temporary Netlify API recovery redirect is missing",
-    )
+    build, header_rules, edge_functions, redirects = parse_netlify_config(config_text)
+    require(build.get("publish") == "web", "root deploy must publish web/")
+    validate_edge_api_proxy(build, edge_functions, redirects)
     require("/*" in header_rules, "public fallback header rule is missing")
     require("/admin/*" in header_rules, "specific /admin/* header rule is missing")
 
@@ -158,7 +190,7 @@ def main():
         require(forbidden not in admin_policy, f"admin policy contains forbidden source {forbidden}")
 
     validate_admin_shells()
-    print("Netlify admin CSP is specific, strict, and compatible with the admin bundle.")
+    print("Netlify admin CSP and API edge proxy contracts are valid.")
 
 
 if __name__ == "__main__":
