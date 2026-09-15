@@ -36,6 +36,20 @@ class ApiMigrationPolicyTests(unittest.TestCase):
         self.assertIn('api_base = ""', text)
         self.assertIn("fetch(`${apiBase}/api/leads`", text)
 
+    def test_client_contract_has_one_prefix_and_no_edge_secret(self):
+        public = (ROOT / "web" / "lib" / "apiClient.js").read_text(encoding="utf-8")
+        policy = (ROOT / "web" / "lib" / "apiClientPolicy.js").read_text(encoding="utf-8")
+        admin = (ROOT / "web" / "admin" / "src" / "lib" / "apiClient.js").read_text(encoding="utf-8")
+        self.assertIn('API_PREFIX = "/api"', policy)
+        self.assertIn("buildCanonicalApiUrl", public)
+        self.assertIn("buildCanonicalApiUrl", admin)
+        for text in (public, admin):
+            self.assertNotIn("X-UA-Edge-Token", text)
+            self.assertNotIn("UA_HOMES_EDGE_TOKEN", text)
+        mobile = (ROOT / "apps" / "ua_dim" / "lib" / "services" / "mobile_push_service.dart").read_text(encoding="utf-8")
+        self.assertIn("UA_DIM_API_BASE_URL", mobile)
+        self.assertIn("'Bearer $authToken'", mobile)
+
 
 if __name__ == "__main__":
     unittest.main()
