@@ -1,13 +1,19 @@
 [build]
   publish = "web"
   command = "echo 'Static site — no build needed'"
+  edge_functions = "netlify/edge-functions"
 
-# Temporary production recovery until the Cloudflare Worker routes are active.
-[[redirects]]
-  from = "/api/*"
-  to = "https://backend-production-51964.up.railway.app/api/:splat"
-  status = 200
-  force = true
+# ua-dim.com is delegated to Netlify DNS, so Cloudflare cannot front it.
+# This Edge Function is the authoritative /api/* handler: it attaches the
+# shared X-UA-Edge-Token before proxying to Railway and fails closed with a
+# JSON 503 if the secret is missing. Edge Functions run before redirects and
+# returning a Response here short-circuits the request, so the plain
+# unauthenticated /api/* redirect below has been removed to avoid a
+# conflicting duplicate route. See netlify/edge-functions/api-proxy.ts and
+# CLOUDFLARE_ORIGIN_PROTECTION.md.
+[[edge_functions]]
+  path = "/api/*"
+  function = "api-proxy"
 
 [[redirects]]
   from = "/api-backend/*"
