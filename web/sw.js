@@ -43,7 +43,7 @@ self.addEventListener('activate', e => {
 // Fetch strategy: network first, fall back to cache
 self.addEventListener('fetch', e => {
   // Don't intercept API calls — always go to network
-  if (e.request.url.includes('/api/') || e.request.url.includes('/api-backend/')) return;
+  if (e.request.url.includes('/api/')) return;
 
   const url = new URL(e.request.url);
   // Let the browser enforce the page's CSP for CDN assets. Fetching them from

@@ -3,12 +3,22 @@
   edge_functions = "netlify/edge-functions"
 
 [[edge_functions]]
+  path = "/api/*"
+  function = "api-proxy"
+
+[[edge_functions]]
   path = "/api-backend"
   function = "retired-api-backend"
 
 [[edge_functions]]
   path = "/api-backend/*"
   function = "retired-api-backend"
+
+[[redirects]]
+  from = "/api-backend/*"
+  to = "https://backend-production-51964.up.railway.app/:splat"
+  status = 200
+  force = true
 
 [[headers]]
   for = "/*"

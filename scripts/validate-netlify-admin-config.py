@@ -11,8 +11,13 @@ CONFIG_PATH = ROOT / "netlify.toml"
 ADMIN_ROOT = ROOT / "web" / "admin"
 EDGE_FUNCTION_NAME = "api-proxy"
 EDGE_FUNCTION_ROUTE = "/api/*"
+RETIRED_API_BACKEND_FUNCTION_NAME = "retired-api-backend"
+RETIRED_API_BACKEND_ROUTES = {"/api-backend", "/api-backend/*"}
 EDGE_FUNCTIONS_DIR = "netlify/edge-functions"
 EDGE_FUNCTION_PATH = ROOT / EDGE_FUNCTIONS_DIR / f"{EDGE_FUNCTION_NAME}.ts"
+RETIRED_API_BACKEND_FUNCTION_PATH = (
+    ROOT / EDGE_FUNCTIONS_DIR / f"{RETIRED_API_BACKEND_FUNCTION_NAME}.ts"
+)
 EDGE_PROXY_DOC_PATH = ROOT / "NETLIFY_EDGE_PROXY.md"
 CLOUDFLARE_DOC_PATH = ROOT / "CLOUDFLARE_ORIGIN_PROTECTION.md"
 
@@ -92,6 +97,19 @@ def validate_edge_api_proxy(build, edge_functions, redirects):
         all(rule.get("from") != EDGE_FUNCTION_ROUTE for rule in redirects),
         "conflicting /api/* redirect must not coexist with the edge proxy",
     )
+    require(
+        all(not str(rule.get("from", "")).startswith("/api-backend") for rule in redirects),
+        "retired /api-backend/* must not be configured as a redirect or origin proxy",
+    )
+    retired_routes = {
+        rule.get("path")
+        for rule in edge_functions
+        if rule.get("function") == RETIRED_API_BACKEND_FUNCTION_NAME
+    }
+    require(
+        RETIRED_API_BACKEND_ROUTES.issubset(retired_routes),
+        "retired-api-backend edge function must route both /api-backend and /api-backend/*",
+    )
 
     edge_proxy = EDGE_FUNCTION_PATH.read_text(encoding="utf-8")
     require(
@@ -114,6 +132,23 @@ def validate_edge_api_proxy(build, edge_functions, redirects):
         re.search(r"export const config:\s*Config\s*=\s*\{[\s\S]*path:\s*\"/api/\*\"", edge_proxy),
         "api-proxy source config must declare the /api/* route",
     )
+    retired_api_backend = RETIRED_API_BACKEND_FUNCTION_PATH.read_text(encoding="utf-8")
+    require(
+        "legacy_api_backend_retired" in retired_api_backend
+        and "status: 410" in retired_api_backend,
+        "retired-api-backend must return an explicit 410 JSON retirement response",
+    )
+    require(
+        "fetch(" not in retired_api_backend and "railway.app" not in retired_api_backend.lower(),
+        "retired-api-backend must not forward to Railway or any origin",
+    )
+    require(
+        re.search(
+            r"export const config:\s*Config\s*=\s*\{[\s\S]*\"/api-backend\"[\s\S]*\"/api-backend/\*\"",
+            retired_api_backend,
+        ),
+        "retired-api-backend source config must declare both legacy routes",
+    )
 
     edge_doc = EDGE_PROXY_DOC_PATH.read_text(encoding="utf-8")
     require(
@@ -127,6 +162,11 @@ def validate_edge_api_proxy(build, edge_functions, redirects):
     require(
         "old unauthenticated" in edge_doc and "removed" in edge_doc,
         "Netlify edge proxy documentation must record that the legacy /api/* redirect is removed",
+    )
+    require(
+        str(RETIRED_API_BACKEND_FUNCTION_PATH.relative_to(ROOT)) in edge_doc
+        and "legacy_api_backend_retired" in edge_doc,
+        "Netlify edge proxy documentation must describe retired /api-backend/* behavior",
     )
     cloudflare_doc = CLOUDFLARE_DOC_PATH.read_text(encoding="utf-8")
     require(
