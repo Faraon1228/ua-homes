@@ -46,6 +46,14 @@ class NetlifyAdminConfigValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, r"conflicting /api/\* redirect"):
             self.validator.validate_edge_api_proxy(build, edge_functions, redirects)
 
+    def test_legacy_api_backend_redirect_is_rejected(self):
+        build, _headers, edge_functions, redirects = self.parse_fixture(
+            "legacy-api-backend-redirect.toml"
+        )
+
+        with self.assertRaisesRegex(AssertionError, r"retired /api-backend/\*"):
+            self.validator.validate_edge_api_proxy(build, edge_functions, redirects)
+
     def test_missing_api_proxy_edge_route_is_rejected(self):
         build, _headers, edge_functions, redirects = self.parse_fixture(
             "missing-api-proxy-edge-route.toml"

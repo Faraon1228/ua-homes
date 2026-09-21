@@ -20,6 +20,14 @@ If the secret is missing, the function fails closed with a JSON `503`
 (`{"error": "...", "code": "edge_not_configured"}`) instead of forwarding an
 unauthenticated request.
 
+`/api/*` is the only active public API prefix. The former production
+`/api-backend/*` path is retired by
+`netlify/edge-functions/retired-api-backend.ts`: Netlify routes both
+`/api-backend` and `/api-backend/*` to that function, which returns a JSON
+`410` response with `code: "legacy_api_backend_retired"` and does not proxy to
+Railway. Do not add redirects, rewrites, or client callers for
+`/api-backend/*`.
+
 ## One-time deployment
 
 1. Generate a token (or reuse the one already set on Railway):
@@ -44,14 +52,16 @@ unauthenticated request.
 
    ```sh
    curl -i https://ua-dim.com/api/listings
+   curl -i https://ua-dim.com/api-backend/listings?limit=1
    curl -i https://backend-production-51964.up.railway.app/api/listings
    curl -i https://ua-dim.com/api/health
    ```
 
    `ua-dim.com/api/listings` must return its normal successful response,
-   direct Railway `/api/listings` requests must still return `403
-   edge_required`, and `/api/health` must stay publicly reachable through
-   both paths.
+   `ua-dim.com/api-backend/listings?limit=1` must return
+   `410 legacy_api_backend_retired`, direct Railway `/api/listings` requests
+   must still return `403 edge_required`, and `/api/health` must stay publicly
+   reachable through both paths.
 
 If `UA_HOMES_EDGE_TOKEN` is ever unset on Netlify, `/api/*` returns
 `503 edge_not_configured` rather than silently forwarding unauthenticated

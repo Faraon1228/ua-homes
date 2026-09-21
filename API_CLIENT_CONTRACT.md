@@ -20,5 +20,12 @@ configuration exposed to clients.
 ## Migration policy
 
 New callers must use the canonical client and relative `/api/*` routes. Legacy
-helpers remain in place during PR2 so verified in-repo callers can migrate
-without changing unrelated features.
+helpers remain in place only when they build canonical `/api/*` URLs.
+
+The legacy public `/api-backend/*` path is formally retired. Netlify routes
+both `/api-backend` and `/api-backend/*` to
+`netlify/edge-functions/retired-api-backend.ts`, which returns
+`410` JSON with `code: "legacy_api_backend_retired"` and never forwards to
+Railway. Policy tests intentionally allow `/api-backend` references only in
+that retirement implementation, Netlify routing, docs, and regression
+fixtures.

@@ -18,9 +18,50 @@ class ApiMigrationPolicyTests(unittest.TestCase):
             str(path.relative_to(ROOT))
             for path in paths
             if "/api-backend" in path.read_text(encoding="utf-8")
-            and path.name != "sw.js"
         ]
         self.assertEqual(offenders, [])
+
+    def test_legacy_api_backend_route_is_only_referenced_by_retirement_policy(self):
+        allowed = {
+            "API_CLIENT_CONTRACT.md",
+            "NETLIFY_EDGE_PROXY.md",
+            "netlify.toml",
+            "netlify/edge-functions/retired-api-backend.ts",
+            "scripts/fixtures/netlify-admin-config/legacy-api-backend-redirect.toml",
+            "scripts/fixtures/netlify-admin-config/missing-api-proxy-edge-route.toml",
+            "scripts/test_api_migration_policy.py",
+            "scripts/test_validate_netlify_admin_config.py",
+            "scripts/validate-netlify-admin-config.py",
+        }
+        matches = []
+        for path in ROOT.rglob("*"):
+            if ".git" in path.parts or not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            if "/api-backend" in text or "api-backend" in text:
+                matches.append(str(path.relative_to(ROOT)))
+
+        self.assertEqual(sorted(set(matches) - allowed), [])
+
+    def test_netlify_retires_legacy_api_backend_without_origin_proxy(self):
+        text = (ROOT / "netlify.toml").read_text(encoding="utf-8")
+        self.assertIn('path = "/api-backend/*"', text)
+        self.assertIn('function = "retired-api-backend"', text)
+        self.assertNotIn('from = "/api-backend/*"', text)
+        self.assertNotIn(
+            'to = "https://backend-production-51964.up.railway.app/:splat"',
+            text,
+        )
+        retired = (
+            ROOT / "netlify" / "edge-functions" / "retired-api-backend.ts"
+        ).read_text(encoding="utf-8")
+        self.assertIn("legacy_api_backend_retired", retired)
+        self.assertIn("status: 410", retired)
+        self.assertNotIn("fetch(", retired)
+        self.assertNotIn("railway.app", retired.lower())
 
     def test_scheduled_operations_use_public_canonical_api(self):
         for workflow in (

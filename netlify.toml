@@ -15,11 +15,13 @@
   path = "/api/*"
   function = "api-proxy"
 
-[[redirects]]
-  from = "/api-backend/*"
-  to = "https://backend-production-51964.up.railway.app/:splat"
-  status = 200
-  force = true
+[[edge_functions]]
+  path = "/api-backend"
+  function = "retired-api-backend"
+
+[[edge_functions]]
+  path = "/api-backend/*"
+  function = "retired-api-backend"
 
 [[redirects]]
   from = "/demo-images/*"
@@ -253,10 +255,3 @@ for = "/terms.html"
   for = "/sw.js"
   [headers.values]
     Cache-Control = "no-cache"
-
-[[headers]]
-  for = "/api-backend/*"
-  [headers.values]
-    Cache-Control = "public, max-age=20, must-revalidate"
-    Vary = "Accept-Encoding"
-    X-Cache-Control = "public, s-maxage=20"
