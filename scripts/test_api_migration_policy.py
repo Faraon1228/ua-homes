@@ -24,6 +24,7 @@ class ApiMigrationPolicyTests(unittest.TestCase):
     def test_legacy_api_backend_route_is_only_referenced_by_retirement_policy(self):
         allowed = {
             "API_CLIENT_CONTRACT.md",
+            "ARCHITECTURE_BASELINE.md",
             "NETLIFY_EDGE_PROXY.md",
             "netlify.toml",
             "netlify/edge-functions/retired-api-backend.ts",
