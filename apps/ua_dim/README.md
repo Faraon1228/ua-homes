@@ -7,6 +7,12 @@ The app loads the canonical production experience from
 seller tools, uploads and listing details use the same frontend and API release
 as the website.
 
+The push registration client uses the canonical `/api/push/devices` contract.
+Release workflows pass `UA_DIM_API_BASE_URL` from the repository variable
+`UA_DIM_API_BASE_URL`; it defaults to `https://ua-dim.com` for local builds.
+The mobile app sends the user's session token as a Bearer token and never
+contains the Netlify/Railway `UA_HOMES_EDGE_TOKEN`.
+
 The silver homepage skyline is part of that shared web shell: publish the rebuilt
 `web/` assets through the existing website release workflow, then reload the app
 online to receive it. No Flutter binary change or store release is needed for

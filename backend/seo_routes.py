@@ -124,8 +124,10 @@ def _render_development_project_page(slug: str):
     base = mod.public_base_url()
     canonical = f"{base}/zhk/{quote(project['slug'])}"
     public_app = mod.public_app_url()
-    host = (request.host or "").split(":")[0]
-    api_base = "" if host in {"localhost", "127.0.0.1"} else "/api-backend"
+    # SEO pages are served through the public site in production and directly
+    # by the backend during local development. A relative `/api` path works
+    # in both cases and keeps generated callers on the canonical API route.
+    api_base = ""
 
     related_listings = db.execute(
         """

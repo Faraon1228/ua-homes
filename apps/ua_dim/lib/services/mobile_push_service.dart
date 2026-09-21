@@ -14,7 +14,13 @@ const String _messagingSenderId = String.fromEnvironment(
   'UA_DIM_FIREBASE_MESSAGING_SENDER_ID',
 );
 const String _projectId = String.fromEnvironment('UA_DIM_FIREBASE_PROJECT_ID');
-const String _pushApiUrl = 'https://ua-dim.com/api/push/devices';
+const String _apiBaseUrl = String.fromEnvironment(
+  'UA_DIM_API_BASE_URL',
+  defaultValue: 'https://ua-dim.com',
+);
+final Uri _pushApiUri = Uri.parse(
+  '${_apiBaseUrl.replaceFirst(RegExp(r'/+$'), '')}/api/push/devices',
+);
 const MethodChannel _nativeChannel = MethodChannel('com.uadim.app/native');
 
 bool get hasFirebaseConfiguration =>
@@ -127,7 +133,7 @@ class MobilePushService {
     if (authToken == null || deviceToken == null || kIsWeb) return;
     try {
       final response = await http.post(
-        Uri.parse(_pushApiUrl),
+        _pushApiUri,
         headers: {
           HttpHeaders.authorizationHeader: 'Bearer $authToken',
           HttpHeaders.contentTypeHeader: 'application/json',
@@ -163,7 +169,7 @@ class MobilePushService {
     if (deviceToken == null || kIsWeb) return;
     try {
       final response = await http.delete(
-        Uri.parse(_pushApiUrl),
+        _pushApiUri,
         headers: {
           HttpHeaders.authorizationHeader: 'Bearer $authToken',
           HttpHeaders.contentTypeHeader: 'application/json',
