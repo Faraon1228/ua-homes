@@ -30,7 +30,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  google_maps_flutter: ^2.18.0 # Для інтеграції карти
+  google_maps_flutter: ^2.18.1 # Для інтеграції карти
   image_picker: ^1.2.3        # Для вибору фото/відео з галереї
   hive: ^2.2.3                 # Для локальної бази даних
   hive_flutter: ^1.1.0         # Для ініціалізації Hive у Flutter
