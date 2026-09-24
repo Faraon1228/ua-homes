@@ -3,7 +3,7 @@
 # file, regenerate it with scripts/regenerate-backend-lock.sh.
 flask>=3.0.0
 flask-cors>=4.0.0
-PyJWT>=2.8.0
+PyJWT>=2.14.0
 bcrypt>=4.0.0
 flask-limiter>=3.5.0
 gunicorn>=21.0.0
@@ -13,7 +13,7 @@ psycopg2-binary>=2.9.9
 redis>=5.0.0
 limits>=3.6.0
 # S3 / Direct Upload support (optional — only needed when S3_BUCKET is set)
-boto3>=1.26.0
+boto3>=1.43.98
 # Cloudinary support (optional — alternative to S3)
 cloudinary>=1.33.0
 # Image optimization (WebP/AVIF conversion + resizing)
@@ -21,6 +21,6 @@ Pillow>=10.0.0
 # AVIF support (optional but recommended)
 pillow-heif>=0.14.0
 # Backend error reporting and API performance traces (enabled only with SENTRY_DSN)
-sentry-sdk[flask]>=2.0.0
+sentry-sdk[flask]>=2.69.2
 # Direct Firebase Cloud Messaging delivery for saved alerts
-firebase-admin>=6.5.0,<8.0.0
+firebase-admin>=7.6.0,<8.0.0
