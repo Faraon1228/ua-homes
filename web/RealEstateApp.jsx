@@ -3586,7 +3586,15 @@ export default function RealEstateApp() {
 
   const offerToggle = sellerCabinetMode ? null : (
     <div role="group" aria-label="Тип пропозиції" className="mb-4 flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
-      {[["", "Усі"], ["sale", "Купити"], ["rent", "Орендувати"]].map(([value, label]) => (
+      {[["sale", "Купити"], ["sell", "Продати"], ["rent", "Орендувати"]].map(([value, label]) => value === "sell" ? (
+        <a
+          key={value}
+          href={getSellerCabinetHref()}
+          className="ua-button-link min-h-[44px] flex flex-1 items-center justify-center rounded-xl px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-blue-50"
+        >
+          {label}
+        </a>
+      ) : (
         <button
           key={value}
           type="button"

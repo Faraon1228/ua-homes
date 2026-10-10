@@ -44,6 +44,25 @@ test("compact hero places the offer switch and search together within the first 
   expect(layout.heroHeight).toBeLessThan(layout.height * .85);
 });
 
+test("subtle park artwork stays decorative behind the hero controls", async ({ page }) => {
+  await openHomepage(page);
+  const park = page.locator(".homepage-park-art");
+  await expect(park).toHaveAttribute("aria-hidden", "true");
+  await expect(park).toHaveCSS("pointer-events", "none");
+  await expect(park).toHaveCSS("opacity", "0.32");
+  await expect(park).toHaveCSS("z-index", "-1");
+  await expect(park.locator("svg")).toHaveCount(1);
+  await expect(page.locator("#hero-property-form button")).toBeVisible();
+});
+
+test("hero panels are translucent while the search button remains opaque", async ({ page }) => {
+  await openHomepage(page);
+  await expect(page.locator('#hero-offer-toggle > [role="group"]')).toHaveCSS("background-color", "rgba(255, 255, 255, 0.55)");
+  await expect(page.locator("#hero-property-form")).toHaveCSS("background-color", "rgba(255, 255, 255, 0.55)");
+  await expect(page.locator("#hero-property-form button")).toHaveCSS("background-image", "linear-gradient(135deg, rgb(23, 50, 77), rgb(16, 40, 63))");
+  await expect(page.locator("#hero-property-form button")).toHaveCSS("opacity", "1");
+});
+
 test("buttons gain a stronger hover glow without changing their colors or disabled state", async ({ page }) => {
   await openHomepage(page);
   const button = page.locator("#hero-property-form button");
