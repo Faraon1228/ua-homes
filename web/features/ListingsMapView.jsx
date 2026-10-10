@@ -133,7 +133,7 @@ export default function ListingsMapView({ properties, onShowList }) {
       title.textContent = property.title;
       const details = document.createElement("p");
       details.style.margin = "6px 0 0";
-      details.textContent = `$${property.price.toLocaleString("uk-UA")} · ${property.city}, ${property.district}`;
+      details.textContent = `$${property.price.toLocaleString("uk-UA")}${property.listingType === "rent" ? "/міс." : ""} · ${property.city}, ${property.district}`;
       popup.append(title, details);
       marker.bindPopup(popup);
       markersLayer.addLayer(marker);

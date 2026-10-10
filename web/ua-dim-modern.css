@@ -24,6 +24,62 @@ body {
 [data-role="homepage-hero"] {
   position: relative;
   isolation: isolate;
+  background:
+    radial-gradient(ellipse at 18% 15%, rgba(255, 255, 255, .72), transparent 52%),
+    linear-gradient(145deg, #faf7f2 0%, #f6eadf 52%, #f5dcc8 100%);
+}
+
+html:not(.seller-page) body {
+  --ua-primary: #17324d;
+  --ua-primary-strong: #10283f;
+  --ua-ink: #243342;
+  --ua-muted: #526170;
+  --ua-border: rgba(23, 50, 77, .18);
+  --ua-surface-alt: #f5f3ef;
+  background:
+    radial-gradient(ellipse at top left, rgba(245, 220, 200, .16), transparent 40%),
+    linear-gradient(135deg, #faf7f2 0%, #f7f5f1 48%, #faf7f2 100%) !important;
+}
+
+html:not(.seller-page) body::before {
+  background: radial-gradient(circle, rgba(245, 220, 200, .12), transparent 72%);
+}
+
+html:not(.seller-page) body::after {
+  background: radial-gradient(circle, rgba(245, 220, 200, .14), transparent 72%);
+}
+
+html:not(.seller-page) header.sticky {
+  background: rgba(250, 247, 242, .96);
+  border-bottom-color: var(--ua-border);
+}
+
+html:not(.seller-page) .bg-white {
+  background: #ffffff !important;
+}
+
+html:not(.seller-page) .bg-slate-50,
+html:not(.seller-page) .bg-slate-100 {
+  background-color: var(--ua-surface-alt) !important;
+}
+
+html:not(.seller-page) #homepage-title {
+  color: var(--ua-primary) !important;
+}
+
+html:not(.seller-page) .bg-blue-600,
+html:not(.seller-page) .bg-blue-700 {
+  background: linear-gradient(135deg, #17324d, #10283f) !important;
+  box-shadow: 0 8px 20px rgba(23, 50, 77, .15) !important;
+}
+
+html:not(.seller-page) .text-blue-600,
+html:not(.seller-page) .text-blue-700 {
+  color: #17324d !important;
+}
+
+html:not(.seller-page) :is(button, a, input, select, textarea):focus-visible {
+  outline-color: #17324d;
 }
 
 [data-role="homepage-hero"] > .mx-auto {
@@ -58,7 +114,8 @@ body {
   display: block;
   object-fit: cover;
   object-position: center bottom;
-  opacity: .32;
+  opacity: .58;
+  filter: brightness(.48) contrast(1.15) sepia(.2);
 }
 
 @keyframes homepage-silhouette-reveal {
@@ -67,7 +124,7 @@ body {
 }
 
 @media (max-width: 640px) {
-  .homepage-house-art img { object-fit: contain; opacity: .3; }
+  .homepage-house-art img { object-fit: contain; opacity: .52; }
   .homepage-house-art-left { --house-entry: -24px; }
   .homepage-house-art-right { --house-entry: 24px; }
 }

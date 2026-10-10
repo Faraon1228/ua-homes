@@ -982,8 +982,8 @@ def listing_page(lid: int):
         popup_title = mod.json_for_html_script(escape(listing["title"], quote=True))
         map_html = f"""
 <div id="map" style="height:300px;border-radius:16px;margin:20px 0"></div>
-<link rel="stylesheet" href="/static/vendor/leaflet-1.9.4/leaflet.css"/>
-<script nonce="{nonce}" src="/static/vendor/leaflet-1.9.4/leaflet.js"></script>
+<link rel="stylesheet" href="/vendor/leaflet-1.9.4/leaflet.css"/>
+<script nonce="{nonce}" src="/vendor/leaflet-1.9.4/leaflet.js"></script>
 <script nonce="{nonce}">
   var m=L.map('map',{{zoomControl:true}}).setView([{lat},{lng}],15);
   L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'© OpenStreetMap'}}).addTo(m);

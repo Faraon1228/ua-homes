@@ -1,4 +1,4 @@
-self.__UA_BUILD_ID = '003a4a4ba423';
+self.__UA_BUILD_ID = 'a25cb2fee30f';
 self.__UA_PRECACHE_ASSETS = [
   '/precache-manifest.js',
   '/',
@@ -9,12 +9,13 @@ self.__UA_PRECACHE_ASSETS = [
   '/real-estate-app.js',
   '/seller-app.js',
   '/ua-homes.css',
-  '/images/silver-silhouette.svg?v=perf-48e83196eb9a',
+  '/images/silver-silhouette.svg?v=perf-bc7310c603ae',
+  '/ua-dim-logo.svg?v=home-mark-1',
   '/premium-loader.js',
   '/marketplace-loader.js',
   '/vendor/leaflet-1.9.4/leaflet.css',
   '/vendor/leaflet-1.9.4/leaflet.js',
-  '/chunks/ListingsMapView-X54BQX5A.js',
+  '/chunks/ListingsMapView-AHTUZLLN.js',
   '/chunks/TrustDialog-B2YPQGSC.js',
   '/chunks/chunk-IUMLWV2M.js',
 ];

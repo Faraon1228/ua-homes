@@ -10,6 +10,7 @@ export function buildCatalogQuery(filters, { limit, offset, append }) {
     region: filters.regionFilter && filters.regionFilter !== "Всі" ? filters.regionFilter : undefined,
     city: filters.cityFilter === "Всі" ? undefined : filters.cityFilter,
     type: filters.propertyTypeFilter === "Всі" ? undefined : filters.propertyTypeFilter,
+    listing_type: filters.listingTypeFilter || undefined,
     eOselya: filters.onlyEOselya ? 1 : undefined,
     minPrice: filters.minPrice,
     maxPrice: filters.maxPrice,

@@ -1,4 +1,5 @@
 const { test, expect } = require("@playwright/test");
+const AxeBuilder = require("@axe-core/playwright").default;
 
 const heroSelector = '[data-role="homepage-hero"]';
 const artSelector = ".homepage-house-art";
@@ -27,6 +28,22 @@ async function openHomepage(page, url = "/real-estate-demo.html") {
   )).toBe(true);
 }
 
+test("neutral catalog keeps readable hero text, warm surfaces and the separate seller theme", async ({ page }) => {
+  await openHomepage(page);
+  await expect(page.locator("body")).toHaveCSS("--ua-surface-alt", "#f5f3ef");
+  await expect(page.locator("body")).toHaveCSS("--ua-ink", "#243342");
+  await expect(page.locator("#hero-property-form button")).toHaveCSS("background-image", "linear-gradient(135deg, rgb(23, 50, 77), rgb(16, 40, 63))");
+  const accessibility = await new AxeBuilder({ page })
+    .include(heroSelector)
+    .withRules(["color-contrast"])
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  await page.goto("/real-estate-demo.html?seller=1");
+  await expect(page.locator("body")).toHaveCSS("--ua-surface-alt", "#f8fafc");
+  await expect(page.locator("body")).toHaveCSS("--ua-ink", "#0f172a");
+});
+
 test("approved skyline loads once behind the unchanged hero content", async ({ page }) => {
   const assets = [];
   page.on("response", (response) => {
@@ -52,17 +69,21 @@ test("approved skyline loads once behind the unchanged hero content", async ({ p
     const narrow = page.viewportSize().width <= 640;
     await expect(art.locator("img")).toHaveCSS("object-fit", narrow ? "contain" : "cover");
     await expect(art.locator("img")).toHaveCSS("object-position", "50% 100%");
-    await expect(art.locator("img")).toHaveCSS("opacity", narrow ? "0.3" : "0.32");
+    await expect(art.locator("img")).toHaveCSS("opacity", narrow ? "0.52" : "0.58");
   }
-  await expect(hero.getByRole("img")).toHaveCount(1);
-  await expect(hero.getByRole("img")).toHaveAccessibleName("Логотип UA-Dim");
+  await expect(hero.getByRole("img")).toHaveCount(0);
+  await expect(hero).toContainText("Ваш простір починається тут");
+  const brand = page.locator("#header-brand-link");
+  await expect(brand).toHaveAccessibleName("UA-Dim — до каталогу");
+  await expect(brand.locator("img")).toHaveAttribute("src", "/ua-dim-logo.svg?v=home-mark-1");
+  await expect.poll(() => brand.locator("img").evaluate((image) => image.complete && image.naturalWidth > 0)).toBe(true);
   await expect(page.locator("#homepage-title")).toHaveText("Знайдіть житло в Україні");
-  await expect(page.locator("#homepage-title")).toHaveCSS("color", "rgb(255, 255, 255)");
+  await expect(page.locator("#homepage-title")).toHaveCSS("color", "rgb(23, 50, 77)");
   await expect(page.locator("#header-brand-link")).toHaveAttribute("href", "/real-estate-demo.html");
   await expect(page.locator("#header-auth-cta")).toHaveAttribute("href", "/real-estate-demo.html?seller=1");
   const background = await hero.evaluate((element) => getComputedStyle(element).backgroundImage);
-  expect(background).toContain("rgba(37, 99, 235, 0.28)");
-  expect(background).toMatch(/linear-gradient\(145deg, rgb\(15, 23, 42\)(?: 0%)?, rgb\(30, 58, 138\) 52%, rgb\(15, 118, 110\)(?: 100%)?\)/);
+  expect(background).toContain("rgba(255, 255, 255, 0.72)");
+  expect(background).toMatch(/linear-gradient\(145deg, rgb\(250, 247, 242\)(?: 0%)?, rgb\(246, 234, 223\) 52%, rgb\(245, 220, 200\)(?: 100%)?\)/);
 
   const button = hero.getByRole("button", { name: "Знайти житло" });
   expect(await button.evaluate((element) => {

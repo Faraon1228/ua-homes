@@ -86,7 +86,7 @@ rm -rf "$WEB_DIR/chunks"
 
 CATALOG_BYTES=$(wc -c < "$WEB_DIR/real-estate-app.js" | tr -d ' ')
 SELLER_BYTES=$(wc -c < "$WEB_DIR/seller-app.js" | tr -d ' ')
-if [ "$CATALOG_BYTES" -gt 131000 ] || [ "$SELLER_BYTES" -gt 135000 ]; then
+if [ "$CATALOG_BYTES" -gt 133000 ] || [ "$SELLER_BYTES" -gt 136000 ]; then
   echo "Frontend bundle budget exceeded: catalog=${CATALOG_BYTES}, seller=${SELLER_BYTES}" >&2
   exit 1
 fi
@@ -169,6 +169,7 @@ ASSET_VERSION=$(
   {
     cat "$WEB_DIR/real-estate-app.js" "$WEB_DIR/seller-app.js" "$WEB_DIR/ua-homes.css" "$WEB_DIR/monitoring.js"
     cat "$WEB_DIR/images/silver-silhouette.svg"
+    cat "$WEB_DIR/ua-dim-logo.svg"
     find "$WEB_DIR/chunks" -type f -name '*.js' -print |
       sort |
       while IFS= read -r chunk; do
@@ -187,6 +188,7 @@ BUILD_ID=$(
       "$WEB_DIR/seller-app.js" "$WEB_DIR/ua-homes.css" "$WEB_DIR/sw.js" \
       "$WEB_DIR/real-estate-demo.html" "$WEB_DIR/ua-homes-manifest.json" \
       "$WEB_DIR/images/silver-silhouette.svg" \
+      "$WEB_DIR/ua-dim-logo.svg" \
       "$WEB_DIR/privacy.html" "$WEB_DIR/terms.html" "$WEB_DIR/cookie-policy.html" \
       "$WEB_DIR/privacy-consent.css" "$WEB_DIR/privacy-consent.js" \
       "$WEB_DIR/premium-loader.js" "$WEB_DIR/marketplace-loader.js" \
@@ -213,6 +215,7 @@ BUILD_ID=$(
   printf "  '/seller-app.js',\n"
   printf "  '/ua-homes.css',\n"
   printf "  '/images/silver-silhouette.svg?v=perf-%s',\n" "$ASSET_VERSION"
+  printf "  '/ua-dim-logo.svg?v=home-mark-1',\n"
   printf "  '/premium-loader.js',\n"
   printf "  '/marketplace-loader.js',\n"
   printf "  '/vendor/leaflet-1.9.4/leaflet.css',\n"

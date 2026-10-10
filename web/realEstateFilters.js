@@ -7,6 +7,7 @@ export const STORAGE_KEYS = [
   "re.regionFilter",
   "re.cityFilter",
   "re.propertyType",
+  "re.listingTypeFilter",
   "re.onlyEOselya",
   "re.minPrice",
   "re.maxPrice",
@@ -50,6 +51,7 @@ export function filterAndSortProperties(properties, filters) {
     regionFilter = "Всі",
     cityFilter = "Всі",
     propertyType = "Всі",
+    listingTypeFilter = "",
     onlyEOselya = false,
     minPrice = "",
     maxPrice = "",
@@ -73,6 +75,7 @@ export function filterAndSortProperties(properties, filters) {
     const matchCity = cityFilter === "Всі" || item.city === cityFilter;
     const normalizedPropertyType = normalizePropertyType(item.propertyType);
     const matchPropertyType = propertyType === "Всі" || normalizedPropertyType === propertyType;
+    const matchListingType = !listingTypeFilter || (item.listingType || "sale") === listingTypeFilter;
     const matchEOselya = !onlyEOselya || item.eOselya;
 
     const matchMinPrice = minPrice === "" || item.price >= Number(minPrice);
@@ -91,6 +94,7 @@ export function filterAndSortProperties(properties, filters) {
       matchRegion &&
       matchCity &&
       matchPropertyType &&
+      matchListingType &&
       matchEOselya &&
       matchMinPrice &&
       matchMaxPrice &&

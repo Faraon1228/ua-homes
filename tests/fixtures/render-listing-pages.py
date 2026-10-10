@@ -2,6 +2,7 @@
 import contextlib
 import json
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -9,10 +10,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 os.environ["UA_HOMES_PUBLIC_URL"] = "http://127.0.0.1:4173"
 
 with contextlib.redirect_stdout(sys.stderr):
-    from backend.test_trust_features import TrustFeatureTests
+    from backend.test_trust_features import TEST_DB, TrustFeatureTests
 
     fixture = TrustFeatureTests()
     fixture.setUp()
+    with sqlite3.connect(TEST_DB) as database:
+        database.execute(
+            "UPDATE listings SET latitude = ?, longitude = ? WHERE id = ?",
+            (50.45, 30.52, fixture.target_id),
+        )
+        database.commit()
     pages = {}
     for listing_id in [fixture.target_id, fixture.realtor_listing_id]:
         response = fixture.client.get(f"/listing/{listing_id}")

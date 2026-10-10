@@ -17,6 +17,74 @@ async function mockCatalog(page, handler) {
   await page.route("**/api/listings?*", handler);
 }
 
+test("offer switch filters sale and rent, preserves search, resets paging and survives reload", async ({ page }) => {
+  const requests = [];
+  const rent = { ...listing, id: 43, title: "Оренда біля Дніпра", listing_type: "rent", price: 700 };
+  const sale = { ...listing, listing_type: "sale" };
+  await mockCatalog(page, (route) => {
+    const query = Object.fromEntries(new URL(route.request().url()).searchParams);
+    requests.push(query);
+    const listings = query.listing_type === "rent" ? [rent] : query.listing_type === "sale" ? [sale] : [sale, rent];
+    return route.fulfill({ json: { listings, total: listings.length, has_more: false } });
+  });
+  await page.goto("/real-estate-demo.html");
+  const offers = page.getByRole("group", { name: "Тип пропозиції", exact: true });
+  await expect(offers.getByRole("button", { name: "Усі", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('[data-role="listing-card"]')).toHaveCount(2);
+  expect(requests[0].listing_type).toBeUndefined();
+  await page.getByRole("searchbox", { name: "Де шукаєте житло?" }).fill("Дніпра");
+  await page.getByRole("button", { name: "Знайти житло", exact: true }).click();
+  await expect.poll(() => requests.at(-1)?.search).toBe("Дніпра");
+  await offers.getByRole("button", { name: "Орендувати", exact: true }).click();
+  await expect.poll(() => requests.at(-1)).toMatchObject({ listing_type: "rent", search: "Дніпра", offset: "0" });
+  await expect(page.locator('[data-role="listing-card"]')).toHaveCount(1);
+  await expect(page.locator('[data-role="listing-card"]')).toContainText("/міс.");
+  await expect(page).toHaveURL(/listingType=rent/);
+  await page.reload();
+  await expect(offers.getByRole("button", { name: "Орендувати", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('[data-role="listing-card"]')).toContainText(rent.title);
+  await offers.getByRole("button", { name: "Купити", exact: true }).click();
+  await expect.poll(() => requests.at(-1)).toMatchObject({ listing_type: "sale", search: "Дніпра", offset: "0" });
+  await expect(page.locator('[data-role="listing-card"]')).not.toContainText("/міс.");
+  await offers.getByRole("button", { name: "Усі", exact: true }).click();
+  await expect(page.locator('[data-role="listing-card"]')).toHaveCount(2);
+  expect(requests.at(-1).listing_type).toBeUndefined();
+  expect(new URL(page.url()).searchParams.has("listingType")).toBe(false);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+});
+
+test("rent deep link overrides stored sale and rent filtering applies to map and saved searches", async ({ page }) => {
+  const rent = { ...listing, listing_type: "rent", price: 700, latitude: 50.45, longitude: 30.52 };
+  const requests = [];
+  await page.addInitScript(() => localStorage.setItem("re.listingTypeFilter", "sale"));
+  await mockCatalog(page, (route) => {
+    requests.push(Object.fromEntries(new URL(route.request().url()).searchParams));
+    return route.fulfill({ json: { listings: [rent], total: 1, has_more: false } });
+  });
+  await page.goto("/real-estate-demo.html?listingType=rent");
+  const offers = page.getByRole("group", { name: "Тип пропозиції", exact: true });
+  await expect(offers.getByRole("button", { name: "Орендувати", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('[data-role="listing-card"]')).toHaveCount(1);
+  await page.getByRole("button", { name: "Карта", exact: true }).click();
+  await expect(page.locator("#listings-map .leaflet-marker-icon")).toHaveCount(1);
+  await page.locator("#listings-map .leaflet-marker-icon").click();
+  await expect(page.locator("#listings-map .leaflet-popup-content")).toContainText("/міс.");
+  const save = page.getByRole("button", { name: "Зберегти запит", exact: true });
+  if (!(await save.isVisible())) await page.getByRole("button", { name: "Розширені фільтри", exact: false }).click();
+  page.once("dialog", (dialog) => dialog.accept("Оренда тест"));
+  await save.click();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("re.savedSearches") || "[]")[0]?.filters?.listingTypeFilter)).toBe("rent");
+  await page.getByRole("button", { name: "Прибрати фільтр Оренда", exact: true }).click();
+  await expect(offers.getByRole("button", { name: "Усі", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => requests.at(-1)?.listing_type ?? "").toBe("");
+  await page.getByRole("button", { name: "Оренда тест", exact: true }).click();
+  await expect(offers.getByRole("button", { name: "Орендувати", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => requests.at(-1)?.listing_type).toBe("rent");
+  await page.locator("#search").getByRole("button", { name: "Скинути фільтри", exact: true }).click();
+  await expect(offers.getByRole("button", { name: "Усі", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => requests.at(-1)?.listing_type ?? "").toBe("");
+});
+
 test("premium and marketplace loaders remain active as self-hosted scripts", async ({
   page,
 }) => {
