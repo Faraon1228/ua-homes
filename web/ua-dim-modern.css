@@ -1,4 +1,5 @@
 :root {
+  --ua-button-glow: rgba(37, 99, 235, .28);
   --ua-primary: #2563eb;
   --ua-primary-strong: #1d4ed8;
   --ua-accent: #14b8a6;
@@ -31,6 +32,7 @@ body {
 }
 
 html:not(.seller-page) body {
+  --ua-button-glow: rgba(23, 50, 77, .28);
   --ua-primary: #17324d;
   --ua-primary-strong: #10283f;
   --ua-ink: #243342;
@@ -386,4 +388,14 @@ textarea:focus {
 .panel-card:hover,
 .card-shell:hover {
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.14) !important;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :is(button, a[role="button"], a.bg-blue-600, a.bg-blue-700, a.bg-orange-500, a.bg-orange-600):not(:disabled):not([aria-disabled="true"]):hover {
+    box-shadow: 0 0 0 3px var(--ua-button-glow), 0 10px 28px var(--ua-button-glow) !important;
+  }
+}
+
+:is(button, a[role="button"], a.bg-blue-600, a.bg-blue-700, a.bg-orange-500, a.bg-orange-600):not(:disabled):not([aria-disabled="true"]):focus-visible {
+  box-shadow: 0 0 0 3px #ffffff, 0 0 0 6px var(--ua-button-glow), 0 10px 28px var(--ua-button-glow) !important;
 }

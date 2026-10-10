@@ -44,6 +44,28 @@ test("compact hero places the offer switch and search together within the first 
   expect(layout.heroHeight).toBeLessThan(layout.height * .85);
 });
 
+test("buttons gain a stronger hover glow without changing their colors or disabled state", async ({ page }) => {
+  await openHomepage(page);
+  const button = page.locator("#hero-property-form button");
+  const before = await button.evaluate((element) => ({
+    shadow: getComputedStyle(element).boxShadow,
+    background: getComputedStyle(element).backgroundImage,
+  }));
+  const desktopHover = await page.evaluate(() => matchMedia("(hover: hover) and (pointer: fine)").matches);
+  if (desktopHover) {
+    await button.hover();
+    await expect.poll(() => button.evaluate((element) => getComputedStyle(element).boxShadow)).not.toBe(before.shadow);
+    await expect(button).toHaveCSS("background-image", before.background);
+    await button.evaluate((element) => { element.disabled = true; });
+    await expect(button).toHaveCSS("box-shadow", before.shadow);
+    await button.evaluate((element) => { element.disabled = false; });
+  }
+  await page.mouse.move(0, 0);
+  await button.focus();
+  await expect(button).toHaveCSS("outline-style", "solid");
+  await expect(button).toHaveCSS("outline-width", "3px");
+});
+
 test("neutral catalog keeps readable hero text, warm surfaces and the separate seller theme", async ({ page }) => {
   await openHomepage(page);
   await expect(page.locator("body")).toHaveCSS("--ua-surface-alt", "#f5f3ef");
