@@ -7,8 +7,8 @@
     const script = document.createElement("script");
     script.type = "module";
     script.src = sellerPage
-      ? "/seller-app.js?v=perf-48e83196eb9a"
-      : "/real-estate-app.js?v=perf-48e83196eb9a";
+      ? "/seller-app.js?v=perf-bc7310c603ae"
+      : "/real-estate-app.js?v=perf-bc7310c603ae";
     script.onerror = function () {
       const root = document.getElementById("root");
       if (!root) return;

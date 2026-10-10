@@ -554,6 +554,31 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertNotIn(pending_id, returned_ids)
         self.assertNotIn(sold_id, returned_ids)
 
+    def test_catalog_offer_filter_separates_rent_and_sale(self):
+        with sqlite3.connect(TEST_DB) as database:
+            rental_id = self._insert_listing(
+                database,
+                self.owner_id,
+                title="Rental offer",
+                price=700,
+                area=45,
+                listing_type="rent",
+            )
+            database.commit()
+
+        for offer_type in ("sale", "rent"):
+            with self.subTest(offer_type=offer_type):
+                response = self.client.get(f"/api/listings?listing_type={offer_type}&limit=100")
+                self.assertEqual(response.status_code, 200)
+                listings = response.get_json()["listings"]
+                self.assertTrue(listings)
+                self.assertTrue(all(item["listing_type"] == offer_type for item in listings))
+                self.assertEqual(rental_id in {item["id"] for item in listings}, offer_type == "rent")
+
+        all_listings = self.client.get("/api/listings?limit=100").get_json()["listings"]
+        self.assertIn(rental_id, {item["id"] for item in all_listings})
+        self.assertIn(self.target_id, {item["id"] for item in all_listings})
+
     def test_admin_can_create_listing_with_complete_insert_contract(self):
         response = self.client.post(
             "/api/admin/listings",

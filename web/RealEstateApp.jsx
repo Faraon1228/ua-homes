@@ -191,6 +191,7 @@ function searchFiltersToAlertPayload(name, filters) {
     region: filters.regionFilter && filters.regionFilter !== "Всі" ? filters.regionFilter : null,
     city: filters.cityFilter && filters.cityFilter !== "Всі" ? filters.cityFilter : null,
     type: filters.propertyType && filters.propertyType !== "Всі" ? filters.propertyType : null,
+    listingType: filters.listingTypeFilter || null,
     eOselya: Boolean(filters.onlyEOselya),
     minPrice: filters.minPrice || null,
     maxPrice: filters.maxPrice || null,
@@ -214,6 +215,7 @@ function alertToSavedSearch(alert) {
       regionFilter: filters.region || "Всі",
       cityFilter: filters.city || "Всі",
       propertyType: filters.type || "Всі",
+      listingTypeFilter: filters.listingType || "",
       onlyEOselya: Boolean(filters.eOselya),
       minPrice: filters.minPrice == null ? "" : String(filters.minPrice),
       maxPrice: filters.maxPrice == null ? "" : String(filters.maxPrice),
@@ -379,6 +381,7 @@ function mapListingToProperty(listing) {
     city: listing?.city || "",
     district: listing?.district || "",
     price: Number(listing?.price || 0),
+    listingType: listing?.listing_type || listing?.listingType || "sale",
     rooms: Number(listing?.rooms || 0),
     area: Number(listing?.area || 0),
     eOselya: Boolean(listing?.e_oselya ?? listing?.eOselya),
@@ -1220,6 +1223,7 @@ function allowMockCatalogFallback() {
 
 function describeSearchState(filters, keywordSearch) {
   const parts = [];
+  if (filters.listingTypeFilter) parts.push(filters.listingTypeFilter === "rent" ? "Оренда" : "Продаж");
   if (filters.regionFilter && filters.regionFilter !== "Всі") {
     parts.push(`${filters.regionFilter} область`);
   }
@@ -1617,10 +1621,10 @@ function ListingCard({ property, favorite, onToggleFavorite, onOpenTrust, priori
       <div className="p-5">
         <div className="flex flex-col gap-1">
           <p className={`text-2xl font-black tracking-tight ${isPositiveNumber(property.price) ? "text-blue-700" : "text-slate-500"}`}>
-            {formatListingPrice(property.price)}
+            {formatListingPrice(property.price)}{property.listingType === "rent" ? "/міс." : ""}
           </p>
           <p className="text-sm font-bold text-slate-500">
-            {pricePerSquareMeter || "Ціна за м² недоступна"}
+            {property.listingType === "rent" ? "Оренда · ціна за місяць" : pricePerSquareMeter || "Ціна за м² недоступна"}
           </p>
         </div>
 
@@ -1707,6 +1711,12 @@ export default function RealEstateApp() {
   const [regionFilter, setRegionFilter] = useState(() => getStored("re.regionFilter", "Всі"));
   const [cityFilter, setCityFilter] = useState(() => getStored("re.cityFilter", "Всі"));
   const [propertyTypeFilter, setPropertyTypeFilter] = useState(() => getStored("re.propertyType", "Всі"));
+  const [listingTypeFilter, setListingTypeFilter] = useState(() => {
+    const restored = catalogRestoreRef.current?.stored?.["re.listingTypeFilter"];
+    const query = new URLSearchParams(window.location.search).get("listingType");
+    const value = restored ?? query ?? getStored("re.listingTypeFilter", "");
+    return ["sale", "rent"].includes(value) ? value : "";
+  });
   const [onlyEOselya, setOnlyEOselya] = useState(
     () => getStored("re.onlyEOselya", "false") === "true"
   );
@@ -2037,6 +2047,7 @@ export default function RealEstateApp() {
       regionFilter,
       cityFilter,
       propertyType: propertyTypeFilter,
+      listingTypeFilter,
       onlyEOselya,
       minPrice,
       maxPrice,
@@ -2047,7 +2058,7 @@ export default function RealEstateApp() {
       sortBy,
       keywordSearch,
     }),
-    [regionFilter, cityFilter, propertyTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, sortBy, keywordSearch]
+    [regionFilter, cityFilter, propertyTypeFilter, listingTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, sortBy, keywordSearch]
   );
 
   const catalogSnapshotRef = useRef(null);
@@ -2057,6 +2068,7 @@ export default function RealEstateApp() {
       "re.regionFilter": regionFilter,
       "re.cityFilter": cityFilter,
       "re.propertyType": propertyTypeFilter,
+      "re.listingTypeFilter": listingTypeFilter,
       "re.onlyEOselya": String(onlyEOselya),
       "re.showFavoritesOnly": String(showFavoritesOnly),
       "re.minPrice": minPrice,
@@ -2105,6 +2117,7 @@ export default function RealEstateApp() {
         regionFilter,
         cityFilter,
         propertyTypeFilter,
+        listingTypeFilter,
         onlyEOselya,
         minPrice,
         maxPrice,
@@ -2189,6 +2202,7 @@ export default function RealEstateApp() {
     regionFilter,
     cityFilter,
     propertyTypeFilter,
+    listingTypeFilter,
     onlyEOselya,
     minPrice,
     maxPrice,
@@ -2245,9 +2259,18 @@ export default function RealEstateApp() {
   }, []);
 
   useEffect(() => {
+    if (sellerCabinetMode) return;
+    const url = new URL(window.location.href);
+    if (listingTypeFilter) url.searchParams.set("listingType", listingTypeFilter);
+    else url.searchParams.delete("listingType");
+    if (url.href !== window.location.href) window.history.replaceState(window.history.state, "", url);
+  }, [listingTypeFilter, sellerCabinetMode]);
+
+  useEffect(() => {
     window.localStorage.setItem("re.regionFilter", regionFilter);
     window.localStorage.setItem("re.cityFilter", cityFilter);
     window.localStorage.setItem("re.propertyType", propertyTypeFilter);
+    window.localStorage.setItem("re.listingTypeFilter", listingTypeFilter);
     window.localStorage.setItem("re.onlyEOselya", String(onlyEOselya));
     window.localStorage.setItem("re.showFavoritesOnly", String(showFavoritesOnly));
     window.localStorage.setItem("re.minPrice", minPrice);
@@ -2263,6 +2286,7 @@ export default function RealEstateApp() {
     regionFilter,
     cityFilter,
     propertyTypeFilter,
+    listingTypeFilter,
     onlyEOselya,
     showFavoritesOnly,
     minPrice,
@@ -2696,6 +2720,7 @@ export default function RealEstateApp() {
   };
   const activeFilters = useMemo(() => {
     const items = [];
+    if (listingTypeFilter) items.push({ key: "listingType", label: listingTypeFilter === "rent" ? "Оренда" : "Продаж" });
     if (regionFilter !== "Всі") items.push({ key: "regionFilter", label: `Область: ${regionFilter}` });
     if (cityFilter !== "Всі") items.push({ key: "cityFilter", label: `Місто/селище: ${cityFilter}` });
     if (propertyTypeFilter !== "Всі") {
@@ -2714,7 +2739,7 @@ export default function RealEstateApp() {
     }
     if (keywordSearch.trim()) items.push({ key: "keywordSearch", label: `Пошук: "${keywordSearch.trim()}"` });
     return items;
-  }, [regionFilter, cityFilter, propertyTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, keywordSearch]);
+  }, [regionFilter, cityFilter, propertyTypeFilter, listingTypeFilter, onlyEOselya, minPrice, maxPrice, minRooms, maxRooms, minArea, maxArea, keywordSearch]);
 
   const toggleFavorite = async (property) => {
     const wasFavorite = favoriteIds.includes(property.id);
@@ -2744,6 +2769,7 @@ export default function RealEstateApp() {
     setRegionFilter("Всі");
     setCityFilter("Всі");
     setPropertyTypeFilter("Всі");
+    setListingTypeFilter("");
     setOnlyEOselya(false);
     setShowFavoritesOnly(false);
     setMinPrice("");
@@ -2789,6 +2815,7 @@ export default function RealEstateApp() {
     if ("regionFilter" in filters) setRegionFilter(filters.regionFilter);
     if ("cityFilter" in filters) setCityFilter(filters.cityFilter);
     if ("propertyTypeFilter" in filters) setPropertyTypeFilter(filters.propertyTypeFilter);
+    if ("listingTypeFilter" in filters) setListingTypeFilter(filters.listingTypeFilter);
     if ("onlyEOselya" in filters) setOnlyEOselya(filters.onlyEOselya);
     if ("minPrice" in filters) setMinPrice(filters.minPrice);
     if ("maxPrice" in filters) setMaxPrice(filters.maxPrice);
@@ -2918,6 +2945,7 @@ export default function RealEstateApp() {
 
   const openSavedSearch = (entry) => {
     const next = entry.filters || {};
+    setListingTypeFilter(next.listingTypeFilter || "");
     if ("regionFilter" in next) setRegionFilter(next.regionFilter);
     else if ("region" in next) setRegionFilter(next.region);
     if ("cityFilter" in next) setCityFilter(next.cityFilter);
@@ -2942,6 +2970,7 @@ export default function RealEstateApp() {
     if (key === "regionFilter") setRegionFilter("Всі");
     if (key === "cityFilter") setCityFilter("Всі");
     if (key === "propertyType") setPropertyTypeFilter("Всі");
+    if (key === "listingType") setListingTypeFilter("");
     if (key === "onlyEOselya") setOnlyEOselya(false);
     if (key === "price") {
       setMinPrice("");
@@ -3684,6 +3713,23 @@ export default function RealEstateApp() {
        </div>
        ) : null}
 
+       {!sellerCabinetMode ? (
+         <div role="group" aria-label="Тип пропозиції" className="mb-4 flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+           {[["", "Усі"], ["sale", "Купити"], ["rent", "Орендувати"]].map(([value, label]) => (
+             <button
+               key={value}
+               type="button"
+               aria-pressed={listingTypeFilter === value}
+               onClick={() => setListingTypeFilter(value)}
+               className={`min-h-[44px] flex-1 rounded-xl px-4 py-2 text-sm font-bold transition ${
+                 listingTypeFilter === value ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-blue-50"
+               }`}
+             >
+               {label}
+             </button>
+           ))}
+         </div>
+       ) : null}
        <div className={sellerCabinetMode ? "block" : "grid gap-6 lg:grid-cols-12"}>
           <aside
             id="add"

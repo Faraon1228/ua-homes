@@ -42,6 +42,7 @@ async function setup(page) {
       title: `Квартира ${index + 1}`,
       city: "Київ", district: "Дніпровський", price: 5600000 - index,
       rooms: 2, area: 64, property_type: "apartment", status: "published", images: [],
+      listing_type: query.listing_type || "sale",
     })).slice(offset, offset + 24);
     return route.fulfill({ json: { listings, total: 48, has_more: offset === 0, facets: { cities: ["Київ"] } } });
   });
@@ -78,6 +79,40 @@ async function expectRestored(page, { y, catalogUrl }) {
   await expect(page.getByRole("searchbox", { name: "Де шукаєте житло?" })).toHaveValue("Дніпровський");
 }
 
+test("listing map loads published Leaflet assets and renders its location without script errors", async ({ page }) => {
+  await setup(page);
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  // Netlify returns the SPA shell for unpublished /static/* paths.
+  await page.route("**/static/**", (route) => route.fulfill({ contentType: "text/html", body: shell }));
+  await page.route("https://*.tile.openstreetmap.org/**", (route) => route.fulfill({
+    contentType: "image/png",
+    body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64"),
+  }));
+  const cssResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/vendor/leaflet-1.9.4/leaflet.css");
+  const jsResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/vendor/leaflet-1.9.4/leaflet.js");
+  await page.goto(`/listing/${ids[0]}`);
+  const [css, js] = await Promise.all([cssResponse, jsResponse]);
+  expect(css.status()).toBe(200);
+  expect(css.headers()["content-type"]).toContain("text/css");
+  expect(js.status()).toBe(200);
+  expect(js.headers()["content-type"]).toMatch(/javascript/);
+  await expect(page.locator("#map.leaflet-container")).toBeVisible();
+  await expect(page.locator("#map .leaflet-marker-icon")).toHaveCount(1);
+  await expect(page.locator("#map .leaflet-popup-content")).not.toBeEmpty();
+  await expect(page.locator("#map .leaflet-pane").first()).toHaveCSS("position", "absolute");
+  await expect.poll(() => page.locator("#map .leaflet-tile-loaded").count()).toBeGreaterThan(0);
+  const center = await page.evaluate(() => ({ lat: window.m.getCenter().lat, lng: window.m.getCenter().lng }));
+  expect(center.lat).toBeCloseTo(50.45, 2);
+  expect(center.lng).toBeCloseTo(30.52, 2);
+  expect(errors).toEqual([]);
+});
+
 test("listing Назад restores the originating entry, loaded pages, search, scroll and keyboard focus after reload", async ({ page }) => {
   const requests = await setup(page);
   const origin = await openFromCatalog(page);
@@ -94,6 +129,16 @@ test("listing Назад restores the originating entry, loaded pages, search, s
   expect(requests.at(-1)).toMatchObject({
     search: "Дніпровський", sort: "price-desc", offset: "24", city: "Київ", minRooms: "2", minPrice: "50000",
   });
+});
+
+test("rent selection returns with its catalog entry even when another tab stored sale", async ({ page }) => {
+  const requests = await setup(page);
+  const origin = await openFromCatalog(page, "/app?listingType=rent");
+  await page.evaluate(() => localStorage.setItem("re.listingTypeFilter", "sale"));
+  await page.getByRole("button", { name: "Назад", exact: true }).click();
+  await expectRestored(page, origin);
+  await expect(page.getByRole("group", { name: "Тип пропозиції", exact: true }).getByRole("button", { name: "Орендувати" })).toHaveAttribute("aria-pressed", "true");
+  expect(requests.at(-1)).toMatchObject({ listing_type: "rent", offset: "24" });
 });
 
 test("browser Back and repeated listing visits restore the catalog without accumulating return state", async ({ page }) => {
