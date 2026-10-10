@@ -212,7 +212,7 @@ def get_listings():
     )
     if cacheable_public_query:
         query_string = request.query_string.decode("utf-8", errors="ignore")
-        cache_key = f"public:listings:v1:{query_string}"
+        cache_key = f"public:listings:v2:{query_string}"
         cache_payload = cached_json_get(cache_key)
         if cache_payload is not None:
             return jsonify(**cache_payload)
@@ -1218,8 +1218,6 @@ def cleanup_test_listings():
         WHERE l.status IN ('published', 'pending', 'draft')
           AND (
             l.source = 'seed'
-            OR l.title LIKE 'Тестове оголошення%'
-            OR l.title LIKE 'тестове оголошення%'
             OR LOWER(u.email) = 'demo@ua-dim.com'
           )
         ORDER BY l.id

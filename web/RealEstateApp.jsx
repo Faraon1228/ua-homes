@@ -1593,10 +1593,10 @@ function ListingCard({ property, favorite, onToggleFavorite, onOpenTrust, priori
           ) : null}
           {verifiedSeller ? (
             <span className="rounded-full bg-emerald-700 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-white shadow-md">
-              ✓ Перевірений продавець
+              ✓ Власник: перевірку пройдено
             </span>
           ) : null}
-          {property.verifiedListing ? (
+          {property.verifiedListing && property.listingVerificationStatus === "verified" ? (
             <span className="rounded-full bg-teal-700 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-white shadow-md">
               ✓ Перевірене оголошення
             </span>
@@ -1664,7 +1664,7 @@ function ListingCard({ property, favorite, onToggleFavorite, onOpenTrust, priori
             {dateMeta ? `${dateMeta.label} ${dateMeta.value}` : "Дата не вказана"}
           </span>
           <span className={`font-bold ${verifiedSeller ? "text-emerald-700" : "text-slate-400"}`}>
-            {verifiedSeller ? "Продавця підтверджено" : "Статус продавця не підтверджено"}
+            {verifiedSeller ? "Перевірку власника пройдено" : "Перевірка власника не підтверджена"}
           </span>
           <span className="font-bold text-slate-600">{getSellerTypeLabel(property.sellerType)}</span>
         </div>
@@ -3584,6 +3584,25 @@ export default function RealEstateApp() {
     return () => window.removeEventListener("hashchange", handleAddHash);
   }, [currentUser, sellerCabinetMode]);
 
+  const offerToggle = sellerCabinetMode ? null : (
+    <div role="group" aria-label="Тип пропозиції" className="mb-4 flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+      {[["", "Усі"], ["sale", "Купити"], ["rent", "Орендувати"]].map(([value, label]) => (
+        <button
+          key={value}
+          type="button"
+          aria-pressed={listingTypeFilter === value}
+          onClick={() => setListingTypeFilter(value)}
+          className={`min-h-[44px] flex-1 rounded-xl px-4 py-2 text-sm font-bold transition ${
+            listingTypeFilter === value ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-blue-50"
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+  const heroOfferTarget = sellerCabinetMode ? null : document.getElementById("hero-offer-toggle");
+
   return (
     <div className="bg-slate-50 text-slate-900">
       {showEOselyaCalculator ? (
@@ -3713,23 +3732,9 @@ export default function RealEstateApp() {
        </div>
        ) : null}
 
-       {!sellerCabinetMode ? (
-         <div role="group" aria-label="Тип пропозиції" className="mb-4 flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
-           {[["", "Усі"], ["sale", "Купити"], ["rent", "Орендувати"]].map(([value, label]) => (
-             <button
-               key={value}
-               type="button"
-               aria-pressed={listingTypeFilter === value}
-               onClick={() => setListingTypeFilter(value)}
-               className={`min-h-[44px] flex-1 rounded-xl px-4 py-2 text-sm font-bold transition ${
-                 listingTypeFilter === value ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-blue-50"
-               }`}
-             >
-               {label}
-             </button>
-           ))}
-         </div>
-       ) : null}
+       {!sellerCabinetMode
+         ? heroOfferTarget ? window.ReactDOM.createPortal(offerToggle, heroOfferTarget) : offerToggle
+         : null}
        <div className={sellerCabinetMode ? "block" : "grid gap-6 lg:grid-cols-12"}>
           <aside
             id="add"

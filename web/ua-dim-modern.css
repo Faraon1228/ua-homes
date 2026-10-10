@@ -24,6 +24,7 @@ body {
 [data-role="homepage-hero"] {
   position: relative;
   isolation: isolate;
+  min-height: min(34rem, 70svh);
   background:
     radial-gradient(ellipse at 18% 15%, rgba(255, 255, 255, .72), transparent 52%),
     linear-gradient(145deg, #faf7f2 0%, #f6eadf 52%, #f5dcc8 100%);
