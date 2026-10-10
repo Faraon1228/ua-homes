@@ -61,6 +61,12 @@ html:not(.seller-page) .bg-white {
   background: #ffffff !important;
 }
 
+html:not(.seller-page) #hero-offer-toggle > [role="group"],
+html:not(.seller-page) #hero-property-form {
+  background: rgba(255, 255, 255, .55) !important;
+  border-color: rgba(255, 255, 255, .65) !important;
+}
+
 html:not(.seller-page) .bg-slate-50,
 html:not(.seller-page) .bg-slate-100 {
   background-color: var(--ua-surface-alt) !important;
@@ -88,6 +94,20 @@ html:not(.seller-page) :is(button, a, input, select, textarea):focus-visible {
 [data-role="homepage-hero"] > .mx-auto {
   position: relative;
   z-index: 1;
+}
+
+.homepage-park-art {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  pointer-events: none;
+  opacity: .32;
+}
+
+.homepage-park-art svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .homepage-house-art {
@@ -391,11 +411,11 @@ textarea:focus {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  :is(button, a[role="button"], a.bg-blue-600, a.bg-blue-700, a.bg-orange-500, a.bg-orange-600):not(:disabled):not([aria-disabled="true"]):hover {
+  :is(button, a.ua-button-link, a[role="button"], a.bg-blue-600, a.bg-blue-700, a.bg-orange-500, a.bg-orange-600):not(:disabled):not([aria-disabled="true"]):hover {
     box-shadow: 0 0 0 3px var(--ua-button-glow), 0 10px 28px var(--ua-button-glow) !important;
   }
 }
 
-:is(button, a[role="button"], a.bg-blue-600, a.bg-blue-700, a.bg-orange-500, a.bg-orange-600):not(:disabled):not([aria-disabled="true"]):focus-visible {
+:is(button, a.ua-button-link, a[role="button"], a.bg-blue-600, a.bg-blue-700, a.bg-orange-500, a.bg-orange-600):not(:disabled):not([aria-disabled="true"]):focus-visible {
   box-shadow: 0 0 0 3px #ffffff, 0 0 0 6px var(--ua-button-glow), 0 10px 28px var(--ua-button-glow) !important;
 }

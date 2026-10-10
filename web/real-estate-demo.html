@@ -75,10 +75,10 @@
       } catch (_err) {}
     })();
   </script>
-  <link rel="preload" as="style" href="ua-homes.css?v=perf-ceb6f35df783"/>
+  <link rel="preload" as="style" href="ua-homes.css?v=perf-c54954a3d347"/>
   <link rel="preload" as="script" href="vendor/react.production.min.js?v=e7ca5f4"/>
   <link rel="preload" as="script" href="vendor/react-dom.production.min.js?v=e7ca5f4"/>
-  <link rel="stylesheet" href="ua-homes.css?v=perf-ceb6f35df783"/>
+  <link rel="stylesheet" href="ua-homes.css?v=perf-c54954a3d347"/>
   <link rel="stylesheet" href="privacy-consent.css?v=20260813-2"/>
   <script defer src="privacy-consent.js?v=20260813-1"></script>
   <script type="module" src="/monitoring.js"></script>
@@ -158,11 +158,55 @@
 </header>
 <main id="main-content" tabindex="-1">
 <section data-role="homepage-hero" aria-labelledby="homepage-title" class="flex items-center overflow-hidden">
+  <div class="homepage-park-art" aria-hidden="true">
+    <svg viewBox="0 0 1600 900" fill="none" preserveAspectRatio="xMidYMid slice">
+      <defs>
+        <radialGradient id="park-haze">
+          <stop stop-color="#a6c5a5" stop-opacity=".5"/>
+          <stop offset="1" stop-color="#a6c5a5" stop-opacity="0"/>
+        </radialGradient>
+        <radialGradient id="park-leaves" cx=".3" cy=".25" r=".8">
+          <stop stop-color="#c2d29e"/>
+          <stop offset=".5" stop-color="#88ab79"/>
+          <stop offset="1" stop-color="#537b60"/>
+        </radialGradient>
+        <g id="park-tree">
+          <path d="M0 160C-3 112 5 63 0 15M0 85L-26 53M1 65L26 31M0 111L32 82" stroke="#8c8068" stroke-width="7" stroke-linecap="round"/>
+          <path d="M-52 69C-77 54-77 23-59 10C-75-11-61-38-40-43C-48-66-29-85-8-82C7-103 37-91 42-73C68-78 86-56 76-36C100-21 97 8 78 19C91 42 72 67 53 65C36 86 12 88-3 76C-21 91-46 86-52 69Z" fill="url(#park-leaves)"/>
+          <g fill="#c7d9ac" opacity=".35">
+            <path d="M-51-8C-65-25-46-45-30-39C-39-62-15-76-2-62C13-81 38-65 29-49C52-55 66-35 53-19C29-32 6-18-7-27C-24-14-39-25-51-8Z"/>
+            <path d="M-54 37C-67 21-47 5-33 14C-21-1 0 9-4 26C14 17 32 34 22 47C-1 39-19 58-33 44Z"/>
+          </g>
+          <g fill="#456e52" opacity=".2">
+            <path d="M31-5C54-19 77-4 65 16C83 31 63 53 48 46C39 66 10 70 1 55C20 43 13 18 31-5Z"/>
+          </g>
+        </g>
+      </defs>
+      <ellipse cx="250" cy="290" rx="450" ry="260" fill="url(#park-haze)"/>
+      <ellipse cx="1400" cy="300" rx="450" ry="270" fill="url(#park-haze)"/>
+      <g>
+        <use href="#park-tree" transform="translate(100 240) scale(.78 .82)"/>
+        <use href="#park-tree" transform="translate(220 188) scale(1 1.2)"/>
+        <use href="#park-tree" transform="translate(360 255) scale(-.82 .9)"/>
+        <use href="#park-tree" transform="translate(1250 230) scale(.86 1.06)"/>
+        <use href="#park-tree" transform="translate(1410 180) scale(-1.05 1.25)"/>
+        <use href="#park-tree" transform="translate(1530 252) scale(.76 .8)"/>
+      </g>
+      <g fill="#c4b89f" opacity=".65">
+        <path d="M-40 370C100 370 275 432 330 515C357 557 333 593 290 625L276 613C311 578 326 551 300 518C247 449 99 412-40 406Z"/>
+        <path d="M1640 358C1495 366 1340 428 1290 512C1261 560 1287 602 1330 635L1345 622C1307 584 1291 552 1316 517C1365 449 1508 408 1640 396Z"/>
+      </g>
+      <g stroke="#e7ddc8" stroke-width="3" opacity=".65">
+        <path d="M-30 383C108 385 263 436 316 516C342 555 320 591 283 619"/>
+        <path d="M1630 372C1492 380 1355 435 1303 516C1277 557 1300 598 1337 629"/>
+      </g>
+    </svg>
+  </div>
   <div class="homepage-house-art homepage-house-art-left" aria-hidden="true">
-    <img src="/images/silver-silhouette.svg?v=perf-ceb6f35df783" alt="" width="1600" height="900" draggable="false" decoding="async" fetchpriority="low"/>
+    <img src="/images/silver-silhouette.svg?v=perf-c54954a3d347" alt="" width="1600" height="900" draggable="false" decoding="async" fetchpriority="low"/>
   </div>
   <div class="homepage-house-art homepage-house-art-right" aria-hidden="true">
-    <img src="/images/silver-silhouette.svg?v=perf-ceb6f35df783" alt="" width="1600" height="900" draggable="false" decoding="async" fetchpriority="low"/>
+    <img src="/images/silver-silhouette.svg?v=perf-c54954a3d347" alt="" width="1600" height="900" draggable="false" decoding="async" fetchpriority="low"/>
   </div>
   <div class="mx-auto w-full max-w-5xl px-4 py-8 sm:py-12">
     <div class="mx-auto max-w-3xl text-center">
@@ -382,7 +426,7 @@
     window.addEventListener("beforeunload", flushFinalVitals);
   })();
 </script>
-<script defer src="app-loader.js?v=perf-ceb6f35df783"></script>
+<script defer src="app-loader.js?v=perf-c54954a3d347"></script>
 <script defer src="analytics-loader.js?v=20260813-1"></script>
 <script defer src="premium-loader.js?v=20260908-1"></script>
 <div id="marketplace-extensions-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
