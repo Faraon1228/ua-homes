@@ -782,9 +782,9 @@ def listing_page(lid: int):
         "removed": "https://schema.org/Discontinued",
     }.get(listing_status_key, "https://schema.org/InStock")
     trust_items = []
-    if listing.get("verified_owner"):
+    if listing.get("verified_owner") and listing.get("owner_verification_status") == "verified":
         trust_items.append("Власник верифікований")
-    if listing.get("verified_phone"):
+    if listing.get("verified_phone") and listing.get("phone_verification_status") == "verified":
         trust_items.append("Телефон підтверджено")
     if listing.get("verified_docs"):
         trust_items.append("Документи перевірено")
@@ -795,6 +795,10 @@ def listing_page(lid: int):
     trust_count = len(trust_items)
     owner_verification_key = listing.get("owner_verification_status") or "unverified"
     phone_verification_key = listing.get("phone_verification_status") or "unverified"
+    if owner_verification_key == "verified" and not listing.get("verified_owner"):
+        owner_verification_key = "unverified"
+    if phone_verification_key == "verified" and not listing.get("verified_phone"):
+        phone_verification_key = "unverified"
     moderation_key = listing.get("moderation_status") or "approved"
     # Seller type shown to users is derived strictly from the backend account
     # type/account agency membership — never from client-supplied listing data.
@@ -820,7 +824,7 @@ def listing_page(lid: int):
     moderation_label = {
         "pending_review": "На модерації",
         "in_review": "Йде перевірка",
-        "approved": "Перевірено модератором",
+        "approved": "Допущено до публікації",
         "changes_requested": "Потрібні правки",
         "rejected": "Відхилено",
     }.get(moderation_key, "На перевірці")
@@ -1066,8 +1070,8 @@ def listing_page(lid: int):
     }
 
     trust_badges = []
-    if listing.get("verified_owner"): trust_badges.append("✅ Власник верифікований")
-    if listing.get("verified_phone"): trust_badges.append("📱 Телефон підтверджено")
+    if listing.get("verified_owner") and owner_verification_key == "verified": trust_badges.append("✅ Власник верифікований")
+    if listing.get("verified_phone") and phone_verification_key == "verified": trust_badges.append("📱 Телефон підтверджено")
     if listing.get("verified_docs"):  trust_badges.append("📄 Документи перевірено")
     if listing.get("has_photo_tour"): trust_badges.append("📸 Фото-тур")
     if listing.get("has_video_tour"): trust_badges.append("🎥 Відео-тур")
@@ -1325,6 +1329,7 @@ def listing_page(lid: int):
     <summary>Перевірки та історія</summary>
     <div class="disclosure-content">
       <p style="margin:0;color:#475569">Показуємо окремо модерацію, власника, телефон і документи — без об’єднання різних перевірок в один бейдж.</p>
+      <p style="color:#475569">Модерація означає допуск до публікації, а не гарантію прав власності чи стану житла. Окремі позначки відображають статуси перевірок у сервісі. Перед оплатою перевірте документи й огляньте об’єкт.</p>
       {f'<div class="trust">{trust_html}</div>' if trust_html else ''}
       <div class="flow-grid">
         {trust_flow_html}

@@ -17,6 +17,28 @@ async function mockCatalog(page, handler) {
   await page.route("**/api/listings?*", handler);
 }
 
+test("verification badges require matching flags and statuses and explain their limits", async ({ page }) => {
+  await mockCatalog(page, (route) => route.fulfill({ json: {
+    listings: [
+      { ...listing, id: 71, title: "Непогоджена перевірка", verified_owner: true, owner_verification_status: "pending", verified_listing: true, listing_verification_status: "pending" },
+      { ...listing, id: 72, title: "Підтверджена перевірка", verified_owner: true, owner_verification_status: "verified", verified_listing: true, listing_verification_status: "verified" },
+    ],
+    total: 2, has_more: false,
+  } }));
+  await page.route("**/api/listings/72/trust", (route) => route.fulfill({ json: {
+    listing_verification_status: "verified", verified_listing: true, history: [],
+  } }));
+  await page.goto("/real-estate-demo.html");
+  const pending = page.locator('[data-role="listing-card"]').filter({ hasText: "Непогоджена перевірка" });
+  const verified = page.locator('[data-role="listing-card"]').filter({ hasText: "Підтверджена перевірка" });
+  await expect(pending).not.toContainText("✓ Власник:");
+  await expect(pending).not.toContainText("✓ Перевірене оголошення");
+  await expect(verified).toContainText("✓ Власник: перевірку пройдено");
+  await expect(verified).toContainText("✓ Перевірене оголошення");
+  await verified.getByRole("button", { name: "Довіра й безпека", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("не гарантують стан житла");
+});
+
 test("offer switch filters sale and rent, preserves search, resets paging and survives reload", async ({ page }) => {
   const requests = [];
   const rent = { ...listing, id: 43, title: "Оренда біля Дніпра", listing_type: "rent", price: 700 };

@@ -28,6 +28,22 @@ async function openHomepage(page, url = "/real-estate-demo.html") {
   )).toBe(true);
 }
 
+test("compact hero places the offer switch and search together within the first screen", async ({ page }) => {
+  await openHomepage(page);
+  const offers = page.getByRole("group", { name: "Тип пропозиції", exact: true });
+  await expect(offers).toBeVisible();
+  await expect(offers).toHaveCount(1);
+  const layout = await page.evaluate(() => ({
+    height: innerHeight,
+    heroHeight: document.querySelector('[data-role="homepage-hero"]').getBoundingClientRect().height,
+    offers: document.querySelector('#hero-offer-toggle [role="group"]').getBoundingClientRect().toJSON(),
+    form: document.getElementById("hero-property-form").getBoundingClientRect().toJSON(),
+  }));
+  expect(layout.offers.bottom).toBeLessThanOrEqual(layout.form.top);
+  expect(layout.form.bottom).toBeLessThanOrEqual(layout.height);
+  expect(layout.heroHeight).toBeLessThan(layout.height * .85);
+});
+
 test("neutral catalog keeps readable hero text, warm surfaces and the separate seller theme", async ({ page }) => {
   await openHomepage(page);
   await expect(page.locator("body")).toHaveCSS("--ua-surface-alt", "#f5f3ef");

@@ -2673,7 +2673,7 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertFalse(refreshed["needs_freshness_confirmation"])
         self.assertEqual(refreshed["freshness_days_ago"], 0)
 
-    def test_admin_archives_obvious_test_listings_with_dry_run(self):
+    def test_admin_archives_confirmed_demo_listings_with_dry_run(self):
         with sqlite3.connect(TEST_DB) as db:
             test_listing_id = self._insert_listing(
                 db,
@@ -2683,6 +2683,7 @@ class TrustFeatureTests(unittest.TestCase):
                 area=40,
                 status="published",
             )
+            db.execute("UPDATE listings SET source = 'seed' WHERE id = ?", (test_listing_id,))
             db.commit()
 
         forbidden = self.client.post(
@@ -2716,6 +2717,64 @@ class TrustFeatureTests(unittest.TestCase):
             self.client.get(f"/listing/{test_listing_id}").status_code,
             404,
         )
+
+    def test_startup_archives_demo_records_without_deleting_or_republishing_them(self):
+        with sqlite3.connect(TEST_DB) as db:
+            seed_id = self._insert_listing(db, self.owner_id, title="Demo", price=700, area=40)
+            real_id = self._insert_listing(db, self.owner_id, title="Тестове оголошення реального власника", price=700, area=40)
+            db.execute("UPDATE listings SET source = 'seed' WHERE id = ?", (seed_id,))
+            db.execute("INSERT INTO users (name, email, password) VALUES ('Demo', 'DEMO@UA-DIM.COM', 'hash')")
+            demo_owner = db.execute("SELECT id FROM users WHERE email = 'DEMO@UA-DIM.COM'").fetchone()[0]
+            demo_id = self._insert_listing(db, demo_owner, title="Demo account", price=700, area=40)
+            db.commit()
+        for _ in range(2):
+            app_module.init_db()
+            with sqlite3.connect(TEST_DB) as db:
+                for listing_id in (seed_id, demo_id):
+                    self.assertEqual(
+                        db.execute("SELECT status, listing_status FROM listings WHERE id = ?", (listing_id,)).fetchone(),
+                        ("archived", "removed"),
+                    )
+                self.assertEqual(db.execute("SELECT status FROM listings WHERE id = ?", (real_id,)).fetchone()[0], "published")
+            public_ids = {item["id"] for item in self.client.get("/api/listings?limit=100").get_json()["listings"]}
+            self.assertNotIn(seed_id, public_ids)
+            self.assertNotIn(demo_id, public_ids)
+            self.assertIn(real_id, public_ids)
+            self.assertEqual(self.client.get(f"/listing/{seed_id}").status_code, 404)
+            self.assertEqual(self.client.get(f"/api/listings/{demo_id}/trust").status_code, 404)
+            self.assertEqual(self.client.get(f"/api/listings/{seed_id}", headers=self._auth(self.owner_token)).status_code, 200)
+
+    def test_listing_page_distinguishes_moderation_from_consistent_verification(self):
+        with sqlite3.connect(TEST_DB) as db:
+            listing_id = self._insert_listing(db, self.owner_id, title="Trust details", price=700, area=40)
+            db.execute(
+                """UPDATE listings SET verified_owner = 1, owner_verification_status = 'pending',
+                   verified_phone = 0, phone_verification_status = 'verified', moderation_status = 'approved'
+                   WHERE id = ?""",
+                (listing_id,),
+            )
+            db.commit()
+        html = self.client.get(f"/listing/{listing_id}").get_data(as_text=True)
+        self.assertIn("Допущено до публікації", html)
+        self.assertIn("не гарантію прав власності чи стану житла", html)
+        self.assertNotIn("Власник верифікований", html)
+        self.assertNotIn("Телефон підтверджено", html)
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "UPDATE listings SET owner_verification_status = 'verified', verified_phone = 1 WHERE id = ?",
+                (listing_id,),
+            )
+            db.commit()
+        html = self.client.get(f"/listing/{listing_id}").get_data(as_text=True)
+        self.assertIn("Власник верифікований", html)
+        self.assertIn("Телефон підтверджено", html)
+
+    def test_demo_archiving_supports_postgres_cursor_execute_returning_none(self):
+        cursor = mock.Mock()
+        cursor.execute.return_value = None
+        cursor.rowcount = 2
+        app_module._archive_demo_listings(cursor)
+        self.assertIn("source = 'seed'", cursor.execute.call_args[0][0])
 
     def test_s3_upload_confirmation_handles_client_and_missing_key_errors(self):
         owned_key = f"listings/{self.owner_id}/asset/photo.jpg"

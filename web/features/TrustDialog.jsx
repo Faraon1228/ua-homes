@@ -227,6 +227,11 @@ export default function TrustDialog({ property, authToken, onClose }) {
             <p className="text-xs font-black uppercase text-slate-500">Оголошення</p>
             <p className="mt-1 font-black">{verificationLabel(verificationStatus)}</p>
           </div>
+          <p className="mt-3 text-sm text-slate-600">
+            Позначки відображають окремі статуси перевірок у сервісі. Перевірка власника,
+            телефону чи модерація не гарантують стан житла, право власності або безпечність угоди.
+            Перед оплатою перевірте документи й огляньте об’єкт.
+          </p>
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <p className="text-xs font-black uppercase text-slate-500">Тип продавця</p>
             <p className="mt-1 font-black">

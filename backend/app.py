@@ -1278,9 +1278,30 @@ def _init_postgres_db():
             _seed_postgres(cur)
         else:
             _bootstrap_postgres_admin(cur)
+        _archive_demo_listings(cur)
+        _refresh_listing_city_summary(cur)
         db.commit()
     finally:
         db.close()
+
+
+def _archive_demo_listings(connection):
+    result = connection.execute(
+        """
+        UPDATE listings
+        SET status = 'archived', listing_status = 'removed'
+        WHERE status IN ('published', 'pending', 'draft')
+          AND (
+            source = 'seed'
+            OR user_id IN (
+                SELECT id FROM users WHERE LOWER(email) = 'demo@ua-dim.com'
+            )
+          )
+        """
+    )
+    affected = connection.rowcount if hasattr(connection, "rowcount") else result.rowcount
+    if affected:
+        app.logger.info("Archived %s demo listings; records retained", affected)
 
 
 def _seed_postgres(cur):
@@ -1302,7 +1323,7 @@ def _seed_postgres(cur):
                     floor,total_floors,year_built,e_oselya,images,description,latitude,longitude,
                     status,published_at,verified_owner,verified_phone,verified_docs,source,listing_type)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                           'published',{now},1,1,1,'seed',%s)""",
+                           'archived',{now},0,0,0,'seed',%s)""",
                 [(demo_id, *row, listing_type) for row in rows],
             )
 
@@ -1322,40 +1343,6 @@ def _seed_postgres(cur):
                 ("odesa-coast-build", "Odesa Coast Build", "developer", "Одеса", "Будинки та апартаменти біля моря", 1, 49, 18, 340),
             ],
         )
-
-    # Keep demo rows publicly visible and enriched, mirroring the SQLite branch.
-    cur.execute(
-        """
-        UPDATE listings
-        SET status = 'published',
-            published_at = COALESCE(published_at, created_at),
-            verified_owner = 1,
-            verified_phone = 1,
-            verified_docs = 1,
-            owner_verification_status = 'verified',
-            phone_verification_status = 'verified',
-            moderation_status = 'approved',
-            moderation_reason = NULL,
-            moderation_updated_at = COALESCE(moderation_updated_at, published_at, created_at),
-            source = COALESCE(NULLIF(source, ''), 'seed'),
-            agency_slug = CASE
-                WHEN city = 'Київ' THEN 'capital-alliance'
-                WHEN city = 'Львів' THEN 'lviv-home-experts'
-                WHEN city = 'Дніпро' THEN 'dnipro-urban-group'
-                WHEN city = 'Одеса' THEN 'odesa-coast-build'
-                ELSE agency_slug
-            END,
-            listing_status = CASE
-                WHEN id %% 4 = 0 THEN 'sold'
-                WHEN id %% 5 = 0 THEN 'removed'
-                ELSE 'active'
-            END,
-            has_photo_tour = CASE WHEN id %% 3 = 0 THEN 1 ELSE 0 END,
-            has_video_tour = CASE WHEN id %% 4 = 0 THEN 1 ELSE 0 END
-        WHERE user_id IN (SELECT id FROM users WHERE email = %s)
-        """,
-        ("demo@ua-dim.com",),
-    )
 
     _bootstrap_postgres_admin(cur)
 
@@ -3384,7 +3371,7 @@ def init_db():
                (user_id,title,city,district,property_type,condition_type,price,rooms,area,
                 floor,total_floors,year_built,e_oselya,images,description,latitude,longitude,
                 status,published_at,verified_owner,verified_phone,verified_docs,source,listing_type)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',{now_expr},1,1,1,'seed','sale')""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'archived',{now_expr},0,0,0,'seed','sale')""",
             [(demo_id, *row) for row in SEED_LISTINGS],
         )
         db.executemany(
@@ -3392,7 +3379,7 @@ def init_db():
                (user_id,title,city,district,property_type,condition_type,price,rooms,area,
                 floor,total_floors,year_built,e_oselya,images,description,latitude,longitude,
                 status,published_at,verified_owner,verified_phone,verified_docs,source,listing_type)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'published',{now_expr},1,1,1,'seed','rent')""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'archived',{now_expr},0,0,0,'seed','rent')""",
             [(demo_id, *row) for row in SEED_RENT_LISTINGS],
         )
         db.commit()
@@ -3413,39 +3400,8 @@ def init_db():
         )
         db.commit()
 
-    # Ensure seed/demo rows are publicly visible after migrations.
-    db.execute(
-        """
-        UPDATE listings
-        SET status = 'published',
-            published_at = COALESCE(published_at, created_at),
-            verified_owner = 1,
-            verified_phone = 1,
-            verified_docs = 1,
-            owner_verification_status = 'verified',
-            phone_verification_status = 'verified',
-            moderation_status = 'approved',
-            moderation_reason = NULL,
-            moderation_updated_at = COALESCE(moderation_updated_at, published_at, created_at),
-            source = COALESCE(NULLIF(source, ''), 'seed'),
-            agency_slug = CASE
-                WHEN city = 'Київ' THEN 'capital-alliance'
-                WHEN city = 'Львів' THEN 'lviv-home-experts'
-                WHEN city = 'Дніпро' THEN 'dnipro-urban-group'
-                WHEN city = 'Одеса' THEN 'odesa-coast-build'
-                ELSE agency_slug
-            END,
-            listing_status = CASE
-                WHEN id % 4 = 0 THEN 'sold'
-                WHEN id % 5 = 0 THEN 'removed'
-                ELSE 'active'
-            END,
-            has_photo_tour = CASE WHEN id % 3 = 0 THEN 1 ELSE 0 END,
-            has_video_tour = CASE WHEN id % 4 = 0 THEN 1 ELSE 0 END
-        WHERE user_id IN (SELECT id FROM users WHERE email = ?)
-        """,
-        ("demo@ua-dim.com",),
-    )
+    _archive_demo_listings(db)
+    _refresh_listing_city_summary(db)
     db.execute(
         """
         UPDATE agency_profiles
