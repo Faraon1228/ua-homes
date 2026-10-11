@@ -67,6 +67,18 @@ html:not(.seller-page) #hero-property-form {
   border-color: rgba(255, 255, 255, .65) !important;
 }
 
+#hero-offer-toggle > [role="group"] {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 380px) {
+  #hero-offer-toggle :is(button, a) {
+    padding-inline: 4px;
+    font-size: 12px;
+  }
+}
+
 html:not(.seller-page) .bg-slate-50,
 html:not(.seller-page) .bg-slate-100 {
   background-color: var(--ua-surface-alt) !important;

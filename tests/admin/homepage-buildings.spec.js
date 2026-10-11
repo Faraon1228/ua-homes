@@ -228,6 +228,19 @@ test("narrow mobile keeps the skyline aspect ratio and original layout", async (
   await page.setViewportSize({ width: 320, height: 568 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await openHomepage(page);
+  const offers = page.locator('#hero-offer-toggle > [role="group"]');
+  await expect(offers.locator("button, a")).toHaveCount(3);
+  const controls = await offers.locator("button, a").evaluateAll((elements) => elements.map((element) => ({
+    width: element.getBoundingClientRect().width,
+    height: element.getBoundingClientRect().height,
+    fits: element.scrollWidth <= element.clientWidth,
+  })));
+  for (const control of controls) {
+    expect(control.width).toBeGreaterThanOrEqual(44);
+    expect(control.height).toBeGreaterThanOrEqual(44);
+    expect(control.fits).toBe(true);
+  }
+  expect(Math.max(...controls.map((control) => control.width)) - Math.min(...controls.map((control) => control.width))).toBeLessThan(1);
   const geometry = await page.evaluate(() => {
     const selectors = ["header", '[data-role="homepage-hero"]', "#homepage-title", "#hero-property-form"];
     const measure = () => selectors.map((selector) =>
