@@ -1,4 +1,4 @@
-self.__UA_BUILD_ID = 'f6b077f41201';
+self.__UA_BUILD_ID = '3b1f100bd346';
 self.__UA_PRECACHE_ASSETS = [
   '/precache-manifest.js',
   '/',
@@ -9,7 +9,7 @@ self.__UA_PRECACHE_ASSETS = [
   '/real-estate-app.js',
   '/seller-app.js',
   '/ua-homes.css',
-  '/images/silver-silhouette.svg?v=perf-c54954a3d347',
+  '/images/silver-silhouette.svg?v=perf-2ab6315fb789',
   '/ua-dim-logo.svg?v=home-mark-1',
   '/premium-loader.js',
   '/marketplace-loader.js',

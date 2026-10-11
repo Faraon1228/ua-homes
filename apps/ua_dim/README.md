@@ -61,6 +61,17 @@ the native back JavaScript, but does not replace Android/iOS device validation.
 
 ## Commands
 
+Native WebView smoke check against production (read-only browsing; no login,
+publication or uploads):
+
+```bash
+flutter test integration_test/catalog_webview_test.dart -d <device-id>
+```
+
+This launches the real app and checks catalog layout, rental selection and reload,
+and seller navigation through the WebView controller. It does not replace physical
+touch, authenticated session, photo upload or push-notification checks.
+
 ```bash
 flutter pub get
 flutter analyze lib test
