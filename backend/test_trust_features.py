@@ -1637,6 +1637,20 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(db.execute("SELECT images FROM listings WHERE id = 1").fetchone()[0], concurrent_value)
         db.close()
 
+    def test_cloudinary_prefers_signed_uploads_over_unsigned_preset(self):
+        url = "cloudinary://key:secret@test-cloud"
+        with app_module.app.test_request_context():
+            app_module.g.user_id = self.owner_id
+            with mock.patch.multiple(app_module, S3_ENABLED=True, S3_BUCKET=None, CLOUDINARY_URL=url), \
+                    mock.patch.dict(os.environ, {"CLOUDINARY_UPLOAD_PRESET": "open_preset"}):
+                signed = app_module.generate_presigned_upload_url("photo.jpg", "image/jpeg")
+                self.assertEqual(signed["authType"], "signed")
+                self.assertNotIn("uploadPreset", signed)
+            with mock.patch.multiple(app_module, S3_ENABLED=True, S3_BUCKET=None, CLOUDINARY_URL="cloudinary://test-cloud"), \
+                    mock.patch.dict(os.environ, {"CLOUDINARY_UPLOAD_PRESET": "open_preset", "CLOUDINARY_API_KEY": "", "CLOUDINARY_API_SECRET": ""}):
+                fallback = app_module.generate_presigned_upload_url("photo.jpg", "image/jpeg")
+                self.assertEqual(fallback["authType"], "unsigned")
+
     def test_upload_signing_uses_epoch_time_and_private_s3_requires_delivery_url(self):
         with app_module.app.test_request_context():
             app_module.g.user_id = self.owner_id
