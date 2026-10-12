@@ -564,6 +564,16 @@ def delete_account():
         current_app.logger.exception("Account deletion failed user_id=%s", user_id)
         return jsonify(error="Не вдалося видалити акаунт. Спробуйте ще раз.", retryable=True), 500
 
+    # Catch uploads that landed between the first purge and the commit.
+    try:
+        late = app_mod.purge_user_media([], user_id)
+        if late:
+            current_app.logger.error(
+                "Account deletion late media sweep incomplete user_id=%s objects=%s", user_id, len(late)
+            )
+    except Exception:
+        current_app.logger.exception("Account deletion late media sweep crashed user_id=%s", user_id)
+
     app_mod.cache_delete_prefix("public:listings:")
     app_mod.cache_delete_prefix("admin:reports:")
     return jsonify(ok=True, deleted=True)

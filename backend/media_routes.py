@@ -48,7 +48,7 @@ def generate_presigned_upload_url(
     filename: str,
     content_type: str,
     resource_type: str = "image",
-    expires_in: int = 3600,
+    expires_in: int = 900,
 ) -> dict | None:
     """
     Generate Presigned URL for direct browser → S3 upload.

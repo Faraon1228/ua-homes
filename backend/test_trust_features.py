@@ -897,7 +897,8 @@ class TrustFeatureTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["deleted"])
-        purged_urls, purged_user = purge.call_args.args
+        purged_urls, purged_user = purge.call_args_list[0].args
+        self.assertEqual(purge.call_args_list[1].args, ([], user_id))
         self.assertEqual(purged_user, user_id)
         self.assertEqual(purged_urls, [f"https://cdn.example.test/listings/{user_id}/a/photo.jpg"])
         for sql in (
@@ -970,6 +971,15 @@ class TrustFeatureTests(unittest.TestCase):
             self.assertIn("s3:not-configured:listings/7/", media_routes.purge_user_media([s3_url], 7))
         with mock.patch.object(app_module, "CLOUDINARY_URL", ""), mock.patch.object(app_module, "S3_BUCKET", "b"), mock.patch.object(app_module, "S3_ACCESS_KEY", ""):
             self.assertIn("s3:not-configured:listings/7/", media_routes.purge_user_media([], 7))
+
+    def test_presigned_upload_urls_expire_within_fifteen_minutes(self):
+        with app_module.app.test_request_context():
+            app_module.g.user_id = self.owner_id
+            with mock.patch.multiple(
+                app_module, S3_ENABLED=True, S3_BUCKET=None, CLOUDINARY_URL="cloudinary://key:secret@test-cloud"
+            ):
+                signed = app_module.generate_presigned_upload_url("photo.jpg", "image/jpeg")
+        self.assertLessEqual(signed["expiresIn"], 900)
 
     def test_account_deletion_locks_account_during_purge_and_unlocks_on_failure(self):
         user_id, _listing_id, token = self._seed_deletable_account()
