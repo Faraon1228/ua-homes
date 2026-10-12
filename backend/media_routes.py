@@ -274,6 +274,72 @@ def cleanup_listing_media(media_urls: list[str], user_id: int) -> list[str]:
     return list(dict.fromkeys(failures))
 
 
+def purge_user_media(media_urls: list[str], user_id: int) -> list[str]:
+    """Remove every stored object owned by a user, including orphaned uploads.
+
+    Returns the identifiers that could not be deleted so callers can report the
+    failure instead of claiming a clean removal.
+    """
+    app_module = _get_app_module()
+    failures = list(cleanup_listing_media(media_urls, user_id))
+    prefix = f"listings/{int(user_id)}/"
+
+    cloudinary_url = getattr(app_module, "CLOUDINARY_URL", "")
+    if not cloudinary_url:
+        for media_url in media_urls:
+            try:
+                parsed = urlsplit(str(media_url or "").strip())
+            except ValueError:
+                continue
+            if parsed.hostname == "res.cloudinary.com" and f"/{prefix}" in parsed.path:
+                failures.append(str(media_url))
+
+    s3_bucket = getattr(app_module, "S3_BUCKET", "")
+    s3_access_key = getattr(app_module, "S3_ACCESS_KEY", "")
+    s3_secret_key = getattr(app_module, "S3_SECRET_KEY", "")
+    if s3_bucket and s3_access_key and s3_secret_key:
+        try:
+            import boto3
+            from botocore.config import Config
+
+            s3 = boto3.client(
+                "s3",
+                region_name=getattr(app_module, "S3_REGION", "eu-north-1"),
+                aws_access_key_id=s3_access_key,
+                aws_secret_access_key=s3_secret_key,
+                endpoint_url=getattr(app_module, "S3_ENDPOINT", None),
+                config=Config(signature_version="s3v4"),
+            )
+            for page in s3.get_paginator("list_objects_v2").paginate(Bucket=s3_bucket, Prefix=prefix):
+                keys = [{"Key": item["Key"]} for item in page.get("Contents", [])]
+                if not keys:
+                    continue
+                result = s3.delete_objects(Bucket=s3_bucket, Delete={"Objects": keys, "Quiet": True})
+                failures.extend(str(item.get("Key") or "s3") for item in result.get("Errors", []))
+        except Exception:
+            failures.append(f"s3:{prefix}")
+
+    if cloudinary_url:
+        try:
+            import cloudinary
+            import cloudinary.api
+
+            cloudinary.config(secure=True)
+            for resource_type in ("image", "video"):
+                for _ in range(50):
+                    result = cloudinary.api.delete_resources_by_prefix(
+                        prefix, resource_type=resource_type, invalidate=True
+                    )
+                    if not result.get("partial"):
+                        break
+                else:
+                    failures.append(f"cloudinary:{resource_type}:{prefix}")
+        except Exception:
+            failures.append(f"cloudinary:{prefix}")
+
+    return list(dict.fromkeys(failures))
+
+
 def _image_optimization_metadata(original_size: int, optimized_total: int) -> dict:
     compression_ratio = round((1 - optimized_total / (original_size * 3)) * 100)
     return {

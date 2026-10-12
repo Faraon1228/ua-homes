@@ -9,6 +9,7 @@ const OFFLINE_ASSETS = [
   '/vendor/react-dom.production.min.js',
   '/ua-homes-manifest.json',
   '/privacy.html',
+  '/delete-account.html',
   '/terms.html',
   '/cookie-policy.html',
   '/privacy-consent.css',

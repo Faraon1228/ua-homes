@@ -63,6 +63,7 @@ class TrustFeatureTests(unittest.TestCase):
             db.execute("PRAGMA foreign_keys=ON")
             for table in (
                 "admin_audit_log",
+                "account_deletion_log",
                 "client_observability_events",
                 "lead_funnel_events",
                 "lead_requests",
@@ -821,6 +822,149 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertNotIn("Demo Credentials:", login_html)
         self.assertNotIn("handleRegister", login_html)
         self.assertNotIn("/auth/register", login_html)
+
+    def _seed_deletable_account(self):
+        password_hash = bcrypt.hashpw(b"correct-password", bcrypt.gensalt(rounds=4)).decode()
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute("PRAGMA foreign_keys=ON")
+            user_id = self._insert_user(db, "Leaver", "leaver@example.test", "owner")
+            db.execute("UPDATE users SET password = ?, password_hash = ? WHERE id = ?", (password_hash, password_hash, user_id))
+            listing_id = self._insert_listing(db, user_id, title="Leaver flat", price=90_000, area=40, status="published")
+            media = f"https://cdn.example.test/listings/{user_id}/a/photo.jpg"
+            db.execute("UPDATE listings SET images = ? WHERE id = ?", (json.dumps([media]), listing_id))
+            db.execute("INSERT INTO listing_images (listing_id, image_url) VALUES (?, ?)", (listing_id, media))
+            db.execute("INSERT INTO push_devices (user_id, token, platform) VALUES (?, 'tok', 'ios')", (user_id,))
+            db.execute("INSERT INTO user_favorites (user_id, listing_id) VALUES (?, ?)", (user_id, self.target_id))
+            db.execute(
+                "INSERT INTO listing_alerts (user_id, email, filters) VALUES (?, 'leaver@example.test', '{}')",
+                (user_id,),
+            )
+            db.execute(
+                "INSERT INTO listing_alerts (user_id, email, filters) VALUES (NULL, 'Leaver@Example.test', '{}')"
+            )
+            db.execute(
+                "INSERT INTO reviews (listing_id, user_id, user_name, rating, comment) VALUES (?, ?, 'Leaver', 5, 'ok')",
+                (self.target_id, user_id),
+            )
+            db.execute(
+                "INSERT INTO lead_requests (lead_type, source, name, phone, email, message, requester_user_id)"
+                " VALUES ('listing', 't', 'Leaver', '+380000000', 'leaver@example.test', 'hi', ?)",
+                (user_id,),
+            )
+            db.execute(
+                "INSERT INTO lead_requests (lead_type, source, name, phone, listing_id, response_message)"
+                " VALUES ('listing', 't', 'Buyer', '+380111111', ?, 'call me on +380999')",
+                (listing_id,),
+            )
+            db.execute(
+                "INSERT INTO premium_orders (order_id, plan_id, amount, status, user_id) VALUES ('ord-1', 'standard', 10, 'paid', ?)",
+                (user_id,),
+            )
+            db.execute(
+                "INSERT INTO listing_reports (listing_id, reporter_user_id, reporter_fingerprint, reason_code, details, idempotency_key)"
+                " VALUES (?, ?, 'fp', 'spam', 'x', 'k1')",
+                (self.target_id, user_id),
+            )
+            db.commit()
+        return user_id, listing_id, app_module.make_token(user_id, "leaver@example.test")
+
+    def _count(self, sql, *params):
+        with sqlite3.connect(TEST_DB) as db:
+            return db.execute(sql, params).fetchone()[0]
+
+    def test_account_deletion_requires_confirmation_password_and_owner_role(self):
+        user_id, listing_id, token = self._seed_deletable_account()
+        headers = self._auth(token)
+        self.assertEqual(self.client.post("/api/auth/delete-account", json={"password": "correct-password"}, headers=headers).status_code, 422)
+        wrong = self.client.post("/api/auth/delete-account", json={"password": "nope", "confirm": True}, headers=headers)
+        self.assertEqual(wrong.status_code, 403)
+        self.assertEqual(self.client.post("/api/auth/delete-account", json={"confirm": True}).status_code, 401)
+        staff = self.client.post(
+            "/api/auth/delete-account", json={"password": "hash", "confirm": True}, headers=self._auth(self.admin_token)
+        )
+        self.assertEqual(staff.status_code, 403)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ?", user_id), 1)
+        self.assertEqual(self._count("SELECT status FROM listings WHERE id = ?", listing_id) and 1, 1)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM listings WHERE id = ? AND status = 'published'", listing_id), 1)
+
+    def test_account_deletion_removes_data_media_and_leaves_anonymous_log(self):
+        user_id, listing_id, token = self._seed_deletable_account()
+        with mock.patch.object(app_module, "purge_user_media", return_value=[]) as purge:
+            response = self.client.post(
+                "/api/auth/delete-account",
+                json={"password": "correct-password", "confirm": True},
+                headers=self._auth(token),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["deleted"])
+        purged_urls, purged_user = purge.call_args.args
+        self.assertEqual(purged_user, user_id)
+        self.assertEqual(purged_urls, [f"https://cdn.example.test/listings/{user_id}/a/photo.jpg"])
+        for sql in (
+            "SELECT COUNT(*) FROM users WHERE id = ?",
+            "SELECT COUNT(*) FROM listings WHERE user_id = ?",
+            "SELECT COUNT(*) FROM push_devices WHERE user_id = ?",
+            "SELECT COUNT(*) FROM user_favorites WHERE user_id = ?",
+            "SELECT COUNT(*) FROM reviews WHERE user_id = ?",
+            "SELECT COUNT(*) FROM listing_alerts WHERE user_id = ?",
+            "SELECT COUNT(*) FROM premium_orders WHERE user_id = ?",
+            "SELECT COUNT(*) FROM listing_reports WHERE reporter_user_id = ?",
+            "SELECT COUNT(*) FROM lead_requests WHERE requester_user_id = ?",
+        ):
+            self.assertEqual(self._count(sql, user_id), 0, sql)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM listing_images WHERE listing_id = ?", listing_id), 0)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM listing_alerts WHERE LOWER(email) = 'leaver@example.test'"), 0)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM lead_requests WHERE email = 'leaver@example.test' OR phone = '+380000000'"), 0)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM lead_requests WHERE name = 'Видалений користувач'"), 1)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM lead_requests WHERE response_message IS NOT NULL"), 0)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM premium_orders WHERE order_id = 'ord-1'"), 1)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM listing_reports WHERE reporter_fingerprint = 'deleted-account'"), 1)
+        with sqlite3.connect(TEST_DB) as db:
+            log = db.execute("SELECT account_type, listings_removed FROM account_deletion_log").fetchall()
+        self.assertEqual(log, [("owner", 1)])
+        self.assertEqual(self.client.get(f"/api/listings/{listing_id}").status_code, 404)
+        old_session = self.client.get("/api/auth/me", headers=self._auth(token))
+        self.assertEqual(old_session.status_code, 401)
+        login = self.client.post("/api/auth/login", json={"email": "leaver@example.test", "password": "correct-password"})
+        self.assertEqual(login.status_code, 401)
+
+    def test_account_deletion_media_failure_is_honest_and_retryable(self):
+        user_id, listing_id, token = self._seed_deletable_account()
+        body = {"password": "correct-password", "confirm": True}
+        with mock.patch.object(app_module, "purge_user_media", return_value=["listings/x"]):
+            failed = self.client.post("/api/auth/delete-account", json=body, headers=self._auth(token))
+        self.assertEqual(failed.status_code, 502)
+        self.assertTrue(failed.get_json()["retryable"])
+        self.assertEqual(failed.get_json()["media_cleanup_pending"], 1)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ?", user_id), 1)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM listings WHERE id = ? AND status = 'archived'", listing_id), 1)
+        self.assertEqual(self.client.get(f"/api/listings/{listing_id}").status_code, 404)
+        with mock.patch.object(app_module, "purge_user_media", return_value=[]):
+            retried = self.client.post("/api/auth/delete-account", json=body, headers=self._auth(token))
+        self.assertEqual(retried.status_code, 200)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ?", user_id), 0)
+
+    def test_account_deletion_blocked_while_payment_processing(self):
+        user_id, _listing_id, token = self._seed_deletable_account()
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute("UPDATE premium_orders SET status = 'processing' WHERE user_id = ?", (user_id,))
+            db.commit()
+        with mock.patch.object(app_module, "purge_user_media", return_value=[]) as purge:
+            response = self.client.post(
+                "/api/auth/delete-account",
+                json={"password": "correct-password", "confirm": True},
+                headers=self._auth(token),
+            )
+        self.assertEqual(response.status_code, 409)
+        purge.assert_not_called()
+        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ?", user_id), 1)
+
+    def test_purge_user_media_reports_unconfigured_cloudinary_assets(self):
+        media_routes = importlib.import_module("media_routes")
+        url = "https://res.cloudinary.com/demo/image/upload/v1/listings/7/a/photo.jpg"
+        with mock.patch.object(app_module, "CLOUDINARY_URL", ""), mock.patch.object(app_module, "S3_BUCKET", ""):
+            self.assertEqual(media_routes.purge_user_media([url], 7), [url])
+            self.assertEqual(media_routes.purge_user_media([], 7), [])
 
     def test_seller_moderation_then_verified_fast_publish_and_delete(self):
         with sqlite3.connect(TEST_DB) as db:
@@ -3953,6 +4097,7 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         sitemap = response.get_data(as_text=True)
         self.assertIn("/privacy.html</loc>", sitemap)
+        self.assertIn("/delete-account.html</loc>", sitemap)
         self.assertIn("/terms.html</loc>", sitemap)
         self.assertIn("/cookie-policy.html</loc>", sitemap)
 

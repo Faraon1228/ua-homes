@@ -31,6 +31,9 @@ const LazyListingsMapView = React.lazy(() =>
   import("./features/ListingsMapView.jsx")
 );
 const LazyTrustDialog = React.lazy(() => import("./features/TrustDialog.jsx"));
+const LazyDeleteAccountDialog = React.lazy(() =>
+  import("./features/DeleteAccountDialog.jsx")
+);
 
 class RootErrorBoundary extends React.Component {
   constructor(props) {
@@ -1799,6 +1802,7 @@ export default function RealEstateApp() {
   const catalogRequestRef = useRef(null);
   if (!catalogRequestRef.current) catalogRequestRef.current = createLatestRequest();
   const [trustListing, setTrustListing] = useState(null);
+  const [showDeleteAccount, setShowDeleteAccount] = useState(false);
   const [pwaInstallPrompt, setPwaInstallPrompt] = useState(null);
   const [pwaInstallDismissed, setPwaInstallDismissed] = useState(() => hasActivePwaDismissal());
   const [pwaHiddenForSession, setPwaHiddenForSession] = useState(
@@ -1842,6 +1846,33 @@ export default function RealEstateApp() {
         fallback={<p role="status" className="fixed inset-x-4 bottom-4 z-[120] rounded-2xl bg-white p-4 text-center font-bold shadow-xl">Завантажуємо дані довіри…</p>}
       >
         <LazyTrustDialog property={trustListing} authToken={authToken} onClose={closeTrustDialog} />
+      </React.Suspense>
+    </LazyFeatureBoundary>
+  ) : null;
+
+  const closeDeleteAccount = () => setShowDeleteAccount(false);
+  const deleteAccountDialog = showDeleteAccount ? (
+    <LazyFeatureBoundary
+      resetKey="delete-account"
+      fallback={(
+        <div role="alert" className="fixed inset-x-4 bottom-4 z-[120] rounded-2xl bg-white p-4 text-center font-bold shadow-xl">
+          Не вдалося відкрити видалення акаунта. Напишіть нам через сторінку /delete-account.html.
+          <button type="button" onClick={closeDeleteAccount} className="ml-3 underline">Закрити</button>
+        </div>
+      )}
+    >
+      <React.Suspense
+        fallback={<p role="status" className="fixed inset-x-4 bottom-4 z-[120] rounded-2xl bg-white p-4 text-center font-bold shadow-xl">Завантажуємо…</p>}
+      >
+        <LazyDeleteAccountDialog
+          authToken={authToken}
+          onClose={closeDeleteAccount}
+          onDeleted={() => {
+            setShowDeleteAccount(false);
+            logoutProfile();
+            setAuthSuccess("Акаунт видалено");
+          }}
+        />
       </React.Suspense>
     </LazyFeatureBoundary>
   ) : null;
@@ -4116,6 +4147,13 @@ export default function RealEstateApp() {
                         >
                           Вийти
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowDeleteAccount(true)}
+                          className="inline-flex min-h-11 items-center justify-center rounded-xl px-4 text-xs font-bold text-rose-700 transition hover:bg-rose-50"
+                        >
+                          Видалити акаунт
+                        </button>
                       </div>
                     </div>
                   </details>
@@ -5290,6 +5328,7 @@ export default function RealEstateApp() {
       ) : null}
 
       {trustDialog}
+      {deleteAccountDialog}
 
       {planLimitPrompt ? (
         <div

@@ -415,3 +415,141 @@ def verify_phone():
     )
     db.commit()
     return jsonify(ok=True, phone_verified=True)
+
+
+def _collect_account_media(db, user_id: int) -> list[str]:
+    import json
+
+    urls: list[str] = []
+    for row in db.execute("SELECT images, videos FROM listings WHERE user_id = ?", (user_id,)).fetchall():
+        for column in ("images", "videos"):
+            try:
+                urls.extend(str(url) for url in json.loads(row[column] or "[]"))
+            except (TypeError, ValueError):
+                continue
+    urls.extend(
+        str(row["image_url"])
+        for row in db.execute(
+            "SELECT li.image_url FROM listing_images li JOIN listings l ON l.id = li.listing_id WHERE l.user_id = ?",
+            (user_id,),
+        ).fetchall()
+    )
+    return list(dict.fromkeys(urls))
+
+
+@auth_bp.route("/delete-account", methods=["POST"])
+@require_auth
+@limiter.limit("5 per hour")
+def delete_account():
+    """Permanently delete the caller's account, listings, media and personal data.
+
+    Media is purged before any row is deleted, so a storage failure leaves the
+    account intact (listings already unpublished) and the request can be retried.
+    """
+    app_mod = _get_app_module()
+    data = request.get_json(silent=True) or {}
+    password = app_mod.strip(data.get("password"), 128)
+    if data.get("confirm") is not True:
+        return jsonify(error="Підтвердіть остаточне видалення акаунта"), 422
+
+    db = app_mod.get_db()
+    user = db.execute(
+        "SELECT id, email, role, account_type, password, password_hash FROM users WHERE id = ?",
+        (g.user_id,),
+    ).fetchone()
+    if not user:
+        return jsonify(error="Користувача не знайдено"), 404
+    if user["role"] != "user":
+        return jsonify(error="Службовий акаунт видаляється лише адміністратором платформи"), 403
+    stored = user["password_hash"] or user["password"]
+    if not password or not app_mod._password_matches(password, stored):
+        # 403, not 401: a wrong password must not look like an expired session.
+        return jsonify(error="Невірний пароль"), 403
+    if db.execute(
+        "SELECT 1 FROM premium_orders WHERE user_id = ? AND status IN ('processing', 'reversing')",
+        (g.user_id,),
+    ).fetchone():
+        return jsonify(error="Платіж ще обробляється. Спробуйте видалити акаунт пізніше."), 409
+
+    user_id = int(user["id"])
+    email = str(user["email"] or "").strip().lower()
+    media_urls = _collect_account_media(db, user_id)
+
+    # Step 1: take everything off the public site right away.
+    db.execute(
+        "UPDATE listings SET status = 'archived', listing_status = 'removed' WHERE user_id = ?",
+        (user_id,),
+    )
+    db.commit()
+    app_mod.cache_delete_prefix("public:listings:")
+
+    # Step 2: delete stored files; any failure aborts before data is destroyed.
+    failures = app_mod.purge_user_media(media_urls, user_id)
+    if failures:
+        current_app.logger.error(
+            "Account deletion media cleanup failed user_id=%s objects=%s", user_id, len(failures)
+        )
+        return jsonify(
+            error="Не вдалося видалити всі фото й відео. Акаунт не видалено, оголошення вже знято з публікації. Спробуйте ще раз.",
+            media_cleanup_pending=len(failures),
+            retryable=True,
+        ), 502
+
+    # Step 3: one transaction removes the account and scrubs personal data.
+    try:
+        listings_removed = db.execute(
+            "SELECT COUNT(*) AS n FROM listings WHERE user_id = ?", (user_id,)
+        ).fetchone()["n"]
+        open_reports = db.execute(
+            "SELECT COUNT(*) AS n FROM listing_reports r JOIN listings l ON l.id = r.listing_id"
+            " WHERE l.user_id = ? AND r.status = 'pending'",
+            (user_id,),
+        ).fetchone()["n"]
+        db.execute(
+            "DELETE FROM alert_delivery_receipts WHERE alert_id IN ("
+            "SELECT id FROM listing_alerts WHERE user_id = ? OR LOWER(email) = ?)",
+            (user_id, email),
+        )
+        db.execute("DELETE FROM listing_alerts WHERE user_id = ? OR LOWER(email) = ?", (user_id, email))
+        db.execute("DELETE FROM push_devices WHERE user_id = ?", (user_id,))
+        db.execute("DELETE FROM user_favorites WHERE user_id = ?", (user_id,))
+        db.execute("DELETE FROM reviews WHERE user_id = ?", (user_id,))
+        db.execute(
+            "UPDATE lead_requests SET name = 'Видалений користувач', phone = NULL, email = NULL,"
+            " message = NULL, response_message = NULL, session_id = NULL, requester_user_id = NULL"
+            " WHERE requester_user_id = ? OR LOWER(email) = ?",
+            (user_id, email),
+        )
+        db.execute(
+            "UPDATE lead_requests SET response_message = NULL WHERE listing_id IN ("
+            "SELECT id FROM listings WHERE user_id = ?)",
+            (user_id,),
+        )
+        db.execute(
+            "UPDATE listing_reports SET reporter_user_id = NULL, reporter_fingerprint = 'deleted-account'"
+            " WHERE reporter_user_id = ?",
+            (user_id,),
+        )
+        db.execute("UPDATE premium_orders SET user_id = NULL WHERE user_id = ?", (user_id,))
+        db.execute(
+            "DELETE FROM listing_images WHERE listing_id IN (SELECT id FROM listings WHERE user_id = ?)",
+            (user_id,),
+        )
+        db.execute("DELETE FROM listings WHERE user_id = ?", (user_id,))
+        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        db.execute(
+            "INSERT INTO account_deletion_log (account_type, listings_removed, open_reports)"
+            " VALUES (?, ?, ?)",
+            (user["account_type"] or "owner", int(listings_removed), int(open_reports)),
+        )
+        app_mod._refresh_listing_city_summary(db)
+        app_mod._refresh_user_growth_summary(db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        current_app.logger.exception("Account deletion failed user_id=%s", user_id)
+        return jsonify(error="Не вдалося видалити акаунт. Спробуйте ще раз.", retryable=True), 500
+
+    app_mod.cache_delete_prefix("public:listings:")
+    app_mod.cache_delete_prefix("admin:reports:")
+    return jsonify(ok=True, deleted=True)
