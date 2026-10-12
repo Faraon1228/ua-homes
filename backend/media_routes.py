@@ -144,7 +144,8 @@ def generate_presigned_upload_url(
             public_id = f"listings/{user_id}/{unique_id}/{safe_stem}"
             upload_url = f"https://api.cloudinary.com/v1_1/{cloud_name}/{resource_type}/upload"
 
-            if upload_preset:
+            # Signed uploads are rejected by Cloudinary after ~1h; unsigned presets never expire.
+            if upload_preset and not (api_key and api_secret):
                 print(f"[Cloudinary] Using UNSIGNED upload preset: {upload_preset}")
                 return {
                     "uploadUrl": upload_url,
