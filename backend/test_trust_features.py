@@ -3630,6 +3630,41 @@ class TrustFeatureTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(row[0], "code must be persisted in dev mode")
 
+    def test_phone_change_resets_verification_and_code_is_verified_once(self):
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute("UPDATE users SET phone='+380501111111', phone_verified=1 WHERE id=?", (self.owner_id,))
+            db.commit()
+        with mock.patch.object(app_module, "_production_secret_required", return_value=False):
+            same = self.client.post("/api/auth/send-phone-code", json={"phone": "+380501111111"}, headers=self._auth(self.owner_token))
+            self.assertEqual(same.status_code, 200)
+            with sqlite3.connect(TEST_DB) as db:
+                self.assertEqual(db.execute("SELECT phone_verified FROM users WHERE id=?", (self.owner_id,)).fetchone()[0], 1)
+            resp = self.client.post("/api/auth/send-phone-code", json={"phone": "+380502222222"}, headers=self._auth(self.owner_token))
+        code = resp.get_json()["dev_code"]
+        with sqlite3.connect(TEST_DB) as db:
+            row = db.execute("SELECT phone, phone_verified, phone_verify_code FROM users WHERE id=?", (self.owner_id,)).fetchone()
+        self.assertEqual((row[0], row[1]), ("+380502222222", 0))
+        self.assertNotEqual(row[2], code, "code must not be stored in plaintext")
+        bad = self.client.post("/api/auth/verify-phone", json={"code": "000000" if code != "000000" else "111111"}, headers=self._auth(self.owner_token))
+        self.assertEqual(bad.status_code, 400)
+        ok = self.client.post("/api/auth/verify-phone", json={"code": code}, headers=self._auth(self.owner_token))
+        self.assertEqual(ok.status_code, 200)
+        again = self.client.post("/api/auth/verify-phone", json={"code": code}, headers=self._auth(self.owner_token))
+        self.assertEqual(again.status_code, 400)
+        with sqlite3.connect(TEST_DB) as db:
+            self.assertEqual(db.execute("SELECT phone_verified FROM users WHERE id=?", (self.owner_id,)).fetchone()[0], 1)
+
+    def test_verify_phone_rejects_expired_code(self):
+        with mock.patch.object(app_module, "_production_secret_required", return_value=False):
+            code = self.client.post("/api/auth/send-phone-code", json={"phone": "+380503333333"}, headers=self._auth(self.owner_token)).get_json()["dev_code"]
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute("UPDATE users SET phone_verify_expires='2000-01-01T00:00:00' WHERE id=?", (self.owner_id,))
+            db.commit()
+        resp = self.client.post("/api/auth/verify-phone", json={"code": code}, headers=self._auth(self.owner_token))
+        self.assertEqual(resp.status_code, 400)
+        with sqlite3.connect(TEST_DB) as db:
+            self.assertEqual(db.execute("SELECT phone_verified FROM users WHERE id=?", (self.owner_id,)).fetchone()[0], 0)
+
     def test_send_phone_code_no_twilio_production_returns_503_no_storage(self):
         """In production without Twilio, 503 is returned and no code is stored."""
         with sqlite3.connect(TEST_DB) as db:

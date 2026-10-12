@@ -344,9 +344,18 @@ def reset_password():
     return jsonify(ok=True)
 
 
+def _phone_code_hash(user_id, code):
+    return hashlib.sha256(f"phone:{user_id}:{code}".encode()).hexdigest()
+
+
+def _user_rate_key():
+    return f"user:{g.user_id}"
+
+
 @auth_bp.route("/send-phone-code", methods=["POST"])
 @require_auth
 @limiter.limit("5 per hour")
+@limiter.limit("5 per hour", key_func=_user_rate_key)
 def send_phone_code():
     app_mod = _get_app_module()
     data = request.get_json(silent=True) or {}
@@ -378,9 +387,11 @@ def send_phone_code():
     # Only persist the code after a confirmed send (True) or in dev with no provider (None, non-prod).
     expires = (datetime.datetime.utcnow() + datetime.timedelta(minutes=10)).isoformat()
     db = app_mod.get_db()
+    current = db.execute("SELECT phone, phone_verified FROM users WHERE id=?", (g.user_id,)).fetchone()
+    keep_verified = bool(current and current["phone_verified"] and current["phone"] == phone)
     db.execute(
-        "UPDATE users SET phone=?, phone_verify_code=?, phone_verify_expires=? WHERE id=?",
-        (phone, code, expires, g.user_id),
+        "UPDATE users SET phone=?, phone_verified=?, phone_verify_code=?, phone_verify_expires=? WHERE id=?",
+        (phone, 1 if keep_verified else 0, _phone_code_hash(g.user_id, code), expires, g.user_id),
     )
     db.commit()
 
@@ -392,6 +403,7 @@ def send_phone_code():
 @auth_bp.route("/verify-phone", methods=["POST"])
 @require_auth
 @limiter.limit("10 per hour")
+@limiter.limit("10 per hour", key_func=_user_rate_key)
 def verify_phone():
     app_mod = _get_app_module()
     data = request.get_json(silent=True) or {}
@@ -402,7 +414,8 @@ def verify_phone():
     row = db.execute(
         "SELECT phone_verify_code, phone_verify_expires FROM users WHERE id=?", (g.user_id,)
     ).fetchone()
-    if not row or row["phone_verify_code"] != code:
+    stored = row["phone_verify_code"] if row else None
+    if not stored or not secrets.compare_digest(stored, _phone_code_hash(g.user_id, code)):
         return jsonify(error="Невірний код"), 400
     try:
         if datetime.datetime.fromisoformat(row["phone_verify_expires"] or "") < datetime.datetime.utcnow():
