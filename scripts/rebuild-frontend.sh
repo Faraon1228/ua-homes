@@ -189,7 +189,7 @@ BUILD_ID=$(
       "$WEB_DIR/real-estate-demo.html" "$WEB_DIR/ua-homes-manifest.json" \
       "$WEB_DIR/images/silver-silhouette.svg" \
       "$WEB_DIR/ua-dim-logo.svg" \
-      "$WEB_DIR/privacy.html" "$WEB_DIR/terms.html" "$WEB_DIR/cookie-policy.html" \
+      "$WEB_DIR/privacy.html" "$WEB_DIR/terms.html" "$WEB_DIR/cookie-policy.html" "$WEB_DIR/delete-account.html" \
       "$WEB_DIR/privacy-consent.css" "$WEB_DIR/privacy-consent.js" \
       "$WEB_DIR/premium-loader.js" "$WEB_DIR/marketplace-loader.js" \
       "$WEB_DIR/launch.html" "$WEB_DIR/launch.js" \

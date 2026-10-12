@@ -1584,6 +1584,7 @@ def sitemap_xml():
     items = [
         f"<url><loc>{mod.public_app_url()}</loc></url>",
         f"<url><loc>{base}/privacy.html</loc></url>",
+        f"<url><loc>{base}/delete-account.html</loc></url>",
         f"<url><loc>{base}/terms.html</loc></url>",
         f"<url><loc>{base}/cookie-policy.html</loc></url>",
     ]

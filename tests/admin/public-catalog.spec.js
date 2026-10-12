@@ -355,6 +355,52 @@ test("seller dashboard shows a red logout action next to catalog navigation", as
     .toEqual({ token: null, user: null });
 });
 
+test("seller can delete the account with password, retry after storage failure and is logged out", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("uaDim.authToken", "seller-token");
+    localStorage.setItem(
+      "uaDim.currentUser",
+      JSON.stringify({ id: 7, name: "Продавець", email: "seller@example.test", account_type: "owner" }),
+    );
+  });
+  const json = (route, body, status = 200) =>
+    route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+  await page.route("**/api/auth/me", (route) =>
+    json(route, { user: { id: 7, name: "Продавець", email: "seller@example.test", account_type: "owner" } }),
+  );
+  await page.route("**/api/inquiries", (route) => json(route, { inquiries: [] }));
+  await page.route("**/api/listings?*", (route) => json(route, { listings: [], total: 0, has_more: false }));
+  const attempts = [];
+  await page.route("**/api/auth/delete-account", (route) => {
+    attempts.push(route.request().postDataJSON());
+    if (attempts.length === 1) {
+      return json(route, { error: "Не вдалося видалити медіафайли.", retryable: true }, 502);
+    }
+    return json(route, { ok: true, deleted: true });
+  });
+
+  await page.goto("/real-estate-demo.html?seller=1");
+  await page.locator("details", { hasText: "Профіль і тариф" }).locator("summary").click();
+  await page.getByRole("button", { name: "Видалити акаунт" }).click();
+  const dialog = page.getByRole("dialog", { name: "Видалити акаунт" });
+  const submit = dialog.getByRole("button", { name: "Видалити назавжди" });
+  await expect(submit).toBeDisabled();
+  await dialog.getByLabel("Пароль для підтвердження").fill("secret-pass");
+  await dialog.getByRole("checkbox").check();
+  await submit.click();
+  await expect(dialog.getByRole("alert")).toContainText("ще не видалено повністю");
+  expect(await page.evaluate(() => localStorage.getItem("uaDim.authToken"))).toBe("seller-token");
+  await dialog.getByRole("button", { name: "Повторити видалення" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(attempts).toEqual([
+    { password: "secret-pass", confirm: true },
+    { password: "secret-pass", confirm: true },
+  ]);
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("uaDim.authToken")))
+    .toBeNull();
+});
+
 test("seller edits stored photos as previews without exposing Cloudinary URLs", async ({ page }) => {
   const firstPhoto = "https://res.cloudinary.com/ua-dim/image/upload/v1/listings/first.jpg";
   const secondPhoto = "https://res.cloudinary.com/ua-dim/image/upload/v1/listings/second.jpg";

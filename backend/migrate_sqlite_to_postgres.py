@@ -41,6 +41,7 @@ TABLE_ORDER = [
     "listing_reports",
     "listing_change_history",
     "admin_audit_log",
+    "account_deletion_log",
 ]
 
 
