@@ -473,19 +473,31 @@ def delete_account():
 
     user_id = int(user["id"])
     email = str(user["email"] or "").strip().lower()
-    media_urls = _collect_account_media(db, user_id)
 
-    # Step 1: take everything off the public site right away.
+    # Step 1: take everything off the public site and lock the account so no
+    # new listings or uploads can appear while media is being collected/purged.
     db.execute(
         "UPDATE listings SET status = 'archived', listing_status = 'removed' WHERE user_id = ?",
         (user_id,),
     )
+    db.execute("UPDATE users SET status = 'deleting' WHERE id = ?", (user_id,))
     db.commit()
+    media_urls = _collect_account_media(db, user_id)
+
+    def _unlock_account():
+        db.execute("UPDATE users SET status = 'active' WHERE id = ? AND status = 'deleting'", (user_id,))
+        db.commit()
+
     app_mod.cache_delete_prefix("public:listings:")
 
     # Step 2: delete stored files; any failure aborts before data is destroyed.
-    failures = app_mod.purge_user_media(media_urls, user_id)
+    try:
+        failures = app_mod.purge_user_media(media_urls, user_id)
+    except Exception:
+        current_app.logger.exception("Account deletion media purge crashed user_id=%s", user_id)
+        failures = ["purge-error"]
     if failures:
+        _unlock_account()
         current_app.logger.error(
             "Account deletion media cleanup failed user_id=%s objects=%s", user_id, len(failures)
         )
@@ -526,7 +538,8 @@ def delete_account():
             (user_id,),
         )
         db.execute(
-            "UPDATE listing_reports SET reporter_user_id = NULL, reporter_fingerprint = 'deleted-account'"
+            "UPDATE listing_reports SET reporter_user_id = NULL, reporter_fingerprint = 'deleted-account',"
+            " details = '[removed]', idempotency_key = 'deleted-' || id"
             " WHERE reporter_user_id = ?",
             (user_id,),
         )
@@ -547,6 +560,7 @@ def delete_account():
         db.commit()
     except Exception:
         db.rollback()
+        _unlock_account()
         current_app.logger.exception("Account deletion failed user_id=%s", user_id)
         return jsonify(error="Не вдалося видалити акаунт. Спробуйте ще раз.", retryable=True), 500
 

@@ -297,7 +297,18 @@ def purge_user_media(media_urls: list[str], user_id: int) -> list[str]:
     s3_bucket = getattr(app_module, "S3_BUCKET", "")
     s3_access_key = getattr(app_module, "S3_ACCESS_KEY", "")
     s3_secret_key = getattr(app_module, "S3_SECRET_KEY", "")
-    if s3_bucket and s3_access_key and s3_secret_key:
+    s3_configured = bool(s3_bucket and s3_access_key and s3_secret_key)
+    owns_non_cloudinary_media = False
+    for media_url in media_urls:
+        try:
+            hostname = urlsplit(str(media_url or "").strip()).hostname
+        except ValueError:
+            hostname = None
+        if hostname and hostname != "res.cloudinary.com":
+            owns_non_cloudinary_media = True
+    if not s3_configured and (s3_bucket or s3_access_key or s3_secret_key or owns_non_cloudinary_media):
+        failures.append(f"s3:not-configured:{prefix}")
+    if s3_configured:
         try:
             import boto3
             from botocore.config import Config

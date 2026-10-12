@@ -918,7 +918,7 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(self._count("SELECT COUNT(*) FROM lead_requests WHERE name = 'Видалений користувач'"), 1)
         self.assertEqual(self._count("SELECT COUNT(*) FROM lead_requests WHERE response_message IS NOT NULL"), 0)
         self.assertEqual(self._count("SELECT COUNT(*) FROM premium_orders WHERE order_id = 'ord-1'"), 1)
-        self.assertEqual(self._count("SELECT COUNT(*) FROM listing_reports WHERE reporter_fingerprint = 'deleted-account'"), 1)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM listing_reports WHERE reporter_fingerprint = 'deleted-account' AND details = '[removed]' AND idempotency_key NOT LIKE 'k1'"), 1)
         with sqlite3.connect(TEST_DB) as db:
             log = db.execute("SELECT account_type, listings_removed FROM account_deletion_log").fetchall()
         self.assertEqual(log, [("owner", 1)])
@@ -965,6 +965,32 @@ class TrustFeatureTests(unittest.TestCase):
         with mock.patch.object(app_module, "CLOUDINARY_URL", ""), mock.patch.object(app_module, "S3_BUCKET", ""):
             self.assertEqual(media_routes.purge_user_media([url], 7), [url])
             self.assertEqual(media_routes.purge_user_media([], 7), [])
+        s3_url = "https://bucket.s3.amazonaws.com/listings/7/a/photo.jpg"
+        with mock.patch.object(app_module, "CLOUDINARY_URL", ""), mock.patch.object(app_module, "S3_BUCKET", ""):
+            self.assertIn("s3:not-configured:listings/7/", media_routes.purge_user_media([s3_url], 7))
+        with mock.patch.object(app_module, "CLOUDINARY_URL", ""), mock.patch.object(app_module, "S3_BUCKET", "b"), mock.patch.object(app_module, "S3_ACCESS_KEY", ""):
+            self.assertIn("s3:not-configured:listings/7/", media_routes.purge_user_media([], 7))
+
+    def test_account_deletion_locks_account_during_purge_and_unlocks_on_failure(self):
+        user_id, _listing_id, token = self._seed_deletable_account()
+        seen = {}
+
+        def fake_purge(urls, uid):
+            seen["status"] = self._count("SELECT COUNT(*) FROM users WHERE id = ? AND status = 'deleting'", uid)
+            seen["blocked"] = self.client.get("/api/auth/me", headers=self._auth(token)).status_code
+            return ["x"]
+
+        with mock.patch.object(app_module, "purge_user_media", side_effect=fake_purge):
+            response = self.client.post(
+                "/api/auth/delete-account",
+                json={"password": "correct-password", "confirm": True},
+                headers=self._auth(token),
+            )
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(seen["status"], 1)
+        self.assertEqual(seen["blocked"], 401)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ? AND status = 'active'", user_id), 1)
+        self.assertEqual(self.client.get("/api/auth/me", headers=self._auth(token)).status_code, 200)
 
     def test_seller_moderation_then_verified_fast_publish_and_delete(self):
         with sqlite3.connect(TEST_DB) as db:
