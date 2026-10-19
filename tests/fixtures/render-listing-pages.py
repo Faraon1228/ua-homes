@@ -16,8 +16,8 @@ with contextlib.redirect_stdout(sys.stderr):
     fixture.setUp()
     with sqlite3.connect(TEST_DB) as database:
         database.execute(
-            "UPDATE listings SET latitude = ?, longitude = ? WHERE id = ?",
-            (50.45, 30.52, fixture.target_id),
+            "UPDATE listings SET latitude = ?, longitude = ?, images = ? WHERE id = ?",
+            (50.45, 30.52, json.dumps(["/static/gallery-1.png", "/static/gallery-2.png"]), fixture.target_id),
         )
         database.commit()
     pages = {}

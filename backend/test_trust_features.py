@@ -1196,7 +1196,7 @@ class TrustFeatureTests(unittest.TestCase):
             self.client.get("/seo/%D0%9A%D0%B8%D1%97%D0%B2"),
             self.client.get("/seo/zhk/river-garden-residence"),
         )
-        expected_script_counts = (7, 6, 2)
+        expected_script_counts = (8, 6, 2)
         for response, expected_count in zip(pages, expected_script_counts):
             with self.subTest(path=response.request.path):
                 nonce = re.search(
