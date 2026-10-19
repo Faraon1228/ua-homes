@@ -1237,6 +1237,8 @@ def listing_page(lid: int):
     #listing-back{{min-width:112px;gap:8px;background:#fff;border:2px solid #334155;color:#0f172a}}
     #listing-back:hover{{background:#e2e8f0}}
     #listing-back:focus-visible{{outline:3px solid #2563eb;outline-offset:3px}}
+    .contact-bar{{display:none}}
+    @media(max-width:700px){{body{{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}} .contact-bar{{display:grid;grid-template-columns:1fr 1fr;gap:10px;position:fixed;left:0;right:0;bottom:0;z-index:900;padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));background:#fff;border-top:1px solid #cbd5e1;box-shadow:0 -6px 20px rgba(15,23,42,.12)}} .contact-bar .primary-btn,.contact-bar .secondary-btn{{text-align:center;padding:13px 10px;grid-column:auto}} .contact-bar .primary-btn:only-child{{grid-column:1/-1}}}}
     @media(max-width:700px){{body{{padding-right:16px;padding-left:16px}} .hero{{padding:16px}} .hero-summary{{align-items:flex-start;flex-direction:column;gap:12px}} .hero-facts{{justify-content:flex-start}} .hero-actions{{display:grid;grid-template-columns:1fr 1fr}} .primary-btn{{grid-column:1/-1}} .primary-btn,.secondary-btn,.copy-btn{{padding-right:10px;padding-left:10px;text-align:center}} .meta-grid{{grid-template-columns:repeat(2,1fr)}} .detail-grid,.contact-grid{{grid-template-columns:1fr}}}}
   </style>
 </head>
@@ -1275,6 +1277,11 @@ def listing_page(lid: int):
       <button type="button" class="copy-btn" id="copyListingLink">Скопіювати посилання</button>
     </div>
   </section>
+
+  <nav class="contact-bar" aria-label="Швидкий контакт">
+    <a href="#contact" class="primary-btn">Запитати</a>
+    {phone_action_html}
+  </nav>
 
   {photos_html}
   {videos_html}

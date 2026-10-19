@@ -4546,7 +4546,7 @@ export default function RealEstateApp() {
                 aria-labelledby="mobile-filters-title"
                 aria-describedby="mobile-filters-description"
                 onMouseDown={(event) => event.stopPropagation()}
-                className="ml-auto h-full w-full max-w-md overflow-y-auto bg-gradient-to-br from-blue-50 via-white to-cyan-50 p-5 shadow-2xl lg:h-auto lg:max-w-none lg:overflow-visible lg:rounded-[28px] lg:border lg:border-blue-200 lg:shadow-sm"
+                className="mt-auto max-h-[90dvh] w-full overflow-y-auto rounded-t-[28px] bg-gradient-to-br from-blue-50 via-white to-cyan-50 p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom,0px))] shadow-2xl sm:ml-auto sm:mt-0 sm:h-full sm:max-h-none sm:max-w-md sm:rounded-none lg:ml-0 lg:h-auto lg:max-h-none lg:max-w-none lg:overflow-visible lg:rounded-[28px] lg:border lg:border-blue-200 lg:shadow-sm"
               >
               <div className="mb-4 h-1.5 rounded-full bg-gradient-to-r from-blue-600 to-cyan-500" />
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">

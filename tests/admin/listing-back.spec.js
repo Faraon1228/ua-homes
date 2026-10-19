@@ -26,6 +26,7 @@ async function setup(page) {
   await page.context().route("**/listing/*", (route) => {
     const id = new URL(route.request().url()).pathname.split("/").pop();
     const rendered = pages[id];
+    if (!rendered) return route.fulfill({ status: 404, body: "" });
     return route.fulfill({
       contentType: "text/html",
       headers: { "Content-Security-Policy": rendered.csp, "Referrer-Policy": "strict-origin-when-cross-origin" },
