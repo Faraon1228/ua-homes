@@ -79,6 +79,29 @@ async function expectRestored(page, { y, catalogUrl }) {
   await expect(page.getByRole("searchbox", { name: "Де шукаєте житло?" })).toHaveValue("Дніпровський");
 }
 
+test("listing photo opens full screen with a close button, arrows and Escape", async ({ page }) => {
+  await setup(page);
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
+  await page.route("**/static/gallery-*.png", (route) => route.fulfill({ contentType: "image/png", body: png }));
+  await page.goto(`/listing/${ids[0]}`);
+  await page.locator("#gallery img").first().click();
+  const dialog = page.getByRole("dialog", { name: "Фото на весь екран" });
+  await expect(dialog).toBeVisible();
+  const box = await dialog.boundingBox();
+  const viewport = page.viewportSize();
+  expect(box.width).toBe(viewport.width);
+  expect(box.height).toBe(viewport.height);
+  await expect(dialog.locator("[data-counter]")).toHaveText("1 / 2");
+  await dialog.getByRole("button", { name: "Наступне фото" }).click();
+  await expect(dialog.locator("[data-counter]")).toHaveText("2 / 2");
+  await dialog.getByRole("button", { name: "Закрити" }).click();
+  await expect(dialog).toHaveCount(0);
+  await page.locator("#gallery img").first().click();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp(`/listing/${ids[0]}$`));
+});
+
 test("listing map loads published Leaflet assets and renders its location without script errors", async ({ page }) => {
   await setup(page);
   const errors = [];

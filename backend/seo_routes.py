@@ -979,6 +979,8 @@ def listing_page(lid: int):
     static_folder = current_app.static_folder or getattr(mod.app, "static_folder", "static")
     with open(os.path.join(static_folder, "listing-navigation.js"), encoding="utf-8") as navigation_file:
         listing_navigation_script = navigation_file.read()
+    with open(os.path.join(static_folder, "listing-gallery.js"), encoding="utf-8") as gallery_file:
+        listing_gallery_script = gallery_file.read()
     map_html = ""
     if listing.get("latitude") and listing.get("longitude"):
         lat, lng = listing["latitude"], listing["longitude"]
@@ -1243,6 +1245,7 @@ def listing_page(lid: int):
     <button type="button" class="secondary-btn" id="listing-back" data-catalog-url="{mod.public_app_base_url()}/app"><span aria-hidden="true">←</span> Назад</button>
   </nav>
   <script nonce="{nonce}">{listing_navigation_script}</script>
+  <script nonce="{nonce}">{listing_gallery_script}</script>
   <nav class="breadcrumbs">
     <a href="{mod.public_app_url()}">UA-Dim</a><span>›</span>
     <a href="{city_link}">{escape(listing["city"])}</a><span>›</span>
