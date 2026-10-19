@@ -1575,6 +1575,18 @@ function PhotoGallery({ images, title, href, priority = false }) {
   );
 }
 
+const prefetchedListings = new Set();
+function prefetchListing(href) {
+  if (!href || prefetchedListings.has(href) || typeof document === "undefined") return;
+  if (navigator.connection?.saveData) return;
+  prefetchedListings.add(href);
+  const link = document.createElement("link");
+  link.rel = "prefetch";
+  link.as = "document";
+  link.href = href;
+  document.head.appendChild(link);
+}
+
 function ListingCard({ property, favorite, onToggleFavorite, onOpenTrust, priority = false }) {
   const href = property?.id ? `/listing/${property.id}` : null;
   const pricePerSquareMeter = formatPricePerSquareMeter(property?.price, property?.area);
@@ -1584,6 +1596,8 @@ function ListingCard({ property, favorite, onToggleFavorite, onOpenTrust, priori
   return (
     <article
       data-role="listing-card"
+      onPointerEnter={() => prefetchListing(href)}
+      onTouchStart={() => prefetchListing(href)}
       className="group min-w-0 overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-xl"
     >
       <div className="relative">
@@ -5247,7 +5261,22 @@ export default function RealEstateApp() {
               </div>
             ) : null}
 
-            {resultsView === "list" && visibleProperties.length === 0 && (
+            {resultsView === "list" && catalogLoading && !catalogProperties.length && (
+              <div data-role="catalog-skeleton" aria-hidden="true" className="grid gap-5 sm:grid-cols-2">
+                {[0, 1, 2, 3].map((n) => (
+                  <div key={n} className="animate-pulse overflow-hidden rounded-[28px] border border-slate-200 bg-white">
+                    <div className="aspect-[4/3] bg-slate-200" />
+                    <div className="space-y-3 p-5">
+                      <div className="h-6 w-1/3 rounded bg-slate-200" />
+                      <div className="h-4 w-4/5 rounded bg-slate-200" />
+                      <div className="h-4 w-1/2 rounded bg-slate-200" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {resultsView === "list" && visibleProperties.length === 0 && !(catalogLoading && !catalogProperties.length) && (
               <div className="rounded-[28px] border border-dashed border-slate-200 bg-white py-16 text-center px-6">
                 <p className="text-lg font-medium text-slate-400">
                   {catalogLoading && !catalogProperties.length
