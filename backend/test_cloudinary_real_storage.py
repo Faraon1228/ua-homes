@@ -31,6 +31,8 @@ PIXEL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAA
 class CloudinaryRealStorageTests(unittest.TestCase):
     def setUp(self):
         import cloudinary
+        import cloudinary.api  # noqa: F401
+        import cloudinary.uploader  # noqa: F401
 
         self.cloudinary = cloudinary
         self.env = mock.patch.dict(os.environ, {"CLOUDINARY_URL": TEST_URL})
@@ -65,11 +67,10 @@ class CloudinaryRealStorageTests(unittest.TestCase):
         return public_id, result["secure_url"]
 
     def _exists(self, public_id):
-        import cloudinary.api
         from cloudinary.exceptions import NotFound
 
         try:
-            cloudinary.api.resource(public_id)
+            self.cloudinary.api.resource(public_id)
             return True
         except NotFound:
             return False
