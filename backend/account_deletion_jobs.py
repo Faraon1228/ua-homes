@@ -335,6 +335,7 @@ def run_job(db, app_mod, job_id: int, now: datetime.datetime | None = None) -> s
 
 
 def run_due_jobs(db, app_mod, limit: int = 10, now: datetime.datetime | None = None) -> dict:
+    injected_clock = now is not None  # tests inject a fixed clock; production reads it per job
     now = now or _now()
     stamp = _ts(now)
     due = db.execute(
@@ -345,7 +346,7 @@ def run_due_jobs(db, app_mod, limit: int = 10, now: datetime.datetime | None = N
     outcomes: dict[str, int] = {}
     for row in due:
         try:
-            outcome = run_job(db, app_mod, int(row["id"]), now)
+            outcome = run_job(db, app_mod, int(row["id"]), now if injected_clock else _now())
         except Exception:
             # run_job fences and records stage errors itself; this only covers claim/bookkeeping failures.
             db.rollback()

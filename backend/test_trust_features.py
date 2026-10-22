@@ -1,4 +1,5 @@
 import base64
+import datetime
 import importlib
 import io
 import json
@@ -1175,7 +1176,7 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(config.connect_timeout, 5)
         self.assertEqual(config.read_timeout, 30)
         self.assertEqual(config.retries, {"max_attempts": 3, "mode": "standard"})
-        worst_s3 = media_routes.S3_MAX_ATTEMPTS * (media_routes.S3_CONNECT_TIMEOUT_SECONDS + media_routes.S3_READ_TIMEOUT_SECONDS) + 60
+        worst_s3 = (media_routes.S3_MAX_ATTEMPTS + 1) * (media_routes.S3_CONNECT_TIMEOUT_SECONDS + media_routes.S3_READ_TIMEOUT_SECONDS) + 60
         worst_cloudinary = 4 * 2 * media_routes.CLOUDINARY_TIMEOUT_SECONDS
         self.assertLess(max(worst_s3, worst_cloudinary), jobs.LEASE_SECONDS / 5)
 
@@ -1212,6 +1213,68 @@ class TrustFeatureTests(unittest.TestCase):
             result = media_routes.purge_user_media([], 7, heartbeat=lambda: next(beats))
         self.assertEqual(result, ["lease-lost"])
         self.assertEqual(fake_s3.delete_objects.call_count, 1)
+
+    def test_each_job_in_a_batch_gets_a_fresh_clock_and_lease(self):
+        import account_deletion_jobs as jobs
+
+        _uid1, job1 = self._queued_job()
+        with sqlite3.connect(TEST_DB) as raw:
+            uid2 = self._insert_user(raw, "Second", "second@example.test", "owner")
+            raw.execute("UPDATE users SET status = 'deleting' WHERE id = ?", (uid2,))
+            jobs.enqueue(raw, uid2)
+            raw.commit()
+            job2 = raw.execute("SELECT id FROM account_deletion_jobs WHERE owner_id = ?", (uid2,)).fetchone()[0]
+        base = self._later(0)
+        clock = {"now": base}
+        calls = []
+
+        def fake_now():
+            return clock["now"]
+
+        def purge(urls, uid, heartbeat=None):
+            calls.append(uid)
+            if uid == _uid1:
+                clock["now"] = base + datetime.timedelta(seconds=jobs.LEASE_SECONDS + 600)
+            else:
+                with app_module.app.test_request_context():
+                    # Another worker at the real current time must be locked out before any I/O of job 2.
+                    calls.append(("rival", jobs.run_job(app_module.get_db(), app_module, job2, clock["now"])))
+            return []
+
+        with app_module.app.test_request_context(), mock.patch.object(jobs, "_now", side_effect=fake_now), \
+                mock.patch.object(app_module, "purge_user_media", side_effect=purge):
+            summary = jobs.run_due_jobs(app_module.get_db(), app_module)
+        self.assertEqual(summary["outcomes"], {"progressed": 2})
+        self.assertEqual(calls, [_uid1, uid2, ("rival", "skipped")])
+        with sqlite3.connect(TEST_DB) as raw:
+            lease = raw.execute("SELECT lease_until FROM account_deletion_jobs WHERE id = ?", (job2,)).fetchone()
+        self.assertIsNone(lease[0])  # completed stage released the lease
+
+    def test_lease_loss_stops_paginator_before_the_next_network_fetch(self):
+        media_routes = importlib.import_module("media_routes")
+        fetched = []
+
+        def pages():
+            for key in ("a", "b", "c"):
+                fetched.append(key)
+                yield {"Contents": [{"Key": f"listings/7/{key}.jpg"}]}
+
+        fake_s3 = mock.MagicMock()
+        fake_s3.get_paginator.return_value.paginate.return_value = pages()
+        fake_s3.delete_objects.return_value = {}
+        beats = iter([True, False])
+        with mock.patch.multiple(app_module, CLOUDINARY_URL="", S3_BUCKET="b", S3_ACCESS_KEY="a", S3_SECRET_KEY="s"), \
+                mock.patch("boto3.client", return_value=fake_s3):
+            result = media_routes.purge_user_media([], 7, heartbeat=lambda: next(beats))
+        self.assertEqual(result, ["lease-lost"])
+        self.assertEqual(fetched, ["a"])  # page "b" was never fetched
+        # And a lost lease before the very first fetch issues no request at all.
+        fetched.clear()
+        fake_s3.get_paginator.return_value.paginate.return_value = pages()
+        with mock.patch.multiple(app_module, CLOUDINARY_URL="", S3_BUCKET="b", S3_ACCESS_KEY="a", S3_SECRET_KEY="s"), \
+                mock.patch("boto3.client", return_value=fake_s3):
+            self.assertEqual(media_routes.purge_user_media([], 7, heartbeat=lambda: False), ["lease-lost"])
+        self.assertEqual(fetched, [])
 
     def test_sweep_delay_has_a_safe_minimum(self):
         import account_deletion_jobs as jobs

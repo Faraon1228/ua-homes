@@ -193,7 +193,7 @@ def generate_presigned_upload_url(
 # Every storage request in the deletion path is bounded far below the job lease
 # (boto3 defaults are 60s connect/read with legacy 5 attempts; Cloudinary's admin and
 # uploader calls have no timeout unless one is passed).
-# Worst case S3: 3 attempts x (5s + 30s) plus backoff ~ 2 min. Cloudinary: urllib3
+# Worst case S3: max_attempts=3 means 3 retries, i.e. 4 attempts x (5s + 30s) plus backoff ~ 3 min. Cloudinary: urllib3
 # default of 3 retries x (2 x 20s) ~ 3 min.
 S3_CONNECT_TIMEOUT_SECONDS = 5
 S3_READ_TIMEOUT_SECONDS = 30
@@ -365,9 +365,14 @@ def purge_user_media(media_urls: list[str], user_id: int, heartbeat=None) -> lis
                 endpoint_url=getattr(app_module, "S3_ENDPOINT", None),
                 config=_bounded_s3_config(),
             )
-            for page in s3.get_paginator("list_objects_v2").paginate(Bucket=s3_bucket, Prefix=prefix):
+            pages = iter(s3.get_paginator("list_objects_v2").paginate(Bucket=s3_bucket, Prefix=prefix))
+            while True:
+                # Heartbeat before the network fetch of every page, including the first.
                 if not _alive(heartbeat):
                     return ["lease-lost"]
+                page = next(pages, None)
+                if page is None:
+                    break
                 keys = [{"Key": item["Key"]} for item in page.get("Contents", [])]
                 if not keys:
                     continue
