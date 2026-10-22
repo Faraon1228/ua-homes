@@ -33,19 +33,54 @@ that never had storage); `CLOUDINARY_UPLOAD_PRESET` is ignored. **Operational bl
 preset to *Signed* (or delete it) in Cloudinary → Settings → Upload; this cannot be done or verified from code.
 Objects uploaded by such presets under `listings/<id>/` are removed by the prefix sweep, but other prefixes are not.
 
-## Retention inventory (proposal – no legal terms decided)
+## Retention inventory and decision table (proposal – no legal terms decided)
 
-| Data | Where | Today on account deletion | Needs decision |
+Nothing below is implemented as age-based deletion and no legal period is assumed. Seller: UA-Dim, a service
+seller registered in Ukraine that receives payments; accounting retention must be confirmed by the accountant.
+
+| Data | What it holds today | On account deletion | Decision needed (who) |
 |---|---|---|---|
-| Account, listings, media, favorites, alerts, push tokens, reviews | users, listings, … | deleted | – |
-| Payment orders (amount, plan, provider ids, dates) | `premium_orders` | kept, `user_id` set NULL | Ukrainian seller: confirm with accountant which records are primary documents and the retention period; drop unneeded provider fields |
-| Leads / inquiries | `lead_requests` | requester rows anonymised; no age-based deletion | Max age for leads (proposal: delete or anonymise after a fixed period); needs owner decision |
-| Reports | `listing_reports` | reporter anonymised | Max age of resolved reports |
-| Funnel / client observability events | `lead_funnel_events`, `client_observability_events` (session id, UA, page URL) | untouched, no expiry | Short technical retention + scheduled purge (proposal) |
-| Admin audit / moderation log | `admin_audit_log`, `moderation_log` | actor FK set NULL | Audit retention period |
-| Deletion log | `account_deletion_log` | anonymous counters | – |
+| Account, listings, listing images, favorites, alerts, push tokens, reviews | profile, email, phone, content | deleted | – |
+| `premium_orders` | order id, plan, amount, currency, status, provider payment id/status, paid/processed dates, entitlement chain; `user_id` | kept, `user_id` set NULL (no name/email stored) | **Accountant:** which records are primary/accounting documents and for how long; whether provider ids are needed. Owner: nothing to choose before that |
+| `lead_requests` | name, phone, email, message, session id, requester id, bank/amount/credit inputs, response | rows of the leaver anonymised (name/contact/message/session cleared); leads about the leaver's listings keep only the request, response cleared | **Owner:** max age for leads (delete or anonymise after N days); leads are not accounting documents unless a contract follows (accountant to confirm) |
+| `listing_reports` | reason, details, reporter fingerprint/id | reporter anonymised, details removed | **Owner:** retention of resolved reports (abuse evidence) |
+| `lead_funnel_events` | event, listing id, price, session id | untouched | **Owner:** short technical retention (e.g. days/weeks) + scheduled purge |
+| `client_observability_events` | message/stack, page URL, session id, user agent, payload | untouched | **Owner:** short technical retention + scheduled purge |
+| `admin_audit_log`, `moderation_log` | admin actor id/role, action, reason, metadata | actor FK set NULL | **Owner/legal:** audit-log retention |
+| `account_deletion_log` / `account_deletion_jobs` | counters; owner id, stage, generic error code | no PII | – (job rows could be pruned after completion; owner choice) |
+| Backups | encrypted full dumps, 30 days in Actions artifacts | deleted users reappear in restored backups | **Owner:** accept 30-day backup window or shorten; on restore re-apply deletions |
 
-No scheduled purge for leads/telemetry exists yet; implementing one requires the periods above.
+No historical data is purged by this change.
+
+## Release, rollback and readiness runbook
+
+**Rollback target.** Roll back only to a build that is *signed-upload compatible* (this PR or later). The
+`account_deletion_jobs` table is additive; older code ignores it, but accounts already `deleting` stay locked and
+their jobs stop running while an older build is deployed, so after any rollback re-deploy a job-capable build
+before the 30-minute lease/backoff windows matter, and check `/api/operations/jobs/run` output.
+Never roll back to a pre-signed build once presets are Signed/deleted: it would break all uploads. Never re-enable
+an unsigned preset as a rollback aid.
+
+**If signed upload fails after release.** Check `/api/media/presigned-url` returns 503 with the missing-credentials
+message (set `CLOUDINARY_URL` or S3 vars in Railway), verify clock skew and the Cloudinary key/secret pair, then
+hard-reload old open pages (cached JS uses the old upload path). Do not disable signing.
+
+**Order.** 1) merge and deploy code; 2) verify web and Flutter signed uploads and run the scheduler manually
+(`workflow_dispatch` of `background-jobs.yml`, which exists on `main` only after merge); 3) only then switch
+presets to Signed/delete and confirm an unsigned upload is rejected; 4) delete a dedicated test account in production
+and watch the job through the deferred sweep.
+
+**Scheduler secrets (names only).** `.github/workflows/background-jobs.yml` and `production-health.yml` read GitHub
+secrets `UA_HOMES_STATUS_REFRESH_KEY` and `UA_HOMES_EDGE_TOKEN`; the same refresh key must be set in Railway. At
+the time of the audit neither name was listed in repository or environment secrets and the Railway CLI login had
+expired, so equality of both sides is unverified. Do not generate a new key until both endpoints are accessible.
+The secret `RAILLWAY_TOKEN` (double L) is not referenced by any workflow in this repository (nor are
+`RAILWAY_PROJECT_ID`/`RAILWAY_SERVICE_ID`); leave it unchanged until its owner confirms what uses it.
+
+**Backups.** `database-backup.yml` produces AES-encrypted artifacts (30 days); decrypting needs
+`UA_HOMES_BACKUP_ENCRYPTION_KEY`, which is deliberately not available to agents. Run the documented
+`verify`/`restore-drill` (see `backend/ENV_VARS.md`) on a decrypted copy in a protected temp directory, never over
+production, and delete the copy afterwards. The drill procedure was exercised on a synthetic database only.
 
 ## Opt-in real test storage check
 
