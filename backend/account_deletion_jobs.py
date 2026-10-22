@@ -16,22 +16,31 @@ the scheduler (``POST /api/operations/jobs/run``) resumes it automatically.
 from __future__ import annotations
 
 import datetime
+import logging
 import os
 import uuid
 
+logger = logging.getLogger(__name__)
+
 MAX_ATTEMPTS = 20
-LEASE_SECONDS = 600
+# Stages are idempotent and fenced by the lease token; the lease is renewed at the
+# start of every stage, so one stage must finish within this bound.
+LEASE_SECONDS = 1800
 BACKOFF_BASE_SECONDS = 60
 BACKOFF_MAX_SECONDS = 3600
 # Cloudinary signatures live ~1h and S3 presigned URLs 15min; sweep after both.
 DEFAULT_SWEEP_DELAY_SECONDS = 7200
+# Never sweep earlier than the signature lifetime plus a safety margin, so a late
+# signed upload cannot outlive the final sweep.
+MIN_SWEEP_DELAY_SECONDS = 4200
 
 
 def sweep_delay_seconds() -> int:
     try:
-        return max(0, int(os.environ.get("ACCOUNT_DELETION_SWEEP_DELAY_SECONDS", DEFAULT_SWEEP_DELAY_SECONDS)))
+        configured = int(os.environ.get("ACCOUNT_DELETION_SWEEP_DELAY_SECONDS", DEFAULT_SWEEP_DELAY_SECONDS))
     except ValueError:
-        return DEFAULT_SWEEP_DELAY_SECONDS
+        configured = DEFAULT_SWEEP_DELAY_SECONDS
+    return max(MIN_SWEEP_DELAY_SECONDS, configured)
 
 
 def _ts(moment: datetime.datetime) -> str:
@@ -76,6 +85,16 @@ def _claim(db, job_id: int, now: datetime.datetime) -> str | None:
     )
     db.commit()
     return token if cursor.rowcount == 1 else None
+
+
+def _renew(db, job_id: int, token: str, now: datetime.datetime) -> bool:
+    """Extend the lease; False means another worker owns the job (fenced out)."""
+    cursor = db.execute(
+        "UPDATE account_deletion_jobs SET lease_until = ?, updated_at = ?"
+        " WHERE id = ? AND lease_token = ? AND status = 'pending'",
+        (_ts(now + datetime.timedelta(seconds=LEASE_SECONDS)), _ts(now), job_id, token),
+    )
+    return cursor.rowcount == 1
 
 
 def _fail_attempt(db, job_id: int, token: str, code: str, now: datetime.datetime) -> str:
@@ -126,6 +145,10 @@ def _collect_account_media(db, user_id: int) -> list[str]:
 
 
 def _run_media(db, app_mod, owner_id: int, token: str, job_id: int, now) -> str | None:
+    if not _renew(db, job_id, token, now):
+        db.rollback()
+        return "lease-lost"
+    db.commit()
     urls = _collect_account_media(db, owner_id)
     try:
         failures = app_mod.purge_user_media(urls, owner_id)
@@ -133,11 +156,14 @@ def _run_media(db, app_mod, owner_id: int, token: str, job_id: int, now) -> str 
         failures = ["purge-error"]
     if failures:
         return _failure_code("media", failures)
-    db.execute(
+    cursor = db.execute(
         "UPDATE account_deletion_jobs SET stage = 'database', last_error = NULL, updated_at = ?"
         " WHERE id = ? AND lease_token = ?",
         (_ts(now), job_id, token),
     )
+    if cursor.rowcount != 1:
+        db.rollback()
+        return "lease-lost"
     db.commit()
     return None
 
@@ -145,6 +171,11 @@ def _run_media(db, app_mod, owner_id: int, token: str, job_id: int, now) -> str 
 def _run_database(db, app_mod, owner_id: int, token: str, job_id: int, now) -> str | None:
     sweep_at = _ts(now + datetime.timedelta(seconds=sweep_delay_seconds()))
     try:
+        # Row-locks the job inside this transaction: destructive work only runs
+        # while this worker still owns the lease.
+        if not _renew(db, job_id, token, now):
+            db.rollback()
+            return "lease-lost"
         user = db.execute("SELECT email, account_type FROM users WHERE id = ?", (owner_id,)).fetchone()
         if user:
             email = str(user["email"] or "").strip().lower()
@@ -214,17 +245,24 @@ def _run_database(db, app_mod, owner_id: int, token: str, job_id: int, now) -> s
 
 
 def _run_sweep(db, app_mod, owner_id: int, token: str, job_id: int, now) -> str | None:
+    if not _renew(db, job_id, token, now):
+        db.rollback()
+        return "lease-lost"
+    db.commit()
     try:
         failures = app_mod.purge_user_media([], owner_id)
     except Exception:
         failures = ["purge-error"]
     if failures:
         return _failure_code("sweep", failures)
-    db.execute(
+    cursor = db.execute(
         "UPDATE account_deletion_jobs SET status = 'done', lease_until = NULL, lease_token = NULL,"
         " last_error = NULL, completed_at = ?, updated_at = ? WHERE id = ? AND lease_token = ?",
         (_ts(now), _ts(now), job_id, token),
     )
+    if cursor.rowcount != 1:
+        db.rollback()
+        return "lease-lost"
     db.commit()
     return None
 
@@ -243,8 +281,17 @@ def run_job(db, app_mod, job_id: int, now: datetime.datetime | None = None) -> s
     owner_id, stage = int(row["owner_id"]), row["stage"]
     runners = {"media": _run_media, "database": _run_database, "sweep": _run_sweep}
     while True:
-        error = runners[stage](db, app_mod, owner_id, token, job_id, now)
+        try:
+            error = runners[stage](db, app_mod, owner_id, token, job_id, now)
+        except Exception:
+            db.rollback()
+            logger.exception("Account deletion job %s stage %s crashed", job_id, stage)
+            error = f"{stage}:unexpected-error"
+        if error == "lease-lost":
+            logger.warning("Account deletion job %s lost its lease during stage %s", job_id, stage)
+            return "lease-lost"
         if error:
+            logger.warning("Account deletion job %s stage %s failed: %s", job_id, stage, error)
             return _fail_attempt(db, job_id, token, error, now)
         if stage == "media":
             stage = "database"
@@ -267,8 +314,10 @@ def run_due_jobs(db, app_mod, limit: int = 10, now: datetime.datetime | None = N
         try:
             outcome = run_job(db, app_mod, int(row["id"]), now)
         except Exception:
+            # run_job fences and records stage errors itself; this only covers claim/bookkeeping failures.
             db.rollback()
-            outcome = "retry"
+            logger.exception("Account deletion job %s bookkeeping failed", row["id"])
+            outcome = "error"
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
     counts = {
         item["status"]: int(item["n"])

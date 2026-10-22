@@ -438,8 +438,8 @@ def verify_phone():
 def delete_account():
     """Permanently delete the caller's account, listings, media and personal data.
 
-    Media is purged before any row is deleted, so a storage failure leaves the
-    account intact (listings already unpublished) and the request can be retried.
+    The request only locks the account and queues a durable job; the scheduled
+    job purges media, deletes the rows and sweeps storage again later.
     """
     app_mod = _get_app_module()
     data = request.get_json(silent=True) or {}
@@ -490,27 +490,10 @@ def delete_account():
         return jsonify(error="Не вдалося почати видалення акаунта. Спробуйте ще раз.", retryable=True), 500
 
     app_mod.cache_delete_prefix("public:listings:")
-    job = db.execute("SELECT id FROM account_deletion_jobs WHERE owner_id = ?", (user_id,)).fetchone()
-    try:
-        deletion_jobs.run_job(db, app_mod, int(job["id"]))
-    except Exception:
-        db.rollback()
-        current_app.logger.exception("Account deletion inline run crashed user_id=%s", user_id)
-
-    state = db.execute(
-        "SELECT stage, status FROM account_deletion_jobs WHERE owner_id = ?", (user_id,)
-    ).fetchone()
-    account_removed = state["stage"] in ("sweep",) or state["status"] in ("done",)
-    if account_removed:
-        return jsonify(
-            ok=True,
-            deleted=True,
-            media_cleanup_pending=state["status"] != "done",
-            message="Акаунт видалено. Фінальне очищення файлів у сховищі завершиться автоматично протягом кількох годин.",
-        )
+    # No synchronous purge: external storage can be slow. The scheduler resumes the job.
     return jsonify(
         ok=True,
         deleted=False,
         pending=True,
-        message="Видалення прийнято: акаунт заблоковано, оголошення знято з публікації. Дані буде видалено автоматично, повторно натискати нічого не потрібно.",
+        message="Видалення прийнято: акаунт заблоковано, оголошення знято з публікації. Дані та файли буде видалено автоматично, повторно натискати нічого не потрібно.",
     ), 202

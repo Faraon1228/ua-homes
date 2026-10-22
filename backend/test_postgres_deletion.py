@@ -71,12 +71,14 @@ class PostgresDeletionTests(unittest.TestCase):
         self.storage.objects.add(f"listings/{self.user_id}/a/photo.jpg")
 
     def _delete(self):
-        with mock.patch.object(app_module, "purge_user_media", side_effect=self.storage.purge):
-            return self.client.post(
+        with mock.patch.object(app_module, "purge_user_media", side_effect=self.storage.purge) as purge:
+            response = self.client.post(
                 "/api/auth/delete-account",
                 json={"password": "correct-password", "confirm": True},
                 headers={"Authorization": f"Bearer {self.token}"},
             )
+        purge.assert_not_called()
+        return response
 
     def _run(self, seconds):
         when = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(seconds=seconds)
@@ -93,6 +95,7 @@ class PostgresDeletionTests(unittest.TestCase):
         self.storage.fail = 1
         self.assertEqual(self._delete().status_code, 202)
         self.assertEqual(self._scalar("SELECT status FROM users WHERE id = ?", self.user_id), "deleting")
+        self.assertEqual(self._run(5)["outcomes"], {"retry": 1})
         self.assertEqual(self._run(120)["outcomes"], {"progressed": 1})
         self.assertEqual(self._scalar("SELECT COUNT(*) FROM users WHERE id = ?", self.user_id), 0)
         # An upload signed before the lock lands after the database stage.
@@ -102,7 +105,7 @@ class PostgresDeletionTests(unittest.TestCase):
         self.assertFalse(self.storage.objects)
 
     def test_parallel_workers_claim_each_job_once(self):
-        self.assertEqual(self._delete().status_code, 200)
+        self.assertEqual(self._delete().status_code, 202)
         calls = []
         lock = threading.Lock()
 
@@ -122,7 +125,8 @@ class PostgresDeletionTests(unittest.TestCase):
         [thread.start() for thread in threads]
         [thread.join() for thread in threads]
         self.assertEqual(calls, [self.user_id])
-        self.assertEqual(self._scalar("SELECT status FROM account_deletion_jobs WHERE owner_id = ?", self.user_id), "done")
+        self.assertEqual(self._scalar("SELECT stage FROM account_deletion_jobs WHERE owner_id = ?", self.user_id), "sweep")
+        self.assertEqual(self._scalar("SELECT COUNT(*) FROM users WHERE id = ?", self.user_id), 0)
 
     def test_upload_after_lock_is_rejected(self):
         self.storage.fail = 99

@@ -6,25 +6,29 @@
 unpublishes listings and inserts a row in `account_deletion_jobs` (owner id + progress only, no PII). The job runs
 three idempotent stages: `media` (purge files) → `database` (scrub/delete account in one transaction, schedule sweep)
 → `sweep` (purge again after `ACCOUNT_DELETION_SWEEP_DELAY_SECONDS`, default 7200 s, longer than the ~1 h Cloudinary
-signature and 15 min S3 URL lifetimes).
+signature and 15 min S3 URL lifetimes; values below 4200 s are raised to 4200 s).
 
-* API: `200 deleted:true, media_cleanup_pending:true` when the account is gone but the sweep is pending;
-  `202 deleted:false, pending:true` when media cleanup failed and the job will retry. The account stays locked
-  (login/API rejected) – no manual unlock. The UI logs the user out in both cases.
+* API: always `202 deleted:false, pending:true` right after the lock+enqueue. The request never calls external
+  storage (no gunicorn/UI timeout risk); the scheduler runs the job. The account stays locked (login/API rejected)
+  – no manual unlock. The UI logs the user out.
 * Retry: exponential backoff 60 s … 1 h, `MAX_ATTEMPTS=20`, then `status='failed'` with a generic `last_error`
   (`<stage>:<incomplete|not-configured>:<n>`); the account stays locked until an operator fixes storage config and
   runs `UPDATE account_deletion_jobs SET status='pending', attempts=0, next_run_at=<now> WHERE status='failed'`.
-* Safety: workers claim a job by compare-and-set lease (10 min), so parallel runners / duplicate cron runs never
-  execute one job twice; a crashed worker's lease expires and the job resumes.
+* Safety: workers claim a job by compare-and-set lease (30 min, renewed at the start of every stage). Every stage
+  write is fenced by the lease token (a worker whose lease expired gets `lease-lost` and writes nothing; the
+  database stage row-locks the job before deleting). Unexpected exceptions go through the same backoff/terminal
+  policy and are logged. A crashed worker's lease expires and the job resumes. One storage purge must finish
+  within the lease.
 * Execution: `.github/workflows/background-jobs.yml` (cron every 10 min, GitHub scheduled workflows are best-effort)
   calls `POST /api/operations/jobs/run` with the existing `UA_HOMES_STATUS_REFRESH_KEY` secret and fails the run if
-  a job is terminally failed or the key is missing. The request path also runs the job once inline. There is no
-  in-process timer; a server restart relies on the next scheduler tick.
+  a job is terminally failed or the key is missing. There is no in-process timer; a server restart relies on the next scheduler tick.
 
 ## Signed-only uploads
 
 Cloudinary uploads are issued only with API key/secret signatures (`authType: "signed"`). Missing credentials give
-503 with an explicit message; `CLOUDINARY_UPLOAD_PRESET` is ignored. **Operational blocker:** already existing
+503 with an explicit message; the purge also fails closed (`storage:not-configured`) when neither Cloudinary nor S3
+is configured, because earlier uploads cannot be ruled out (set `UA_HOMES_STORAGE_DISABLED=1` only for deployments
+that never had storage); `CLOUDINARY_UPLOAD_PRESET` is ignored. **Operational blocker:** already existing
 *unsigned* presets in the Cloudinary console keep working for anyone who knows the preset name. Set every upload
 preset to *Signed* (or delete it) in Cloudinary → Settings → Upload; this cannot be done or verified from code.
 Objects uploaded by such presets under `listings/<id>/` are removed by the prefix sweep, but other prefixes are not.

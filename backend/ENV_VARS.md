@@ -311,3 +311,4 @@ Password reset is available via:
 - `ACCOUNT_DELETION_SWEEP_DELAY_SECONDS` – delay before the final storage sweep after an account is deleted (default 7200).
 - `UA_HOMES_STATUS_REFRESH_KEY` – also authorises `POST /api/operations/jobs/run` (called by `background-jobs.yml`).
 - Cloudinary requires `CLOUDINARY_URL` with API key/secret (or `CLOUDINARY_API_KEY`/`CLOUDINARY_API_SECRET`); `CLOUDINARY_UPLOAD_PRESET` is no longer used. See `docs/account-deletion-and-retention.md`.
+- `ACCOUNT_DELETION_SWEEP_DELAY_SECONDS` is clamped to a minimum of 4200 s. `UA_HOMES_STORAGE_DISABLED=1` lets deletion complete when no storage provider is configured (default: fail closed).

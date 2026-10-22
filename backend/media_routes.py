@@ -298,6 +298,10 @@ def purge_user_media(media_urls: list[str], user_id: int) -> list[str]:
     s3_access_key = getattr(app_module, "S3_ACCESS_KEY", "")
     s3_secret_key = getattr(app_module, "S3_SECRET_KEY", "")
     s3_configured = bool(s3_bucket and s3_access_key and s3_secret_key)
+    if not cloudinary_url and not s3_configured and not os.environ.get("UA_HOMES_STORAGE_DISABLED"):
+        # Fail closed: without credentials we cannot rule out earlier uploads, so an
+        # empty prefix must not be reported as a clean removal.
+        failures.append(f"storage:not-configured:{prefix}")
     owns_non_cloudinary_media = False
     for media_url in media_urls:
         try:
