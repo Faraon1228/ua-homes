@@ -1065,7 +1065,8 @@ class TrustFeatureTests(unittest.TestCase):
                 second = data_retention.run_retention(app_module.get_db(), app_module, now)
         self.assertEqual(first["errors"], [])
         self.assertEqual(
-            first["deleted"], {"lead_funnel_events": 1, "client_observability_events": 1, "lead_requests": 1}
+            first["deleted"],
+            {"lead_funnel_events": 1, "client_observability_events": 1, "lead_requests": 1, "listing_reports": 0},
         )
         self.assertEqual(sum(second["deleted"].values()), 0)
         with sqlite3.connect(TEST_DB) as db:
@@ -1080,10 +1081,57 @@ class TrustFeatureTests(unittest.TestCase):
             with mock.patch.object(data_retention, "_purge_table", side_effect=RuntimeError("boom")):
                 result = data_retention.run_retention(db, app_module)
             self.assertEqual(
-                sorted(result["errors"]), ["client_observability_events", "lead_funnel_events", "lead_requests"]
+                sorted(result["errors"]),
+                ["client_observability_events", "lead_funnel_events", "lead_requests", "listing_reports"],
             )
             summary = __import__("account_deletion_jobs").run_due_jobs(db, app_module)
         self.assertIn("retention", summary)
+
+    def test_closed_reports_age_from_closed_at_only(self):
+        import data_retention
+
+        _user_id, listing_id, _token = self._seed_deletable_account()
+        now = datetime.datetime(2026, 10, 22, 12, 0, 0)
+        cases = [
+            ("old-open", "pending", "2020-01-01 00:00:00", None, 0),
+            ("old-reviewing", "reviewing", "2020-01-01 00:00:00", "2020-01-01 00:00:00", 0),
+            ("old-created-recent-close", "resolved", "2020-01-01 00:00:00", "2025-10-22 12:00:00", 0),
+            ("closed-unknown-time", "dismissed", "2020-01-01 00:00:00", None, 0),
+            ("closed-before-cutoff", "resolved", "2026-01-01 00:00:00", "2025-10-22 11:59:59", 1),
+            ("dismissed-before-cutoff", "dismissed", "2026-01-01 00:00:00", "2024-01-01 00:00:00", 1),
+        ]
+        with sqlite3.connect(TEST_DB) as db:
+            for key, status, created, closed, _gone in cases:
+                db.execute(
+                    "INSERT INTO listing_reports (listing_id, reporter_fingerprint, reason_code, details, status,"
+                    " idempotency_key, created_at, closed_at) VALUES (?, 'f', 'spam', 'd', ?, ?, ?, ?)",
+                    (listing_id, status, key, created, closed),
+                )
+            db.commit()
+        with app_module.app.test_request_context():
+            result = data_retention.run_retention(app_module.get_db(), app_module, now)
+        self.assertGreaterEqual(result["deleted"]["listing_reports"], 2)
+        with sqlite3.connect(TEST_DB) as db:
+            left = {r[0] for r in db.execute("SELECT idempotency_key FROM listing_reports")} - {"k1"}
+        self.assertEqual(left, {"old-open", "old-reviewing", "old-created-recent-close", "closed-unknown-time"})
+
+    def test_migration_baselines_closed_history_without_guessing_from_created_at(self):
+        _user_id, listing_id, _token = self._seed_deletable_account()
+        with sqlite3.connect(TEST_DB) as db:
+            for key, status in (("p", "pending"), ("hist", "resolved")):
+                db.execute(
+                    "INSERT INTO listing_reports (listing_id, reporter_fingerprint, reason_code, details, status,"
+                    " idempotency_key) VALUES (?, 'f', 'spam', 'd', ?, ?)",
+                    (listing_id, status, key),
+                )
+            db.commit()
+            pending_id = db.execute("SELECT id FROM listing_reports WHERE idempotency_key='p'").fetchone()[0]
+        app_module.init_db()
+        with sqlite3.connect(TEST_DB) as db:
+            hist = db.execute("SELECT closed_at FROM listing_reports WHERE idempotency_key='hist'").fetchone()[0]
+            open_ = db.execute("SELECT closed_at FROM listing_reports WHERE idempotency_key='p'").fetchone()[0]
+        self.assertIsNotNone(hist)
+        self.assertIsNone(open_)
 
     def test_account_deletion_removes_attributable_telemetry_immediately(self):
         user_id, _listing_id, token = self._seed_deletable_account()

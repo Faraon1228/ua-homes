@@ -1060,7 +1060,8 @@ def _init_postgres_db():
                 details              TEXT    NOT NULL,
                 status               TEXT    NOT NULL DEFAULT 'pending',
                 idempotency_key      TEXT    NOT NULL UNIQUE,
-                created_at           TEXT    NOT NULL DEFAULT ({db_now_expr()})
+                created_at           TEXT    NOT NULL DEFAULT ({db_now_expr()}),
+                closed_at            TEXT
             );
 
             CREATE TABLE IF NOT EXISTS listing_change_history (
@@ -1215,6 +1216,10 @@ def _init_postgres_db():
             ALTER TABLE premium_orders ADD COLUMN IF NOT EXISTS previous_plan_expires_at TEXT;
             ALTER TABLE premium_orders ADD COLUMN IF NOT EXISTS activated_plan_expires_at TEXT;
             ALTER TABLE premium_orders ADD COLUMN IF NOT EXISTS entitlement_chain_id TEXT;
+            ALTER TABLE listing_reports ADD COLUMN IF NOT EXISTS closed_at TEXT;
+            UPDATE listing_reports SET closed_at = to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+                WHERE status IN ('resolved', 'dismissed') AND closed_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_listing_reports_status_closed ON listing_reports(status, closed_at);
             ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS requester_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
             ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS preferred_channel TEXT NOT NULL DEFAULT 'phone';
             ALTER TABLE lead_requests ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'new';
@@ -3056,7 +3061,8 @@ def init_db():
             details              TEXT    NOT NULL,
             status               TEXT    NOT NULL DEFAULT 'pending',
             idempotency_key      TEXT    NOT NULL UNIQUE,
-            created_at           TEXT    NOT NULL DEFAULT (db_now_expr())
+            created_at           TEXT    NOT NULL DEFAULT (db_now_expr()),
+            closed_at            TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_listing_reports_listing ON listing_reports(listing_id);
         CREATE INDEX IF NOT EXISTS idx_listing_reports_status ON listing_reports(status);
@@ -3296,6 +3302,17 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_listing_alerts_verification_token"
         " ON listing_alerts(verification_token_hash)"
     )
+
+    report_columns = {row[1] for row in db.execute("PRAGMA table_info(listing_reports)").fetchall()}
+    if "closed_at" not in report_columns:
+        db.execute("ALTER TABLE listing_reports ADD COLUMN closed_at TEXT")
+    # Conservative baseline: closing time of historical rows is unknown, so their 12-month
+    # retention clock starts now instead of being guessed from created_at.
+    db.execute(
+        "UPDATE listing_reports SET closed_at = datetime('now')"
+        " WHERE status IN ('resolved', 'dismissed') AND closed_at IS NULL"
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS idx_listing_reports_status_closed ON listing_reports(status, closed_at)")
 
     lead_request_columns = {
         row[1] for row in db.execute("PRAGMA table_info(lead_requests)").fetchall()

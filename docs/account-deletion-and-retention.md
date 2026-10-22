@@ -43,7 +43,7 @@ seller registered in Ukraine that receives payments; accounting retention must b
 | Account, listings, listing images, favorites, alerts, push tokens, reviews | profile, email, phone, content | deleted | – |
 | `premium_orders` | order id, plan, amount, currency, status, provider payment id/status, paid/processed dates, entitlement chain; `user_id` | kept, `user_id` set NULL (no name/email stored) | **Accountant:** which records are primary/accounting documents and for how long; whether provider ids are needed. Owner: nothing to choose before that |
 | `lead_requests` | name, phone, email, message, session id, requester id, bank/amount/credit inputs, response | rows of the leaver anonymised immediately (name/contact/message/session cleared); leads about the leaver's listings keep only the request, response cleared | **Approved:** rows are deleted (not anonymised) once `created_at` is older than 12 calendar months (UTC). Leads are not accounting documents unless a contract follows (accountant to confirm) |
-| `listing_reports` | reason, details, reporter fingerprint/id | reporter anonymised, details removed | **Owner:** retention of resolved reports (abuse evidence) |
+| `listing_reports` | reason, details, reporter fingerprint/id | reporter anonymised immediately (id/fingerprint/details removed) | **Approved:** `resolved`/`dismissed` reports are deleted 12 calendar months (UTC) after `closed_at`; open (`pending`/`reviewing`) reports are never purged |
 | `lead_funnel_events` | event, listing id, price, session id | events linked via the leaver's lead session ids are deleted immediately | **Approved:** deleted after 30 days (UTC) by the scheduled purge |
 | `client_observability_events` | message/stack, page URL, session id, user agent, payload | events linked via the leaver's lead session ids are deleted immediately | **Approved:** deleted after 30 days (UTC) by the scheduled purge |
 | `admin_audit_log`, `moderation_log` | admin actor id/role, action, reason, metadata | actor FK set NULL | **Owner/legal:** audit-log retention |
@@ -51,7 +51,7 @@ seller registered in Ukraine that receives payments; accounting retention must b
 | Backups | encrypted full dumps, 30 days in Actions artifacts | deleted users reappear in restored backups | **Owner:** accept 30-day backup window or shorten; on restore re-apply deletions |
 
 **Scheduled purge.** `backend/data_retention.py` runs on every `POST /api/operations/jobs/run` (same GitHub
-Actions scheduler, no extra worker). Cutoffs: telemetry `now - 30 days`; leads `now` minus 12 calendar months
+Actions scheduler, no extra worker). Reports age from `closed_at`, which the only status writer (admin PATCH) sets when moving to `resolved`/`dismissed` (final states, no reopen); `created_at`/`updated_at` are never used. History closed before the column existed has no real timestamp, so startup migration baselines it to the migration time (clock starts then, nothing is deleted early); a closed row with NULL `closed_at` is never purged. Cutoffs: telemetry `now - 30 days`; leads `now` minus 12 calendar months
 (same day/time one year earlier, clamped to month end, e.g. 29 Feb -> 28 Feb), both UTC, strictly `created_at < cutoff`.
 Deletion is in batches of 500 (max 20 batches per table per run, remainder next run) using portable SQL on the
 existing `created_at` indexes. Errors are logged without row data and returned in the run summary
@@ -60,7 +60,7 @@ existing `created_at` indexes. Errors are logged without row data and returned i
 **Limits of the guarantees.** Telemetry has no user id: only events whose `session_id` matches one of the
 leaver's lead requests are removed at deletion; other anonymous events (including page URL / user agent / payload,
 which may incidentally contain personal text) remain until 30 days. Backups keep deleted data for up to 30 days.
-`listing_reports`, `premium_orders` and audit logs are not purged. **The first deployment of this code will delete
+`premium_orders`, `admin_audit_log` and `moderation_log` are not purged. **The first deployment of this code will delete
 existing rows older than the cutoffs on the first scheduler run.**
 
 ## Release, rollback and readiness runbook
@@ -103,3 +103,13 @@ UA_TEST_CLOUDINARY_CONFIRM=<test_cloud_name>
 ```
 
 The gate (`backend/real_storage_gate.py`) fails closed unless both are set, the confirm value equals the cloud name, and that name differs from any `CLOUDINARY_URL` / `CLOUDINARY_CLOUD_NAME` production reference. Absence of a production reference does not prove isolation, so the explicit confirm is always required. Only a random `listings/<id>/` prefix is touched; presets are never changed. Run: `.venv/bin/python -m unittest backend.test_cloudinary_real_storage -v` (skipped without the file).
+
+## Remaining retention categories (not approved, not implemented)
+
+| Category | PII risk | Proposed operational decision (owner to confirm) |
+|---|---|---|
+| `premium_orders` | no name/email after deletion; provider payment id, amounts, dates link to the payment processor | Keep; **accountant** sets the period for primary accounting records. No automated purge until then |
+| `admin_audit_log` | actor id nulled on deletion; `metadata_json`, `request_id`, IP-like fields may carry incidental identifiers | Propose fixed period (e.g. 12-24 months) with purge job; owner/legal to pick |
+| `moderation_log` | actor nulled; reason text may include user content | Same period as audit log; owner/legal to pick |
+| `account_deletion_log` / `account_deletion_jobs` | counters / owner id only, no PII | Prune completed jobs after e.g. 90 days (optional, owner) |
+| Backups | contain everything for up to 30 days | Accept 30-day window; re-apply deletions after any restore |

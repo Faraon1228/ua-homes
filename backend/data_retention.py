@@ -2,12 +2,13 @@
 
 Approved periods (all UTC, compared against ``created_at``):
   * ``lead_funnel_events`` and ``client_observability_events``: 30 days
-  * ``lead_requests``: 12 calendar months (deleted, not anonymised)
+  * ``lead_requests``: 12 calendar months from ``created_at`` (deleted, not anonymised)
+  * ``listing_reports``: 12 calendar months after ``closed_at`` (resolved/dismissed only)
 
 Rows strictly older than the cutoff are deleted in bounded batches with portable
 SQL, so one run never holds a long transaction. Failures are logged without row
 data and reported in the run summary instead of being swallowed.
-``listing_reports``, ``premium_orders`` and audit logs are intentionally not handled.
+``premium_orders`` and audit logs are intentionally not handled.
 """
 
 from __future__ import annotations
@@ -42,15 +43,26 @@ def cutoffs(now: datetime.datetime) -> dict[str, str]:
         "lead_funnel_events": telemetry,
         "client_observability_events": telemetry,
         "lead_requests": leads,
+        "listing_reports": leads,
     }
 
 
+# Reports age from their explicit close time (resolved/dismissed are final states); open and
+# reviewing reports, and closed rows without a known close time, are never deleted.
+_RULES = {
+    "lead_requests": "created_at",
+    "listing_reports": "closed_at",
+}
+
+
 def _purge_table(db, table: str, cutoff: str) -> int:
+    column = _RULES.get(table, "created_at")
+    extra = " AND status IN ('resolved', 'dismissed')" if table == "listing_reports" else ""
     deleted = 0
     for _ in range(MAX_BATCHES_PER_TABLE):
         cursor = db.execute(
             f"DELETE FROM {table} WHERE id IN ("
-            f"SELECT id FROM {table} WHERE created_at < ? ORDER BY id LIMIT ?)",
+            f"SELECT id FROM {table} WHERE {column} IS NOT NULL AND {column} < ?{extra} ORDER BY id LIMIT ?)",
             (cutoff, BATCH_SIZE),
         )
         count = int(cursor.rowcount or 0)

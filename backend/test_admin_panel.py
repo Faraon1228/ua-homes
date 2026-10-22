@@ -475,9 +475,9 @@ class AdminPanelTests(unittest.TestCase):
         )
         self.assertEqual(updated.status_code, 200)
         with sqlite3.connect(TEST_DB) as db:
-            report_status = db.execute(
-                "SELECT status FROM listing_reports WHERE id = ?", (report_id,)
-            ).fetchone()[0]
+            report_status, closed_at = db.execute(
+                "SELECT status, closed_at FROM listing_reports WHERE id = ?", (report_id,)
+            ).fetchone()
             audit = db.execute(
                 """
                 SELECT permission, metadata_json, request_id
@@ -486,6 +486,7 @@ class AdminPanelTests(unittest.TestCase):
                 (request_id,),
             ).fetchone()
         self.assertEqual(report_status, "resolved")
+        self.assertRegex(closed_at, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
         self.assertEqual(audit[0], "reports/manage")
         self.assertNotIn("must-not-enter-audit", audit[1])
         self.assertNotIn("details", audit[1])
