@@ -56,6 +56,7 @@ class CloudinaryRealStorageTests(unittest.TestCase):
     def tearDown(self):
         try:
             self.media.purge_user_media([], self.owner)  # only this test's prefix
+            self.assertEqual(self._remaining(), 0, "test prefix must be empty after cleanup")
         finally:
             [patch.stop() for patch in self.patches]
             self.env.stop()
@@ -65,6 +66,15 @@ class CloudinaryRealStorageTests(unittest.TestCase):
         public_id = f"{self.prefix}{name}"
         result = self.cloudinary.uploader.upload(PIXEL, public_id=public_id, overwrite=True, resource_type="image")
         return public_id, result["secure_url"]
+
+    def _remaining(self):
+        total = 0
+        for resource_type in ("image", "video", "raw"):
+            result = self.cloudinary.api.resources(
+                type="upload", prefix=self.prefix, resource_type=resource_type, max_results=10
+            )
+            total += len(result.get("resources", []))
+        return total
 
     def _exists(self, public_id):
         from cloudinary.exceptions import NotFound
