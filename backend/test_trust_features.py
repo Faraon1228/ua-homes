@@ -1167,6 +1167,52 @@ class TrustFeatureTests(unittest.TestCase):
         destroy.assert_not_called()
         by_prefix.assert_not_called()
 
+    def test_storage_requests_in_deletion_path_have_bounded_timeouts_and_retries(self):
+        media_routes = importlib.import_module("media_routes")
+        import account_deletion_jobs as jobs
+
+        config = media_routes._bounded_s3_config()
+        self.assertEqual(config.connect_timeout, 5)
+        self.assertEqual(config.read_timeout, 30)
+        self.assertEqual(config.retries, {"max_attempts": 3, "mode": "standard"})
+        worst_s3 = media_routes.S3_MAX_ATTEMPTS * (media_routes.S3_CONNECT_TIMEOUT_SECONDS + media_routes.S3_READ_TIMEOUT_SECONDS) + 60
+        worst_cloudinary = 4 * 2 * media_routes.CLOUDINARY_TIMEOUT_SECONDS
+        self.assertLess(max(worst_s3, worst_cloudinary), jobs.LEASE_SECONDS / 5)
+
+        captured = {}
+        fake_s3 = mock.MagicMock()
+        fake_s3.get_paginator.return_value.paginate.return_value = [{"Contents": [{"Key": "listings/7/a.jpg"}]}]
+        fake_s3.delete_objects.return_value = {}
+        with mock.patch.multiple(app_module, CLOUDINARY_URL="cloudinary://k:s@demo", S3_BUCKET="b", S3_ACCESS_KEY="a", S3_SECRET_KEY="s"), \
+                mock.patch("boto3.client", side_effect=lambda *a, **kw: captured.update(kw) or fake_s3), \
+                mock.patch("cloudinary.api.delete_resources_by_prefix", return_value={"partial": False}) as by_prefix:
+            self.assertEqual(media_routes.purge_user_media([], 7, heartbeat=lambda: True), [])
+        self.assertEqual(captured["config"].connect_timeout, 5)
+        self.assertEqual(captured["config"].read_timeout, 30)
+        self.assertEqual(captured["config"].retries["max_attempts"], 3)
+        self.assertEqual(by_prefix.call_args.kwargs["timeout"], media_routes.CLOUDINARY_TIMEOUT_SECONDS)
+
+        with mock.patch.object(app_module, "CLOUDINARY_URL", "cloudinary://k:s@demo"), \
+                mock.patch("cloudinary.uploader.destroy", return_value={"result": "ok"}) as destroy:
+            url = "https://res.cloudinary.com/demo/image/upload/v1/listings/7/a/photo.jpg"
+            media_routes.cleanup_listing_media([url], 7)
+        self.assertEqual(destroy.call_args.kwargs["timeout"], media_routes.CLOUDINARY_TIMEOUT_SECONDS)
+
+    def test_purge_stops_after_lease_loss_between_batches(self):
+        media_routes = importlib.import_module("media_routes")
+        fake_s3 = mock.MagicMock()
+        fake_s3.get_paginator.return_value.paginate.return_value = [
+            {"Contents": [{"Key": "listings/7/a.jpg"}]},
+            {"Contents": [{"Key": "listings/7/b.jpg"}]},
+        ]
+        fake_s3.delete_objects.return_value = {}
+        beats = iter([True, False])
+        with mock.patch.multiple(app_module, CLOUDINARY_URL="", S3_BUCKET="b", S3_ACCESS_KEY="a", S3_SECRET_KEY="s"), \
+                mock.patch("boto3.client", return_value=fake_s3):
+            result = media_routes.purge_user_media([], 7, heartbeat=lambda: next(beats))
+        self.assertEqual(result, ["lease-lost"])
+        self.assertEqual(fake_s3.delete_objects.call_count, 1)
+
     def test_sweep_delay_has_a_safe_minimum(self):
         import account_deletion_jobs as jobs
 

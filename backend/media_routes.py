@@ -190,6 +190,28 @@ def generate_presigned_upload_url(
     return None
 
 
+# Every storage request in the deletion path is bounded far below the job lease
+# (boto3 defaults are 60s connect/read with legacy 5 attempts; Cloudinary's admin and
+# uploader calls have no timeout unless one is passed).
+# Worst case S3: 3 attempts x (5s + 30s) plus backoff ~ 2 min. Cloudinary: urllib3
+# default of 3 retries x (2 x 20s) ~ 3 min.
+S3_CONNECT_TIMEOUT_SECONDS = 5
+S3_READ_TIMEOUT_SECONDS = 30
+S3_MAX_ATTEMPTS = 3
+CLOUDINARY_TIMEOUT_SECONDS = 20
+
+
+def _bounded_s3_config():
+    from botocore.config import Config
+
+    return Config(
+        signature_version="s3v4",
+        connect_timeout=S3_CONNECT_TIMEOUT_SECONDS,
+        read_timeout=S3_READ_TIMEOUT_SECONDS,
+        retries={"max_attempts": S3_MAX_ATTEMPTS, "mode": "standard"},
+    )
+
+
 def _alive(heartbeat) -> bool:
     """Heartbeat hook between provider calls; False means the caller lost its job lease."""
     return heartbeat is None or bool(heartbeat())
@@ -253,7 +275,7 @@ def cleanup_listing_media(media_urls: list[str], user_id: int, heartbeat=None) -
                 aws_access_key_id=s3_access_key,
                 aws_secret_access_key=s3_secret_key,
                 endpoint_url=s3_endpoint,
-                config=Config(signature_version="s3v4"),
+                config=_bounded_s3_config(),
             )
             unique_keys = sorted(set(s3_keys))
             for start in range(0, len(unique_keys), 1000):
@@ -272,7 +294,7 @@ def cleanup_listing_media(media_urls: list[str], user_id: int, heartbeat=None) -
             import cloudinary
             import cloudinary.uploader
 
-            cloudinary.config(secure=True)
+            cloudinary.config(secure=True, timeout=CLOUDINARY_TIMEOUT_SECONDS)
             for public_id, resource_type in sorted(set(cloudinary_assets)):
                 if not _alive(heartbeat):
                     return ["lease-lost"]
@@ -280,6 +302,7 @@ def cleanup_listing_media(media_urls: list[str], user_id: int, heartbeat=None) -
                     public_id,
                     resource_type=resource_type,
                     invalidate=True,
+                    timeout=CLOUDINARY_TIMEOUT_SECONDS,
                 )
                 if result.get("result") not in {"ok", "not found"}:
                     failures.append(public_id)
@@ -340,7 +363,7 @@ def purge_user_media(media_urls: list[str], user_id: int, heartbeat=None) -> lis
                 aws_access_key_id=s3_access_key,
                 aws_secret_access_key=s3_secret_key,
                 endpoint_url=getattr(app_module, "S3_ENDPOINT", None),
-                config=Config(signature_version="s3v4"),
+                config=_bounded_s3_config(),
             )
             for page in s3.get_paginator("list_objects_v2").paginate(Bucket=s3_bucket, Prefix=prefix):
                 if not _alive(heartbeat):
@@ -358,13 +381,16 @@ def purge_user_media(media_urls: list[str], user_id: int, heartbeat=None) -> lis
             import cloudinary
             import cloudinary.api
 
-            cloudinary.config(secure=True)
+            cloudinary.config(secure=True, timeout=CLOUDINARY_TIMEOUT_SECONDS)
             for resource_type in ("image", "video"):
                 for _ in range(50):
                     if not _alive(heartbeat):
                         return ["lease-lost"]
                     result = cloudinary.api.delete_resources_by_prefix(
-                        prefix, resource_type=resource_type, invalidate=True
+                        prefix,
+                        resource_type=resource_type,
+                        invalidate=True,
+                        timeout=CLOUDINARY_TIMEOUT_SECONDS,
                     )
                     if not result.get("partial"):
                         break
