@@ -1881,10 +1881,16 @@ export default function RealEstateApp() {
         <LazyDeleteAccountDialog
           authToken={authToken}
           onClose={closeDeleteAccount}
-          onDeleted={() => {
+          onDeleted={(result) => {
             setShowDeleteAccount(false);
             logoutProfile();
-            setAuthSuccess("Акаунт видалено");
+            setAuthSuccess(
+              result?.deleted === false
+                ? "Видалення прийнято. Акаунт заблоковано, дані буде видалено автоматично."
+                : result?.media_cleanup_pending
+                ? "Акаунт видалено. Фінальне очищення файлів завершиться автоматично протягом кількох годин."
+                : "Акаунт видалено"
+            );
           }}
         />
       </React.Suspense>
@@ -3286,7 +3292,9 @@ export default function RealEstateApp() {
           formData.append("file", file);
           formData.append("resource_type", presigned.resourceType || "image");
           if (presigned.publicId) formData.append("public_id", presigned.publicId);
-          if (presigned.uploadPreset) formData.append("upload_preset", presigned.uploadPreset);
+          if (presigned.authType !== "signed" || !presigned.apiKey || !presigned.signature || !presigned.timestamp) {
+            throw new Error("Сховище медіа не видало підписаного дозволу на завантаження. Спробуйте пізніше.");
+          }
           if (presigned.apiKey) formData.append("api_key", presigned.apiKey);
           if (presigned.timestamp) formData.append("timestamp", String(presigned.timestamp));
           if (presigned.signature) formData.append("signature", presigned.signature);

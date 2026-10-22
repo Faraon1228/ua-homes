@@ -64,6 +64,7 @@ class TrustFeatureTests(unittest.TestCase):
             for table in (
                 "admin_audit_log",
                 "account_deletion_log",
+                "account_deletion_jobs",
                 "client_observability_events",
                 "lead_funnel_events",
                 "lead_requests",
@@ -897,8 +898,9 @@ class TrustFeatureTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["deleted"])
+        self.assertTrue(response.get_json()["media_cleanup_pending"])
+        self.assertEqual(purge.call_count, 1)
         purged_urls, purged_user = purge.call_args_list[0].args
-        self.assertEqual(purge.call_args_list[1].args, ([], user_id))
         self.assertEqual(purged_user, user_id)
         self.assertEqual(purged_urls, [f"https://cdn.example.test/listings/{user_id}/a/photo.jpg"])
         for sql in (
@@ -929,20 +931,179 @@ class TrustFeatureTests(unittest.TestCase):
         login = self.client.post("/api/auth/login", json={"email": "leaver@example.test", "password": "correct-password"})
         self.assertEqual(login.status_code, 401)
 
-    def test_account_deletion_media_failure_is_honest_and_retryable(self):
+    def _run_jobs(self, purge_result, when=None):
+        from account_deletion_jobs import run_due_jobs
+
+        with app_module.app.test_request_context(), mock.patch.object(
+            app_module, "purge_user_media", return_value=purge_result
+        ) as purge:
+            summary = run_due_jobs(app_module.get_db(), app_module, now=when)
+        return summary, purge
+
+    def _later(self, seconds):
+        import datetime
+
+        return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(seconds=seconds)
+
+    def test_account_deletion_media_failure_is_queued_locked_and_resumes_automatically(self):
         user_id, listing_id, token = self._seed_deletable_account()
         body = {"password": "correct-password", "confirm": True}
         with mock.patch.object(app_module, "purge_user_media", return_value=["listings/x"]):
-            failed = self.client.post("/api/auth/delete-account", json=body, headers=self._auth(token))
-        self.assertEqual(failed.status_code, 502)
-        self.assertTrue(failed.get_json()["retryable"])
-        self.assertEqual(failed.get_json()["media_cleanup_pending"], 1)
-        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ?", user_id), 1)
+            accepted = self.client.post("/api/auth/delete-account", json=body, headers=self._auth(token))
+        self.assertEqual(accepted.status_code, 202)
+        self.assertFalse(accepted.get_json()["deleted"])
+        self.assertTrue(accepted.get_json()["pending"])
+        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ? AND status = 'deleting'", user_id), 1)
         self.assertEqual(self._count("SELECT COUNT(*) FROM listings WHERE id = ? AND status = 'archived'", listing_id), 1)
+        self.assertEqual(self.client.get("/api/auth/me", headers=self._auth(token)).status_code, 401)
         self.assertEqual(self.client.get(f"/api/listings/{listing_id}").status_code, 404)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM account_deletion_jobs WHERE stage = 'media' AND attempts = 1"), 1)
+        # Not yet due: backoff holds the retry back.
+        summary, purge = self._run_jobs([])
+        self.assertEqual(summary["processed"], 0)
+        purge.assert_not_called()
+        # After the backoff (simulated restart: a fresh worker, no in-memory state) it finishes on its own.
+        summary, _ = self._run_jobs([], self._later(120))
+        self.assertEqual(summary["outcomes"], {"progressed": 1})
+        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ?", user_id), 0)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM account_deletion_jobs WHERE stage = 'sweep' AND status = 'pending'"), 1)
+
+    def test_deferred_sweep_runs_only_after_signature_window_and_is_idempotent(self):
+        user_id, _listing_id, token = self._seed_deletable_account()
         with mock.patch.object(app_module, "purge_user_media", return_value=[]):
-            retried = self.client.post("/api/auth/delete-account", json=body, headers=self._auth(token))
-        self.assertEqual(retried.status_code, 200)
+            self.client.post(
+                "/api/auth/delete-account",
+                json={"password": "correct-password", "confirm": True},
+                headers=self._auth(token),
+            )
+        summary, purge = self._run_jobs([], self._later(3000))
+        self.assertEqual(summary["processed"], 0)
+        purge.assert_not_called()
+        summary, purge = self._run_jobs([], self._later(7300))
+        self.assertEqual(summary["outcomes"], {"done": 1})
+        self.assertEqual(purge.call_args.args, ([], user_id))
+        again, purge = self._run_jobs([], self._later(7400))
+        self.assertEqual(again["processed"], 0)
+        purge.assert_not_called()
+
+    def test_deletion_job_stores_only_owner_id_and_state(self):
+        user_id, _listing_id, token = self._seed_deletable_account()
+        with mock.patch.object(app_module, "purge_user_media", return_value=["listings/x/photo.jpg"]):
+            self.client.post(
+                "/api/auth/delete-account",
+                json={"password": "correct-password", "confirm": True},
+                headers=self._auth(token),
+            )
+        with sqlite3.connect(TEST_DB) as db:
+            columns = [row[1] for row in db.execute("PRAGMA table_info(account_deletion_jobs)")]
+            error = db.execute("SELECT last_error FROM account_deletion_jobs").fetchone()[0]
+        self.assertEqual(
+            set(columns),
+            {"id", "owner_id", "stage", "status", "attempts", "next_run_at", "lease_until", "lease_token",
+             "last_error", "created_at", "updated_at", "completed_at"},
+        )
+        self.assertEqual(error, "media:incomplete:1")
+        self.assertNotIn("photo.jpg", error)
+
+    def test_concurrent_workers_cannot_claim_the_same_job(self):
+        from account_deletion_jobs import _claim, _now
+
+        user_id, _listing_id, token = self._seed_deletable_account()
+        with mock.patch.object(app_module, "purge_user_media", return_value=["x"]):
+            self.client.post(
+                "/api/auth/delete-account",
+                json={"password": "correct-password", "confirm": True},
+                headers=self._auth(token),
+            )
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute("UPDATE account_deletion_jobs SET next_run_at = '2000-01-01 00:00:00'")
+            db.commit()
+        with app_module.app.test_request_context():
+            db = app_module.get_db()
+            job_id = db.execute("SELECT id FROM account_deletion_jobs").fetchone()["id"]
+            first = _claim(db, job_id, _now())
+            second = _claim(db, job_id, _now())
+            self.assertTrue(first)
+            self.assertIsNone(second)
+            # A crashed worker's lease expires and another worker takes over.
+            expired = _claim(db, job_id, self._later(700))
+            self.assertTrue(expired)
+            self.assertNotEqual(first, expired)
+
+    def test_deletion_job_becomes_terminally_failed_after_max_attempts(self):
+        import account_deletion_jobs as jobs
+
+        user_id, _listing_id, token = self._seed_deletable_account()
+        with mock.patch.object(app_module, "purge_user_media", return_value=["s3:not-configured:listings/1/"]):
+            self.client.post(
+                "/api/auth/delete-account",
+                json={"password": "correct-password", "confirm": True},
+                headers=self._auth(token),
+            )
+        self.assertEqual(self._count("SELECT COUNT(*) FROM account_deletion_jobs WHERE last_error = 'media:not-configured:1'"), 1)
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute("UPDATE account_deletion_jobs SET attempts = ?", (jobs.MAX_ATTEMPTS - 1,))
+            db.commit()
+        summary, _ = self._run_jobs(["s3:not-configured:listings/1/"], self._later(7200))
+        self.assertEqual(summary["outcomes"], {"failed": 1})
+        self.assertEqual(summary["failed"], 1)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ? AND status = 'deleting'", user_id), 1)
+        self.assertEqual(jobs.backoff_seconds(1), 60)
+        self.assertEqual(jobs.backoff_seconds(30), jobs.BACKOFF_MAX_SECONDS)
+
+    def test_database_stage_failure_rolls_back_and_retries(self):
+        user_id, _listing_id, token = self._seed_deletable_account()
+        with mock.patch.object(app_module, "purge_user_media", return_value=[]), \
+                mock.patch.object(app_module, "_refresh_user_growth_summary", side_effect=RuntimeError("boom")):
+            response = self.client.post(
+                "/api/auth/delete-account",
+                json={"password": "correct-password", "confirm": True},
+                headers=self._auth(token),
+            )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ?", user_id), 1)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM account_deletion_log"), 0)
+        summary, _ = self._run_jobs([], self._later(120))
+        self.assertEqual(summary["outcomes"], {"progressed": 1})
+        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ?", user_id), 0)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM account_deletion_log"), 1)
+
+    def test_second_delete_request_is_rejected_while_deleting(self):
+        user_id, _listing_id, token = self._seed_deletable_account()
+        with mock.patch.object(app_module, "purge_user_media", return_value=["x"]):
+            self.client.post(
+                "/api/auth/delete-account",
+                json={"password": "correct-password", "confirm": True},
+                headers=self._auth(token),
+            )
+        again = self.client.post(
+            "/api/auth/delete-account",
+            json={"password": "correct-password", "confirm": True},
+            headers=self._auth(token),
+        )
+        self.assertEqual(again.status_code, 401)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM account_deletion_jobs"), 1)
+
+    def test_jobs_endpoint_requires_scheduler_key_and_runs_due_jobs(self):
+        self.assertEqual(self.client.post("/api/operations/jobs/run").status_code, 401)
+        self.assertEqual(
+            self.client.post("/api/operations/jobs/run", headers={"Authorization": "Bearer nope"}).status_code, 401
+        )
+        user_id, _listing_id, token = self._seed_deletable_account()
+        with mock.patch.object(app_module, "purge_user_media", return_value=["x"]):
+            self.client.post(
+                "/api/auth/delete-account",
+                json={"password": "correct-password", "confirm": True},
+                headers=self._auth(token),
+            )
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute("UPDATE account_deletion_jobs SET next_run_at = '2000-01-01 00:00:00'")
+            db.commit()
+        with mock.patch.dict(os.environ, {"UA_HOMES_STATUS_REFRESH_KEY": "scheduler-key"}), \
+                mock.patch.object(app_module, "purge_user_media", return_value=[]):
+            response = self.client.post("/api/operations/jobs/run", headers={"Authorization": "Bearer scheduler-key"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["outcomes"], {"progressed": 1})
         self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ?", user_id), 0)
 
     def test_account_deletion_blocked_while_payment_processing(self):
@@ -981,7 +1142,7 @@ class TrustFeatureTests(unittest.TestCase):
                 signed = app_module.generate_presigned_upload_url("photo.jpg", "image/jpeg")
         self.assertLessEqual(signed["expiresIn"], 900)
 
-    def test_account_deletion_locks_account_during_purge_and_unlocks_on_failure(self):
+    def test_account_deletion_locks_account_during_purge_and_stays_locked_on_failure(self):
         user_id, _listing_id, token = self._seed_deletable_account()
         seen = {}
 
@@ -996,11 +1157,11 @@ class TrustFeatureTests(unittest.TestCase):
                 json={"password": "correct-password", "confirm": True},
                 headers=self._auth(token),
             )
-        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.status_code, 202)
         self.assertEqual(seen["status"], 1)
         self.assertEqual(seen["blocked"], 401)
-        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ? AND status = 'active'", user_id), 1)
-        self.assertEqual(self.client.get("/api/auth/me", headers=self._auth(token)).status_code, 200)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ? AND status = 'deleting'", user_id), 1)
+        self.assertEqual(self.client.get("/api/auth/me", headers=self._auth(token)).status_code, 401)
 
     def test_seller_moderation_then_verified_fast_publish_and_delete(self):
         with sqlite3.connect(TEST_DB) as db:
@@ -1637,7 +1798,7 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(db.execute("SELECT images FROM listings WHERE id = 1").fetchone()[0], concurrent_value)
         db.close()
 
-    def test_cloudinary_prefers_signed_uploads_over_unsigned_preset(self):
+    def test_cloudinary_is_signed_only_and_never_issues_unsigned_presets(self):
         url = "cloudinary://key:secret@test-cloud"
         with app_module.app.test_request_context():
             app_module.g.user_id = self.owner_id
@@ -1648,8 +1809,20 @@ class TrustFeatureTests(unittest.TestCase):
                 self.assertNotIn("uploadPreset", signed)
             with mock.patch.multiple(app_module, S3_ENABLED=True, S3_BUCKET=None, CLOUDINARY_URL="cloudinary://test-cloud"), \
                     mock.patch.dict(os.environ, {"CLOUDINARY_UPLOAD_PRESET": "open_preset", "CLOUDINARY_API_KEY": "", "CLOUDINARY_API_SECRET": ""}):
-                fallback = app_module.generate_presigned_upload_url("photo.jpg", "image/jpeg")
-                self.assertEqual(fallback["authType"], "unsigned")
+                self.assertIsNone(app_module.generate_presigned_upload_url("photo.jpg", "image/jpeg"))
+
+    def test_presign_route_explains_missing_cloudinary_credentials(self):
+        token = app_module.make_token(self.owner_id, "owner@example.test")
+        with mock.patch.multiple(app_module, S3_BUCKET=None, CLOUDINARY_URL="cloudinary://test-cloud"), \
+                mock.patch.dict(os.environ, {"CLOUDINARY_UPLOAD_PRESET": "open_preset", "CLOUDINARY_API_KEY": "", "CLOUDINARY_API_SECRET": ""}):
+            response = self.client.post(
+                "/api/media/presigned-url",
+                json={"filename": "a.jpg", "contentType": "image/jpeg", "size": 10},
+                headers=self._auth(token),
+            )
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("API key", response.get_json()["error"])
+        self.assertIn("preset", response.get_json()["error"])
 
     def test_upload_signing_uses_epoch_time_and_private_s3_requires_delivery_url(self):
         with app_module.app.test_request_context():

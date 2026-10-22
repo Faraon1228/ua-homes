@@ -169,3 +169,21 @@ def refresh_operations_system_status():
         generated_at=snapshot["generated_at"],
         refresh_started=refreshed,
     ), 200 if refreshed else 429
+
+
+@system_bp.route("/api/operations/jobs/run", methods=["POST"])
+def run_operations_jobs():
+    """Scheduler-only: run due durable background jobs (account-deletion cleanup)."""
+    app_module = _get_app_module()
+    try:
+        from system_status import operations_authorized
+        import account_deletion_jobs
+    except ImportError:
+        from backend.system_status import operations_authorized
+        from backend import account_deletion_jobs
+
+    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not operations_authorized(token):
+        return jsonify(error="Unauthorized"), 401
+    summary = account_deletion_jobs.run_due_jobs(app_module.get_db(), app_module)
+    return jsonify(summary), 200

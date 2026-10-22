@@ -37,11 +37,40 @@ def require_auth(f):
     return decorated
 
 
-def _cloudinary_upload_preset() -> str:
+def _cloudinary_credentials(cloudinary_url: str) -> tuple[str, str, str]:
+    parsed = urlparse(cloudinary_url or "")
+    cloud_name = parsed.hostname or ""
+    api_key = parsed.username or os.environ.get("CLOUDINARY_API_KEY", "").strip()
+    api_secret = parsed.password or os.environ.get("CLOUDINARY_API_SECRET", "").strip()
+    return cloud_name, api_key, api_secret
+
+
+def media_storage_config_problem() -> str | None:
+    """Explain why uploads cannot be issued; None when storage is usable.
+
+    Cloudinary uploads are signed-only: unsigned presets are never issued.
+    """
     app_module = _get_app_module()
-    if hasattr(app_module, "_cloudinary_upload_preset"):
-        return app_module._cloudinary_upload_preset()
-    return os.environ.get("CLOUDINARY_UPLOAD_PRESET", "").strip()
+    s3_bucket = getattr(app_module, "S3_BUCKET", "")
+    cloudinary_url = getattr(app_module, "CLOUDINARY_URL", "")
+    if s3_bucket:
+        if not (getattr(app_module, "S3_ACCESS_KEY", "") and getattr(app_module, "S3_SECRET_KEY", "")):
+            return "Сховище медіа не налаштоване: відсутні S3_ACCESS_KEY/S3_SECRET_KEY."
+        if not getattr(app_module, "S3_PUBLIC_BASE_URL", ""):
+            return "Сховище медіа не налаштоване: відсутній S3_PUBLIC_BASE_URL."
+        return None
+    if cloudinary_url:
+        cloud_name, api_key, api_secret = _cloudinary_credentials(cloudinary_url)
+        if not cloud_name:
+            return "Сховище медіа не налаштоване: CLOUDINARY_URL не містить cloud name."
+        if not (api_key and api_secret):
+            return (
+                "Сховище медіа не налаштоване: для підписаних завантажень Cloudinary потрібні "
+                "API key і secret (CLOUDINARY_URL або CLOUDINARY_API_KEY/CLOUDINARY_API_SECRET). "
+                "Незахищені upload preset не підтримуються."
+            )
+        return None
+    return "Сховище медіа не налаштоване."
 
 
 def generate_presigned_upload_url(
@@ -129,61 +158,31 @@ def generate_presigned_upload_url(
         import cloudinary.utils
 
         try:
-            parsed = urlparse(cloudinary_url)
-            cloud_name = parsed.hostname or ""
-            api_key = parsed.username or os.environ.get("CLOUDINARY_API_KEY", "").strip()
-            api_secret = parsed.password or os.environ.get("CLOUDINARY_API_SECRET", "").strip()
-            upload_preset = _cloudinary_upload_preset()
-
-            print(f"[Cloudinary] cloud_name={cloud_name}, preset={upload_preset}, has_api_key={bool(api_key)}")
-
-            if not cloud_name:
+            cloud_name, api_key, api_secret = _cloudinary_credentials(cloudinary_url)
+            if not (cloud_name and api_key and api_secret):
                 return None
 
             safe_stem = os.path.splitext(safe_filename)[0] or "media"
             public_id = f"listings/{user_id}/{unique_id}/{safe_stem}"
             upload_url = f"https://api.cloudinary.com/v1_1/{cloud_name}/{resource_type}/upload"
-
-            # Signed uploads are rejected by Cloudinary after ~1h; unsigned presets never expire.
-            if upload_preset and not (api_key and api_secret):
-                print(f"[Cloudinary] Using UNSIGNED upload preset: {upload_preset}")
-                return {
-                    "uploadUrl": upload_url,
-                    "method": "POST",
-                    "storage": "cloudinary",
-                    "expiresIn": expires_in,
-                    "cloudName": cloud_name,
-                    "authType": "unsigned",
-                    "uploadPreset": upload_preset,
-                    "publicId": public_id,
-                    "resourceType": resource_type,
-                }
-
-            if api_key and api_secret:
-                print(f"[Cloudinary] Preset NOT available, using SIGNED uploads with credentials")
-                timestamp = int(time.time())
-
-                sig_params = {
-                    "public_id": public_id,
-                    "timestamp": timestamp,
-                }
-                signature = cloudinary.utils.api_sign_request(sig_params, api_secret)
-
-                return {
-                    "uploadUrl": upload_url,
-                    "method": "POST",
-                    "storage": "cloudinary",
-                    "expiresIn": expires_in,
-                    "cloudName": cloud_name,
-                    "authType": "signed",
-                    "apiKey": api_key,
-                    "timestamp": timestamp,
-                    "signature": signature,
-                    "publicId": public_id,
-                    "resourceType": resource_type,
-                }
-
-            return None
+            # Cloudinary rejects signatures older than ~1h; deferred account-deletion sweeps rely on that window.
+            timestamp = int(time.time())
+            signature = cloudinary.utils.api_sign_request(
+                {"public_id": public_id, "timestamp": timestamp}, api_secret
+            )
+            return {
+                "uploadUrl": upload_url,
+                "method": "POST",
+                "storage": "cloudinary",
+                "expiresIn": expires_in,
+                "cloudName": cloud_name,
+                "authType": "signed",
+                "apiKey": api_key,
+                "timestamp": timestamp,
+                "signature": signature,
+                "publicId": public_id,
+                "resourceType": resource_type,
+            }
         except Exception as e:
             print(f"Error generating Cloudinary upload URL: {e}")
             return None
@@ -394,7 +393,7 @@ def get_presigned_upload_url_route():
     gen_func = getattr(app_module, "generate_presigned_upload_url", generate_presigned_upload_url)
     presigned = gen_func(filename, normalized_content_type, resource_type)
     if not presigned:
-        return jsonify(error="Сховище медіа не налаштоване."), 503
+        return jsonify(error=media_storage_config_problem() or "Сховище медіа не налаштоване."), 503
 
     presigned["contentType"] = normalized_content_type
     presigned["resourceType"] = resource_type

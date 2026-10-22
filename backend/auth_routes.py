@@ -15,8 +15,10 @@ from flask import Blueprint, current_app, g, jsonify, request, Response
 
 try:
     from app import limiter
+    import account_deletion_jobs as deletion_jobs
 except ImportError:
     from backend.app import limiter
+    from backend import account_deletion_jobs as deletion_jobs
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/api/auth")
 
@@ -430,26 +432,6 @@ def verify_phone():
     return jsonify(ok=True, phone_verified=True)
 
 
-def _collect_account_media(db, user_id: int) -> list[str]:
-    import json
-
-    urls: list[str] = []
-    for row in db.execute("SELECT images, videos FROM listings WHERE user_id = ?", (user_id,)).fetchall():
-        for column in ("images", "videos"):
-            try:
-                urls.extend(str(url) for url in json.loads(row[column] or "[]"))
-            except (TypeError, ValueError):
-                continue
-    urls.extend(
-        str(row["image_url"])
-        for row in db.execute(
-            "SELECT li.image_url FROM listing_images li JOIN listings l ON l.id = li.listing_id WHERE l.user_id = ?",
-            (user_id,),
-        ).fetchall()
-    )
-    return list(dict.fromkeys(urls))
-
-
 @auth_bp.route("/delete-account", methods=["POST"])
 @require_auth
 @limiter.limit("5 per hour")
@@ -485,108 +467,50 @@ def delete_account():
         return jsonify(error="Платіж ще обробляється. Спробуйте видалити акаунт пізніше."), 409
 
     user_id = int(user["id"])
-    email = str(user["email"] or "").strip().lower()
 
-    # Step 1: take everything off the public site and lock the account so no
-    # new listings or uploads can appear while media is being collected/purged.
-    db.execute(
-        "UPDATE listings SET status = 'archived', listing_status = 'removed' WHERE user_id = ?",
-        (user_id,),
-    )
-    db.execute("UPDATE users SET status = 'deleting' WHERE id = ?", (user_id,))
-    db.commit()
-    media_urls = _collect_account_media(db, user_id)
-
-    def _unlock_account():
-        db.execute("UPDATE users SET status = 'active' WHERE id = ? AND status = 'deleting'", (user_id,))
-        db.commit()
-
-    app_mod.cache_delete_prefix("public:listings:")
-
-    # Step 2: delete stored files; any failure aborts before data is destroyed.
+    # Take everything off the public site, lock the account and persist the
+    # deletion job in one transaction. The job (not this request) owns the rest,
+    # so a crash or restart resumes automatically.
     try:
-        failures = app_mod.purge_user_media(media_urls, user_id)
-    except Exception:
-        current_app.logger.exception("Account deletion media purge crashed user_id=%s", user_id)
-        failures = ["purge-error"]
-    if failures:
-        _unlock_account()
-        current_app.logger.error(
-            "Account deletion media cleanup failed user_id=%s objects=%s", user_id, len(failures)
+        locked = db.execute(
+            "UPDATE users SET status = 'deleting' WHERE id = ? AND status = 'active'", (user_id,)
         )
-        return jsonify(
-            error="Не вдалося видалити всі фото й відео. Акаунт не видалено, оголошення вже знято з публікації. Спробуйте ще раз.",
-            media_cleanup_pending=len(failures),
-            retryable=True,
-        ), 502
-
-    # Step 3: one transaction removes the account and scrubs personal data.
-    try:
-        listings_removed = db.execute(
-            "SELECT COUNT(*) AS n FROM listings WHERE user_id = ?", (user_id,)
-        ).fetchone()["n"]
-        open_reports = db.execute(
-            "SELECT COUNT(*) AS n FROM listing_reports r JOIN listings l ON l.id = r.listing_id"
-            " WHERE l.user_id = ? AND r.status = 'pending'",
-            (user_id,),
-        ).fetchone()["n"]
+        if locked.rowcount != 1:
+            db.rollback()
+            return jsonify(error="Видалення акаунта вже виконується."), 409
         db.execute(
-            "DELETE FROM alert_delivery_receipts WHERE alert_id IN ("
-            "SELECT id FROM listing_alerts WHERE user_id = ? OR LOWER(email) = ?)",
-            (user_id, email),
-        )
-        db.execute("DELETE FROM listing_alerts WHERE user_id = ? OR LOWER(email) = ?", (user_id, email))
-        db.execute("DELETE FROM push_devices WHERE user_id = ?", (user_id,))
-        db.execute("DELETE FROM user_favorites WHERE user_id = ?", (user_id,))
-        db.execute("DELETE FROM reviews WHERE user_id = ?", (user_id,))
-        db.execute(
-            "UPDATE lead_requests SET name = 'Видалений користувач', phone = NULL, email = NULL,"
-            " message = NULL, response_message = NULL, session_id = NULL, requester_user_id = NULL"
-            " WHERE requester_user_id = ? OR LOWER(email) = ?",
-            (user_id, email),
-        )
-        db.execute(
-            "UPDATE lead_requests SET response_message = NULL WHERE listing_id IN ("
-            "SELECT id FROM listings WHERE user_id = ?)",
+            "UPDATE listings SET status = 'archived', listing_status = 'removed' WHERE user_id = ?",
             (user_id,),
         )
-        db.execute(
-            "UPDATE listing_reports SET reporter_user_id = NULL, reporter_fingerprint = 'deleted-account',"
-            " details = '[removed]', idempotency_key = 'deleted-' || id"
-            " WHERE reporter_user_id = ?",
-            (user_id,),
-        )
-        db.execute("UPDATE premium_orders SET user_id = NULL WHERE user_id = ?", (user_id,))
-        db.execute(
-            "DELETE FROM listing_images WHERE listing_id IN (SELECT id FROM listings WHERE user_id = ?)",
-            (user_id,),
-        )
-        db.execute("DELETE FROM listings WHERE user_id = ?", (user_id,))
-        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        db.execute(
-            "INSERT INTO account_deletion_log (account_type, listings_removed, open_reports)"
-            " VALUES (?, ?, ?)",
-            (user["account_type"] or "owner", int(listings_removed), int(open_reports)),
-        )
-        app_mod._refresh_listing_city_summary(db)
-        app_mod._refresh_user_growth_summary(db)
+        deletion_jobs.enqueue(db, user_id)
         db.commit()
     except Exception:
         db.rollback()
-        _unlock_account()
-        current_app.logger.exception("Account deletion failed user_id=%s", user_id)
-        return jsonify(error="Не вдалося видалити акаунт. Спробуйте ще раз.", retryable=True), 500
-
-    # Catch uploads that landed between the first purge and the commit.
-    try:
-        late = app_mod.purge_user_media([], user_id)
-        if late:
-            current_app.logger.error(
-                "Account deletion late media sweep incomplete user_id=%s objects=%s", user_id, len(late)
-            )
-    except Exception:
-        current_app.logger.exception("Account deletion late media sweep crashed user_id=%s", user_id)
+        current_app.logger.exception("Account deletion could not be queued user_id=%s", user_id)
+        return jsonify(error="Не вдалося почати видалення акаунта. Спробуйте ще раз.", retryable=True), 500
 
     app_mod.cache_delete_prefix("public:listings:")
-    app_mod.cache_delete_prefix("admin:reports:")
-    return jsonify(ok=True, deleted=True)
+    job = db.execute("SELECT id FROM account_deletion_jobs WHERE owner_id = ?", (user_id,)).fetchone()
+    try:
+        deletion_jobs.run_job(db, app_mod, int(job["id"]))
+    except Exception:
+        db.rollback()
+        current_app.logger.exception("Account deletion inline run crashed user_id=%s", user_id)
+
+    state = db.execute(
+        "SELECT stage, status FROM account_deletion_jobs WHERE owner_id = ?", (user_id,)
+    ).fetchone()
+    account_removed = state["stage"] in ("sweep",) or state["status"] in ("done",)
+    if account_removed:
+        return jsonify(
+            ok=True,
+            deleted=True,
+            media_cleanup_pending=state["status"] != "done",
+            message="Акаунт видалено. Фінальне очищення файлів у сховищі завершиться автоматично протягом кількох годин.",
+        )
+    return jsonify(
+        ok=True,
+        deleted=False,
+        pending=True,
+        message="Видалення прийнято: акаунт заблоковано, оголошення знято з публікації. Дані буде видалено автоматично, повторно натискати нічого не потрібно.",
+    ), 202
