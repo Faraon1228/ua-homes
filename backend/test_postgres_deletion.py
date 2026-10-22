@@ -37,7 +37,9 @@ class FakeStorage:
         self.objects = set()
         self.fail = 0
 
-    def purge(self, urls, owner_id):
+    def purge(self, urls, owner_id, heartbeat=None):
+        if heartbeat is not None and not heartbeat():
+            return ["lease-lost"]
         if self.fail:
             self.fail -= 1
             return ["network-error"]
@@ -109,10 +111,10 @@ class PostgresDeletionTests(unittest.TestCase):
         calls = []
         lock = threading.Lock()
 
-        def counting_purge(urls, owner_id):
+        def counting_purge(urls, owner_id, heartbeat=None):
             with lock:
                 calls.append(owner_id)
-            return self.storage.purge(urls, owner_id)
+            return self.storage.purge(urls, owner_id, heartbeat)
 
         def worker():
             with app_module.app.app_context(), mock.patch.object(

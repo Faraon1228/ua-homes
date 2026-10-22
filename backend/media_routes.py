@@ -190,8 +190,17 @@ def generate_presigned_upload_url(
     return None
 
 
-def cleanup_listing_media(media_urls: list[str], user_id: int) -> list[str]:
-    """Delete only storage objects that are namespaced to the listing owner."""
+def _alive(heartbeat) -> bool:
+    """Heartbeat hook between provider calls; False means the caller lost its job lease."""
+    return heartbeat is None or bool(heartbeat())
+
+
+def cleanup_listing_media(media_urls: list[str], user_id: int, heartbeat=None) -> list[str]:
+    """Delete only storage objects that are namespaced to the listing owner.
+
+    ``heartbeat`` is called before every provider request; if it returns False the
+    work stops and ``lease-lost`` is reported so no further external I/O is issued.
+    """
     app_module = _get_app_module()
     s3_bucket = getattr(app_module, "S3_BUCKET", "")
     s3_access_key = getattr(app_module, "S3_ACCESS_KEY", "")
@@ -246,11 +255,15 @@ def cleanup_listing_media(media_urls: list[str], user_id: int) -> list[str]:
                 endpoint_url=s3_endpoint,
                 config=Config(signature_version="s3v4"),
             )
-            result = s3.delete_objects(
-                Bucket=s3_bucket,
-                Delete={"Objects": [{"Key": key} for key in sorted(set(s3_keys))], "Quiet": True},
-            )
-            failures.extend(str(item.get("Key") or "s3") for item in result.get("Errors", []))
+            unique_keys = sorted(set(s3_keys))
+            for start in range(0, len(unique_keys), 1000):
+                if not _alive(heartbeat):
+                    return ["lease-lost"]
+                result = s3.delete_objects(
+                    Bucket=s3_bucket,
+                    Delete={"Objects": [{"Key": key} for key in unique_keys[start : start + 1000]], "Quiet": True},
+                )
+                failures.extend(str(item.get("Key") or "s3") for item in result.get("Errors", []))
         except Exception:
             failures.extend(s3_keys)
 
@@ -261,6 +274,8 @@ def cleanup_listing_media(media_urls: list[str], user_id: int) -> list[str]:
 
             cloudinary.config(secure=True)
             for public_id, resource_type in sorted(set(cloudinary_assets)):
+                if not _alive(heartbeat):
+                    return ["lease-lost"]
                 result = cloudinary.uploader.destroy(
                     public_id,
                     resource_type=resource_type,
@@ -274,14 +289,16 @@ def cleanup_listing_media(media_urls: list[str], user_id: int) -> list[str]:
     return list(dict.fromkeys(failures))
 
 
-def purge_user_media(media_urls: list[str], user_id: int) -> list[str]:
+def purge_user_media(media_urls: list[str], user_id: int, heartbeat=None) -> list[str]:
     """Remove every stored object owned by a user, including orphaned uploads.
 
     Returns the identifiers that could not be deleted so callers can report the
     failure instead of claiming a clean removal.
     """
     app_module = _get_app_module()
-    failures = list(cleanup_listing_media(media_urls, user_id))
+    failures = list(cleanup_listing_media(media_urls, user_id, heartbeat))
+    if "lease-lost" in failures:
+        return failures
     prefix = f"listings/{int(user_id)}/"
 
     cloudinary_url = getattr(app_module, "CLOUDINARY_URL", "")
@@ -326,6 +343,8 @@ def purge_user_media(media_urls: list[str], user_id: int) -> list[str]:
                 config=Config(signature_version="s3v4"),
             )
             for page in s3.get_paginator("list_objects_v2").paginate(Bucket=s3_bucket, Prefix=prefix):
+                if not _alive(heartbeat):
+                    return ["lease-lost"]
                 keys = [{"Key": item["Key"]} for item in page.get("Contents", [])]
                 if not keys:
                     continue
@@ -342,6 +361,8 @@ def purge_user_media(media_urls: list[str], user_id: int) -> list[str]:
             cloudinary.config(secure=True)
             for resource_type in ("image", "video"):
                 for _ in range(50):
+                    if not _alive(heartbeat):
+                        return ["lease-lost"]
                     result = cloudinary.api.delete_resources_by_prefix(
                         prefix, resource_type=resource_type, invalidate=True
                     )

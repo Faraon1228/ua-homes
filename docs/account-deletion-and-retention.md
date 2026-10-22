@@ -14,11 +14,11 @@ signature and 15 min S3 URL lifetimes; values below 4200 s are raised to 4200 s)
 * Retry: exponential backoff 60 s … 1 h, `MAX_ATTEMPTS=20`, then `status='failed'` with a generic `last_error`
   (`<stage>:<incomplete|not-configured>:<n>`); the account stays locked until an operator fixes storage config and
   runs `UPDATE account_deletion_jobs SET status='pending', attempts=0, next_run_at=<now> WHERE status='failed'`.
-* Safety: workers claim a job by compare-and-set lease (30 min, renewed at the start of every stage). Every stage
+* Safety: workers claim a job by compare-and-set lease (30 min, renewed at the start of every stage and before every provider request (heartbeat with real elapsed time; a fenced worker stops issuing storage calls)). Every stage
   write is fenced by the lease token (a worker whose lease expired gets `lease-lost` and writes nothing; the
   database stage row-locks the job before deleting). Unexpected exceptions go through the same backoff/terminal
-  policy and are logged. A crashed worker's lease expires and the job resumes. One storage purge must finish
-  within the lease.
+  policy and are logged. A crashed worker's lease expires and the job resumes. A single provider request must finish
+  within the lease (30 min).
 * Execution: `.github/workflows/background-jobs.yml` (cron every 10 min, GitHub scheduled workflows are best-effort)
   calls `POST /api/operations/jobs/run` with the existing `UA_HOMES_STATUS_REFRESH_KEY` secret and fails the run if
   a job is terminally failed or the key is missing. There is no in-process timer; a server restart relies on the next scheduler tick.

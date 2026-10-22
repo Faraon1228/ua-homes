@@ -1065,35 +1065,107 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(self._count("SELECT COUNT(*) FROM account_deletion_jobs WHERE last_error = 'media:unexpected-error'"), 1)
         self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ? AND status = 'deleting'", user_id), 1)
 
-    def test_overlapping_lease_expiry_is_fenced(self):
-        import account_deletion_jobs as jobs
-
+    def _queued_job(self):
         user_id, _listing_id, token = self._seed_deletable_account()
         self._request_delete(token)
-        calls = []
+        with sqlite3.connect(TEST_DB) as db:
+            return user_id, db.execute("SELECT id FROM account_deletion_jobs").fetchone()[0]
 
-        def slow_purge(urls, uid):
-            calls.append(uid)
-            if len(calls) == 1:
-                # While worker A is stuck in storage I/O its lease expires and worker B takes over.
+    def test_live_heartbeat_keeps_the_lease_so_provider_is_not_called_twice(self):
+        import account_deletion_jobs as jobs
+
+        user_id, job_id = self._queued_job()
+        clock = [1000.0]
+        calls, blocked = [], []
+
+        def slow_provider(urls, uid, heartbeat=None):
+            for batch in range(3):
+                clock[0] += 1700  # one slow batch, shorter than the lease
+                self.assertTrue(heartbeat())
+                calls.append(batch)
                 with app_module.app.test_request_context():
-                    outcome = jobs.run_job(
-                        app_module.get_db(), app_module, job_id, self._later(jobs.LEASE_SECONDS + 60)
+                    blocked.append(
+                        jobs.run_job(app_module.get_db(), app_module, job_id, self._later(5 + (batch + 1) * 1700 + 100))
                     )
-                calls.append(outcome)
             return []
 
-        with sqlite3.connect(TEST_DB) as db:
-            job_id = db.execute("SELECT id FROM account_deletion_jobs").fetchone()[0]
         with app_module.app.test_request_context(), mock.patch.object(
-            app_module, "purge_user_media", side_effect=slow_purge
+            app_module, "purge_user_media", side_effect=slow_provider
+        ), mock.patch.object(jobs.time, "monotonic", side_effect=lambda: clock[0]):
+            outcome = jobs.run_job(app_module.get_db(), app_module, job_id, self._later(5))
+        self.assertEqual(outcome, "progressed")
+        self.assertEqual(calls, [0, 1, 2])
+        self.assertEqual(blocked, ["skipped"] * 3)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM account_deletion_log"), 1)
+
+    def test_stalled_worker_is_fenced_and_stops_provider_calls(self):
+        import account_deletion_jobs as jobs
+
+        user_id, job_id = self._queued_job()
+        calls, nested = [], []
+
+        def stalled_provider(urls, uid, heartbeat=None):
+            calls.append("A" if not nested else "B")
+            if not nested:
+                nested.append(True)  # A hangs in provider I/O without heartbeating; B takes over
+                with app_module.app.test_request_context():
+                    nested.append(jobs.run_job(
+                        app_module.get_db(), app_module, job_id, self._later(jobs.LEASE_SECONDS + 60)
+                    ))
+                # A wakes up: the next provider request must not be issued.
+                if heartbeat is not None and not heartbeat():
+                    return ["lease-lost"]
+                calls.append("A-extra-call")
+            return []
+
+        with app_module.app.test_request_context(), mock.patch.object(
+            app_module, "purge_user_media", side_effect=stalled_provider
         ), self.assertLogs(level="WARNING"):
             outcome_a = jobs.run_job(app_module.get_db(), app_module, job_id, self._later(5))
         self.assertEqual(outcome_a, "lease-lost")
-        # B took over and completed the account stage once; A did not duplicate or overwrite it.
+        self.assertEqual(nested[1], "progressed")
+        self.assertEqual(calls, ["A", "B"])
         self.assertEqual(self._count("SELECT COUNT(*) FROM account_deletion_log"), 1)
-        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ?", user_id), 0)
         self.assertEqual(self._count("SELECT COUNT(*) FROM account_deletion_jobs WHERE stage = 'sweep' AND status = 'pending'"), 1)
+
+    def test_stale_worker_failure_does_not_change_job_or_count_as_failed(self):
+        import account_deletion_jobs as jobs
+
+        user_id, job_id = self._queued_job()
+        with app_module.app.test_request_context():
+            db = app_module.get_db()
+            stale = jobs._claim(db, job_id, self._later(5))
+            fresh = jobs._claim(db, job_id, self._later(jobs.LEASE_SECONDS + 100))
+            self.assertTrue(stale and fresh and stale != fresh)
+            with sqlite3.connect(TEST_DB) as raw:
+                raw.execute("UPDATE account_deletion_jobs SET attempts = ?", (jobs.MAX_ATTEMPTS,))
+                raw.commit()
+            result = jobs._fail_attempt(db, job_id, stale, "media:incomplete:1", self._later(jobs.LEASE_SECONDS + 200))
+            self.assertEqual(result, "lease-lost")
+        self.assertEqual(self._count("SELECT COUNT(*) FROM account_deletion_jobs WHERE status = 'pending' AND lease_token IS NOT NULL AND last_error IS NULL"), 1)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM account_deletion_jobs WHERE status = 'failed'"), 0)
+
+    def test_recovery_after_worker_death_without_heartbeat(self):
+        import account_deletion_jobs as jobs
+
+        user_id, job_id = self._queued_job()
+        with app_module.app.test_request_context():
+            self.assertTrue(jobs._claim(app_module.get_db(), job_id, self._later(5)))  # worker dies here
+        summary, _ = self._run_jobs([], self._later(60))
+        self.assertEqual(summary["processed"], 0)  # lease still live
+        summary, purge = self._run_jobs([], self._later(jobs.LEASE_SECONDS + 100))
+        self.assertEqual(summary["outcomes"], {"progressed": 1})
+        self.assertEqual(self._count("SELECT COUNT(*) FROM users WHERE id = ?", user_id), 0)
+
+    def test_purge_stops_provider_io_when_heartbeat_reports_lost_lease(self):
+        media_routes = importlib.import_module("media_routes")
+        url = "https://res.cloudinary.com/demo/image/upload/v1/listings/7/a/photo.jpg"
+        with mock.patch.object(app_module, "CLOUDINARY_URL", "cloudinary://k:s@demo"), \
+                mock.patch("cloudinary.uploader.destroy") as destroy, \
+                mock.patch("cloudinary.api.delete_resources_by_prefix") as by_prefix:
+            self.assertEqual(media_routes.purge_user_media([url], 7, heartbeat=lambda: False), ["lease-lost"])
+        destroy.assert_not_called()
+        by_prefix.assert_not_called()
 
     def test_sweep_delay_has_a_safe_minimum(self):
         import account_deletion_jobs as jobs
@@ -1187,7 +1259,7 @@ class TrustFeatureTests(unittest.TestCase):
         user_id, _listing_id, token = self._seed_deletable_account()
         seen = {}
 
-        def fake_purge(urls, uid):
+        def fake_purge(urls, uid, heartbeat=None):
             seen["status"] = self._count("SELECT COUNT(*) FROM users WHERE id = ? AND status = 'deleting'", uid)
             seen["blocked"] = self.client.get("/api/auth/me", headers=self._auth(token)).status_code
             return ["x"]

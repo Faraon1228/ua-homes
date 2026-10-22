@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import time
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -98,12 +99,16 @@ def _renew(db, job_id: int, token: str, now: datetime.datetime) -> bool:
 
 
 def _fail_attempt(db, job_id: int, token: str, code: str, now: datetime.datetime) -> str:
+    """Record a failed attempt; a stale token (lease lost) changes nothing."""
     row = db.execute(
         "SELECT attempts FROM account_deletion_jobs WHERE id = ? AND lease_token = ?", (job_id, token)
     ).fetchone()
-    attempts = int(row["attempts"]) if row else MAX_ATTEMPTS
+    if not row:
+        db.rollback()
+        return "lease-lost"
+    attempts = int(row["attempts"])
     terminal = attempts >= MAX_ATTEMPTS
-    db.execute(
+    cursor = db.execute(
         "UPDATE account_deletion_jobs SET status = ?, next_run_at = ?, lease_until = NULL, lease_token = NULL,"
         " last_error = ?, updated_at = ? WHERE id = ? AND lease_token = ?",
         (
@@ -115,8 +120,32 @@ def _fail_attempt(db, job_id: int, token: str, code: str, now: datetime.datetime
             token,
         ),
     )
+    if cursor.rowcount != 1:
+        db.rollback()
+        return "lease-lost"
     db.commit()
     return "failed" if terminal else "retry"
+
+
+def _heartbeat(db, job_id: int, token: str, started: datetime.datetime):
+    """Lease heartbeat for provider I/O: renews using real elapsed time, False when fenced out."""
+    t0 = time.monotonic()
+
+    def beat() -> bool:
+        moment = started + datetime.timedelta(seconds=time.monotonic() - t0)
+        try:
+            alive = _renew(db, job_id, token, moment)
+            if alive:
+                db.commit()
+            else:
+                db.rollback()
+            return alive
+        except Exception:
+            db.rollback()
+            logger.exception("Account deletion job %s heartbeat failed", job_id)
+            return False
+
+    return beat
 
 
 def _failure_code(stage: str, failures: list[str]) -> str:
@@ -151,9 +180,11 @@ def _run_media(db, app_mod, owner_id: int, token: str, job_id: int, now) -> str 
     db.commit()
     urls = _collect_account_media(db, owner_id)
     try:
-        failures = app_mod.purge_user_media(urls, owner_id)
+        failures = app_mod.purge_user_media(urls, owner_id, heartbeat=_heartbeat(db, job_id, token, now))
     except Exception:
         failures = ["purge-error"]
+    if "lease-lost" in failures:
+        return "lease-lost"
     if failures:
         return _failure_code("media", failures)
     cursor = db.execute(
@@ -250,9 +281,11 @@ def _run_sweep(db, app_mod, owner_id: int, token: str, job_id: int, now) -> str 
         return "lease-lost"
     db.commit()
     try:
-        failures = app_mod.purge_user_media([], owner_id)
+        failures = app_mod.purge_user_media([], owner_id, heartbeat=_heartbeat(db, job_id, token, now))
     except Exception:
         failures = ["purge-error"]
+    if "lease-lost" in failures:
+        return "lease-lost"
     if failures:
         return _failure_code("sweep", failures)
     cursor = db.execute(
