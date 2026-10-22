@@ -1027,6 +1027,86 @@ class TrustFeatureTests(unittest.TestCase):
             self.assertTrue(expired)
             self.assertNotEqual(first, expired)
 
+    def test_calendar_month_cutoff_clamps_to_month_end(self):
+        from data_retention import cutoffs, months_before
+
+        self.assertEqual(months_before(datetime.datetime(2025, 2, 28, 10), 12), datetime.datetime(2024, 2, 28, 10))
+        self.assertEqual(months_before(datetime.datetime(2024, 2, 29, 10), 12), datetime.datetime(2023, 2, 28, 10))
+        self.assertEqual(months_before(datetime.datetime(2026, 1, 15), 12), datetime.datetime(2025, 1, 15))
+        self.assertEqual(months_before(datetime.datetime(2026, 12, 31), 1), datetime.datetime(2026, 11, 30))
+        result = cutoffs(datetime.datetime(2026, 10, 22, 12, 0, 0))
+        self.assertEqual(result["lead_requests"], "2025-10-22 12:00:00")
+        self.assertEqual(result["lead_funnel_events"], "2026-09-22 12:00:00")
+
+    def test_retention_purges_exact_cutoff_in_batches_and_is_idempotent(self):
+        import data_retention
+
+        now = datetime.datetime(2026, 10, 22, 12, 0, 0)
+        rows = [("2026-09-22 11:59:59", 1), ("2026-09-22 12:00:00", 0), ("2026-09-22 12:00:01", 0)]
+        lead_rows = [("2025-10-22 11:59:59", 1), ("2025-10-22 12:00:00", 0)]
+        with sqlite3.connect(TEST_DB) as db:
+            for created, _gone in rows:
+                db.execute(
+                    "INSERT INTO lead_funnel_events (event, intent, source, created_at) VALUES ('e','i','s',?)",
+                    (created,),
+                )
+                db.execute(
+                    "INSERT INTO client_observability_events (event_type, created_at) VALUES ('t',?)", (created,)
+                )
+            for created, _gone in lead_rows:
+                db.execute(
+                    "INSERT INTO lead_requests (lead_type, source, name, created_at) VALUES ('l','s','n',?)",
+                    (created,),
+                )
+            db.commit()
+        with mock.patch.object(data_retention, "BATCH_SIZE", 1):
+            with app_module.app.test_request_context():
+                first = data_retention.run_retention(app_module.get_db(), app_module, now)
+                second = data_retention.run_retention(app_module.get_db(), app_module, now)
+        self.assertEqual(first["errors"], [])
+        self.assertEqual(
+            first["deleted"], {"lead_funnel_events": 1, "client_observability_events": 1, "lead_requests": 1}
+        )
+        self.assertEqual(sum(second["deleted"].values()), 0)
+        with sqlite3.connect(TEST_DB) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM lead_funnel_events").fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM lead_requests").fetchone()[0], 1)
+
+    def test_retention_failure_is_reported_not_swallowed(self):
+        import data_retention
+
+        with app_module.app.test_request_context():
+            db = app_module.get_db()
+            with mock.patch.object(data_retention, "_purge_table", side_effect=RuntimeError("boom")):
+                result = data_retention.run_retention(db, app_module)
+            self.assertEqual(
+                sorted(result["errors"]), ["client_observability_events", "lead_funnel_events", "lead_requests"]
+            )
+            summary = __import__("account_deletion_jobs").run_due_jobs(db, app_module)
+        self.assertIn("retention", summary)
+
+    def test_account_deletion_removes_attributable_telemetry_immediately(self):
+        user_id, _listing_id, token = self._seed_deletable_account()
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "INSERT INTO lead_requests (lead_type, source, name, session_id, requester_user_id)"
+                " VALUES ('l','s','n','sess-mine',?)",
+                (user_id,),
+            )
+            for sid in ("sess-mine", "sess-other"):
+                db.execute(
+                    "INSERT INTO lead_funnel_events (event, intent, source, session_id) VALUES ('e','i','s',?)", (sid,)
+                )
+                db.execute("INSERT INTO client_observability_events (event_type, session_id) VALUES ('t',?)", (sid,))
+            db.commit()
+        self._request_delete(token)
+        self._run_jobs([], self._later(5))
+        with sqlite3.connect(TEST_DB) as db:
+            funnel = [r[0] for r in db.execute("SELECT session_id FROM lead_funnel_events")]
+            obs = [r[0] for r in db.execute("SELECT session_id FROM client_observability_events")]
+        self.assertEqual(funnel, ["sess-other"])
+        self.assertEqual(obs, ["sess-other"])
+
     def test_deletion_job_becomes_terminally_failed_after_max_attempts(self):
         import account_deletion_jobs as jobs
 

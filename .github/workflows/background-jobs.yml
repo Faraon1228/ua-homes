@@ -37,4 +37,5 @@ jobs:
           import json
           summary = json.load(open("jobs.json", encoding="utf-8"))
           assert summary.get("failed", 0) == 0, f"Terminally failed deletion jobs: {summary}"
+          assert not summary.get("retention", {}).get("errors"), f"Retention purge errors: {summary}"
           PY

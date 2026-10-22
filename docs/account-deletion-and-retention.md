@@ -35,22 +35,33 @@ Objects uploaded by such presets under `listings/<id>/` are removed by the prefi
 
 ## Retention inventory and decision table (proposal – no legal terms decided)
 
-Nothing below is implemented as age-based deletion and no legal period is assumed. Seller: UA-Dim, a service
+Only the user-approved periods marked **Approved** below are implemented as age-based deletion; no legal period is assumed. Seller: UA-Dim, a service
 seller registered in Ukraine that receives payments; accounting retention must be confirmed by the accountant.
 
 | Data | What it holds today | On account deletion | Decision needed (who) |
 |---|---|---|---|
 | Account, listings, listing images, favorites, alerts, push tokens, reviews | profile, email, phone, content | deleted | – |
 | `premium_orders` | order id, plan, amount, currency, status, provider payment id/status, paid/processed dates, entitlement chain; `user_id` | kept, `user_id` set NULL (no name/email stored) | **Accountant:** which records are primary/accounting documents and for how long; whether provider ids are needed. Owner: nothing to choose before that |
-| `lead_requests` | name, phone, email, message, session id, requester id, bank/amount/credit inputs, response | rows of the leaver anonymised (name/contact/message/session cleared); leads about the leaver's listings keep only the request, response cleared | **Owner:** max age for leads (delete or anonymise after N days); leads are not accounting documents unless a contract follows (accountant to confirm) |
+| `lead_requests` | name, phone, email, message, session id, requester id, bank/amount/credit inputs, response | rows of the leaver anonymised immediately (name/contact/message/session cleared); leads about the leaver's listings keep only the request, response cleared | **Approved:** rows are deleted (not anonymised) once `created_at` is older than 12 calendar months (UTC). Leads are not accounting documents unless a contract follows (accountant to confirm) |
 | `listing_reports` | reason, details, reporter fingerprint/id | reporter anonymised, details removed | **Owner:** retention of resolved reports (abuse evidence) |
-| `lead_funnel_events` | event, listing id, price, session id | untouched | **Owner:** short technical retention (e.g. days/weeks) + scheduled purge |
-| `client_observability_events` | message/stack, page URL, session id, user agent, payload | untouched | **Owner:** short technical retention + scheduled purge |
+| `lead_funnel_events` | event, listing id, price, session id | events linked via the leaver's lead session ids are deleted immediately | **Approved:** deleted after 30 days (UTC) by the scheduled purge |
+| `client_observability_events` | message/stack, page URL, session id, user agent, payload | events linked via the leaver's lead session ids are deleted immediately | **Approved:** deleted after 30 days (UTC) by the scheduled purge |
 | `admin_audit_log`, `moderation_log` | admin actor id/role, action, reason, metadata | actor FK set NULL | **Owner/legal:** audit-log retention |
 | `account_deletion_log` / `account_deletion_jobs` | counters; owner id, stage, generic error code | no PII | – (job rows could be pruned after completion; owner choice) |
 | Backups | encrypted full dumps, 30 days in Actions artifacts | deleted users reappear in restored backups | **Owner:** accept 30-day backup window or shorten; on restore re-apply deletions |
 
-No historical data is purged by this change.
+**Scheduled purge.** `backend/data_retention.py` runs on every `POST /api/operations/jobs/run` (same GitHub
+Actions scheduler, no extra worker). Cutoffs: telemetry `now - 30 days`; leads `now` minus 12 calendar months
+(same day/time one year earlier, clamped to month end, e.g. 29 Feb -> 28 Feb), both UTC, strictly `created_at < cutoff`.
+Deletion is in batches of 500 (max 20 batches per table per run, remainder next run) using portable SQL on the
+existing `created_at` indexes. Errors are logged without row data and returned in the run summary
+(`retention.errors`); the workflow fails on them. Aggregated daily funnel counters contain no identifiers and are kept.
+
+**Limits of the guarantees.** Telemetry has no user id: only events whose `session_id` matches one of the
+leaver's lead requests are removed at deletion; other anonymous events (including page URL / user agent / payload,
+which may incidentally contain personal text) remain until 30 days. Backups keep deleted data for up to 30 days.
+`listing_reports`, `premium_orders` and audit logs are not purged. **The first deployment of this code will delete
+existing rows older than the cutoffs on the first scheduler run.**
 
 ## Release, rollback and readiness runbook
 

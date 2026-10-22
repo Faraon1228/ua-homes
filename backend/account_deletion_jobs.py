@@ -227,6 +227,19 @@ def _run_database(db, app_mod, owner_id: int, token: str, job_id: int, now) -> s
             db.execute("DELETE FROM push_devices WHERE user_id = ?", (owner_id,))
             db.execute("DELETE FROM user_favorites WHERE user_id = ?", (owner_id,))
             db.execute("DELETE FROM reviews WHERE user_id = ?", (owner_id,))
+            # Telemetry carries no user id; the leaver's lead session ids are the only
+            # attributable link, so those events are removed now instead of at the 30-day TTL.
+            session_ids = [
+                r["session_id"]
+                for r in db.execute(
+                    "SELECT DISTINCT session_id FROM lead_requests WHERE session_id IS NOT NULL AND session_id <> ''"
+                    " AND (requester_user_id = ? OR LOWER(email) = ?)",
+                    (owner_id, email),
+                ).fetchall()
+            ]
+            for sid in session_ids:
+                db.execute("DELETE FROM lead_funnel_events WHERE session_id = ?", (sid,))
+                db.execute("DELETE FROM client_observability_events WHERE session_id = ?", (sid,))
             db.execute(
                 "UPDATE lead_requests SET name = 'Видалений користувач', phone = NULL, email = NULL,"
                 " message = NULL, response_message = NULL, session_id = NULL, requester_user_id = NULL"
@@ -353,6 +366,16 @@ def run_due_jobs(db, app_mod, limit: int = 10, now: datetime.datetime | None = N
             logger.exception("Account deletion job %s bookkeeping failed", row["id"])
             outcome = "error"
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    try:
+        try:
+            from data_retention import run_retention
+        except ImportError:
+            from backend.data_retention import run_retention
+        retention = run_retention(db, app_mod, now if injected_clock else _now())
+    except Exception:
+        db.rollback()
+        logger.exception("Retention purge could not run")
+        retention = {"deleted": {}, "errors": ["retention"]}
     counts = {
         item["status"]: int(item["n"])
         for item in db.execute("SELECT status, COUNT(*) AS n FROM account_deletion_jobs GROUP BY status").fetchall()
@@ -362,4 +385,5 @@ def run_due_jobs(db, app_mod, limit: int = 10, now: datetime.datetime | None = N
         "outcomes": outcomes,
         "pending": counts.get("pending", 0),
         "failed": counts.get("failed", 0),
+        "retention": retention,
     }
