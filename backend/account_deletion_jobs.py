@@ -240,6 +240,11 @@ def _run_database(db, app_mod, owner_id: int, token: str, job_id: int, now) -> s
             for sid in session_ids:
                 db.execute("DELETE FROM lead_funnel_events WHERE session_id = ?", (sid,))
                 db.execute("DELETE FROM client_observability_events WHERE session_id = ?", (sid,))
+                db.execute("DELETE FROM lead_funnel_session_rollups WHERE session_id = ?", (sid,))
+            db.execute(
+                "UPDATE admin_audit_log SET resource_id = NULL WHERE resource_type = 'update_user' AND resource_id = ?",
+                (str(owner_id),),
+            )
             db.execute(
                 "UPDATE lead_requests SET name = 'Видалений користувач', phone = NULL, email = NULL,"
                 " message = NULL, response_message = NULL, session_id = NULL, requester_user_id = NULL"

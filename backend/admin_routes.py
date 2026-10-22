@@ -1971,7 +1971,8 @@ def admin_update_listing_report(report_id):
         return jsonify(error="Invalid report status transition"), 409
     transition = db.execute(
         "UPDATE listing_reports SET status = ?,"
-        " closed_at = CASE WHEN ? IN ('resolved', 'dismissed') THEN ? ELSE closed_at END"
+        " closed_at = CASE WHEN ? IN ('resolved', 'dismissed')"
+        " AND status NOT IN ('resolved', 'dismissed') THEN ? ELSE closed_at END"
         " WHERE id = ? AND status = ?",
         (status, status, datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), report_id, existing["status"]),
     )

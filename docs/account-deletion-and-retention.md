@@ -44,18 +44,18 @@ seller registered in Ukraine that receives payments; accounting retention must b
 | `premium_orders` | order id, plan, amount, currency, status, provider payment id/status, paid/processed dates, entitlement chain; `user_id` | kept, `user_id` set NULL (no name/email stored) | **Accountant:** which records are primary/accounting documents and for how long; whether provider ids are needed. Owner: nothing to choose before that |
 | `lead_requests` | name, phone, email, message, session id, requester id, bank/amount/credit inputs, response | rows of the leaver anonymised immediately (name/contact/message/session cleared); leads about the leaver's listings keep only the request, response cleared | **Approved:** rows are deleted (not anonymised) once `created_at` is older than 12 calendar months (UTC). Leads are not accounting documents unless a contract follows (accountant to confirm) |
 | `listing_reports` | reason, details, reporter fingerprint/id | reporter anonymised immediately (id/fingerprint/details removed) | **Approved:** `resolved`/`dismissed` reports are deleted 12 calendar months (UTC) after `closed_at`; open (`pending`/`reviewing`) reports are never purged |
-| `lead_funnel_events` | event, listing id, price, session id | events linked via the leaver's lead session ids are deleted immediately | **Approved:** deleted after 30 days (UTC) by the scheduled purge |
+| `lead_funnel_events`, `lead_funnel_session_rollups` | event, listing id, price, session id; rollups: session id, source, counts, first-route/submit/last-event times | events linked via the leaver's lead session ids are deleted immediately | **Approved:** deleted after 30 days (UTC) by the scheduled purge |
 | `client_observability_events` | message/stack, page URL, session id, user agent, payload | events linked via the leaver's lead session ids are deleted immediately | **Approved:** deleted after 30 days (UTC) by the scheduled purge |
-| `admin_audit_log`, `moderation_log` | admin actor id/role, action, reason, metadata | actor FK set NULL | **Owner/legal:** audit-log retention |
+| `admin_audit_log`, `moderation_log` | admin actor id/role, action, request id, changed-field names (no free text) / moderation reason | actor FK set NULL; audit `resource_id` of user edits nulled; `moderation_log` rows of the leaver's listings go with the listings | **Approved:** deleted 12 calendar months (UTC) after `created_at`. Staff-written `reason` text is not guaranteed anonymous, so it is only bounded by this period |
 | `account_deletion_log` / `account_deletion_jobs` | counters; owner id, stage, generic error code | no PII | – (job rows could be pruned after completion; owner choice) |
 | Backups | encrypted full dumps, 30 days in Actions artifacts | deleted users reappear in restored backups | **Owner:** accept 30-day backup window or shorten; on restore re-apply deletions |
 
 **Scheduled purge.** `backend/data_retention.py` runs on every `POST /api/operations/jobs/run` (same GitHub
-Actions scheduler, no extra worker). Reports age from `closed_at`, which the only status writer (admin PATCH) sets when moving to `resolved`/`dismissed` (final states, no reopen); `created_at`/`updated_at` are never used. History closed before the column existed has no real timestamp, so startup migration baselines it to the migration time (clock starts then, nothing is deleted early); a closed row with NULL `closed_at` is never purged. Cutoffs: telemetry `now - 30 days`; leads `now` minus 12 calendar months
+Actions scheduler, no extra worker). Reports age from `closed_at`, which the only status writer (admin PATCH) sets when moving to `resolved`/`dismissed` (final states, no reopen); it is stamped only on a non-terminal -> terminal transition, so repeating `resolved`/`dismissed` never moves it; `created_at`/`updated_at` are never used. History closed before the column existed has no real timestamp, so startup migration baselines it to the migration time (clock starts then, nothing is deleted early); a closed row with NULL `closed_at` is never purged. Cutoffs: telemetry `now - 30 days`; leads `now` minus 12 calendar months
 (same day/time one year earlier, clamped to month end, e.g. 29 Feb -> 28 Feb), both UTC, strictly `created_at < cutoff`.
 Deletion is in batches of 500 (max 20 batches per table per run, remainder next run) using portable SQL on the
 existing `created_at` indexes. Errors are logged without row data and returned in the run summary
-(`retention.errors`); the workflow fails on them. Aggregated daily funnel counters contain no identifiers and are kept.
+(`retention.errors`); the workflow fails on them. Rollups age by `last_event_at` (30 days) and are deleted with the raw events at account deletion; daily and per-listing aggregate counters contain no identifiers and are kept (they are not rebuilt from truncated raw data).
 
 **Limits of the guarantees.** Telemetry has no user id: only events whose `session_id` matches one of the
 leaver's lead requests are removed at deletion; other anonymous events (including page URL / user agent / payload,
@@ -109,7 +109,5 @@ The gate (`backend/real_storage_gate.py`) fails closed unless both are set, the 
 | Category | PII risk | Proposed operational decision (owner to confirm) |
 |---|---|---|
 | `premium_orders` | no name/email after deletion; provider payment id, amounts, dates link to the payment processor | Keep; **accountant** sets the period for primary accounting records. No automated purge until then |
-| `admin_audit_log` | actor id nulled on deletion; `metadata_json`, `request_id`, IP-like fields may carry incidental identifiers | Propose fixed period (e.g. 12-24 months) with purge job; owner/legal to pick |
-| `moderation_log` | actor nulled; reason text may include user content | Same period as audit log; owner/legal to pick |
 | `account_deletion_log` / `account_deletion_jobs` | counters / owner id only, no PII | Prune completed jobs after e.g. 90 days (optional, owner) |
 | Backups | contain everything for up to 30 days | Accept 30-day window; re-apply deletions after any restore |

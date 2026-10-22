@@ -143,3 +143,61 @@ class PostgresDeletionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(POSTGRES_URL, "UA_TEST_POSTGRES_URL is not set")
+class PostgresRetentionTests(unittest.TestCase):
+    def test_retention_and_closed_at_on_postgres(self):
+        retention = importlib.import_module("data_retention")
+        now = datetime.datetime(2026, 10, 22, 12, 0, 0)
+        with app_module.app.app_context():
+            db = app_module.get_db()
+            for table in ("lead_funnel_events", "client_observability_events", "lead_requests",
+                          "lead_funnel_session_rollups", "admin_audit_log", "moderation_log"):
+                db.execute(f"DELETE FROM {table}")
+            db.execute("DELETE FROM listing_reports")
+            db.execute("DELETE FROM listings WHERE title = 'retention-pg'")
+            owner = db.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
+            if owner is None:
+                owner_id = db.execute(
+                    "INSERT INTO users (name, email, password, password_hash, role, account_type, email_verified)"
+                    " VALUES ('Ret', 'pg-retention@example.test', 'x', 'x', 'user', 'owner', 1)"
+                ).lastrowid
+            else:
+                owner_id = owner["id"]
+            listing_id = db.execute(
+                "INSERT INTO listings (user_id, title, city, district, price, rooms, area, status)"
+                " VALUES (?, 'retention-pg', 'Kyiv', 'Center', 1, 1, 30, 'published')",
+                (owner_id,),
+            ).lastrowid
+            for created in ("2026-09-22 11:59:59", "2026-09-22 12:00:00"):
+                db.execute("INSERT INTO lead_funnel_events (event, intent, source, created_at) VALUES ('e','i','s',?)",
+                           (created,))
+                db.execute("INSERT INTO lead_funnel_session_rollups (session_id, source, last_event_at) VALUES (?, 's', ?)",
+                           (f"s-{created}", created))
+            for key, status, closed in (
+                ("o", "pending", None), ("c-old", "resolved", "2025-10-22 11:59:59"),
+                ("c-new", "dismissed", "2025-10-22 12:00:00"), ("c-null", "resolved", None),
+            ):
+                db.execute(
+                    "INSERT INTO listing_reports (listing_id, reporter_fingerprint, reason_code, details, status,"
+                    " idempotency_key, closed_at) VALUES (?, 'f', 'spam', 'd', ?, ?, ?)",
+                    (listing_id, status, key, closed),
+                )
+            db.commit()
+            result = retention.run_retention(db, app_module, now)
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(result["deleted"]["lead_funnel_events"], 1)
+            self.assertEqual(result["deleted"]["lead_funnel_session_rollups"], 1)
+            self.assertEqual(result["deleted"]["listing_reports"], 1)
+            left = {r["idempotency_key"] for r in db.execute("SELECT idempotency_key FROM listing_reports").fetchall()}
+            self.assertEqual(left, {"o", "c-new", "c-null"})
+            self.assertEqual(sum(retention.run_retention(db, app_module, now)["deleted"].values()), 0)
+            app_module.init_db()
+            baseline = db.execute("SELECT closed_at FROM listing_reports WHERE idempotency_key='c-null'").fetchone()[0]
+            self.assertIsNotNone(baseline)
+            kept = db.execute("SELECT closed_at FROM listing_reports WHERE idempotency_key='c-new'").fetchone()[0]
+            self.assertEqual(kept, "2025-10-22 12:00:00")
+            db.execute("DELETE FROM listing_reports")
+            db.execute("DELETE FROM listings WHERE title = 'retention-pg'")
+            db.commit()

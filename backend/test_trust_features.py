@@ -1066,7 +1066,8 @@ class TrustFeatureTests(unittest.TestCase):
         self.assertEqual(first["errors"], [])
         self.assertEqual(
             first["deleted"],
-            {"lead_funnel_events": 1, "client_observability_events": 1, "lead_requests": 1, "listing_reports": 0},
+            {"lead_funnel_events": 1, "client_observability_events": 1, "lead_requests": 1, "listing_reports": 0,
+             "lead_funnel_session_rollups": 0, "admin_audit_log": 0, "moderation_log": 0},
         )
         self.assertEqual(sum(second["deleted"].values()), 0)
         with sqlite3.connect(TEST_DB) as db:
@@ -1082,7 +1083,8 @@ class TrustFeatureTests(unittest.TestCase):
                 result = data_retention.run_retention(db, app_module)
             self.assertEqual(
                 sorted(result["errors"]),
-                ["client_observability_events", "lead_funnel_events", "lead_requests", "listing_reports"],
+                ["admin_audit_log", "client_observability_events", "lead_funnel_events", "lead_funnel_session_rollups",
+                 "lead_requests", "listing_reports", "moderation_log"],
             )
             summary = __import__("account_deletion_jobs").run_due_jobs(db, app_module)
         self.assertIn("retention", summary)
@@ -1132,6 +1134,98 @@ class TrustFeatureTests(unittest.TestCase):
             open_ = db.execute("SELECT closed_at FROM listing_reports WHERE idempotency_key='p'").fetchone()[0]
         self.assertIsNotNone(hist)
         self.assertIsNone(open_)
+
+    def test_rollups_audit_and_moderation_follow_approved_ages(self):
+        import data_retention
+
+        user_id, listing_id, _token = self._seed_deletable_account()
+        now = datetime.datetime(2026, 10, 22, 12, 0, 0)
+        with sqlite3.connect(TEST_DB) as db:
+            for sid, last in (("r-old", "2026-09-22 11:59:59"), ("r-edge", "2026-09-22 12:00:00")):
+                db.execute(
+                    "INSERT INTO lead_funnel_session_rollups (session_id, source, last_event_at) VALUES (?, 's', ?)",
+                    (sid, last),
+                )
+            db.execute("INSERT INTO lead_funnel_daily_metrics (day, source, listing_type, event, event_count)"
+                       " VALUES ('2020-01-01', 's', 'sale', 'e', 5)")
+            for rid, created in (("a-old", "2025-10-22 11:59:59"), ("a-edge", "2025-10-22 12:00:00")):
+                db.execute(
+                    "INSERT INTO admin_audit_log (actor_role, action, permission, resource_type, resource_id,"
+                    " request_id, created_at) VALUES ('admin','a','p','t',?, ?, ?)",
+                    (rid, rid, created),
+                )
+                db.execute(
+                    "INSERT INTO moderation_log (listing_id, action, reason, created_at) VALUES (?, 'x', ?, ?)",
+                    (listing_id, rid, created),
+                )
+            db.commit()
+        with app_module.app.test_request_context():
+            app_module.cache_delete_prefix("admin:reports:lead-funnel:")
+            result = data_retention.run_retention(app_module.get_db(), app_module, now)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["deleted"]["lead_funnel_session_rollups"], 1)
+        self.assertEqual(result["deleted"]["admin_audit_log"], 1)
+        self.assertEqual(result["deleted"]["moderation_log"], 1)
+        with sqlite3.connect(TEST_DB) as db:
+            rollups = {r[0] for r in db.execute("SELECT session_id FROM lead_funnel_session_rollups")}
+            self.assertIn("r-edge", rollups)
+            self.assertNotIn("r-old", rollups)
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM lead_funnel_daily_metrics WHERE day = '2020-01-01'").fetchone()[0], 1
+            )
+            self.assertEqual([r[0] for r in db.execute("SELECT reason FROM moderation_log")], ["a-edge"])
+
+    def test_account_deletion_removes_session_rollups_and_user_audit_resource_id(self):
+        user_id, _listing_id, token = self._seed_deletable_account()
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute(
+                "INSERT INTO lead_requests (lead_type, source, name, session_id, requester_user_id)"
+                " VALUES ('l','s','n','sess-mine',?)",
+                (user_id,),
+            )
+            for sid in ("sess-mine", "sess-other"):
+                db.execute("INSERT INTO lead_funnel_session_rollups (session_id, source) VALUES (?, 's')", (sid,))
+            db.execute(
+                "INSERT INTO admin_audit_log (actor_role, action, permission, resource_type, resource_id, request_id)"
+                " VALUES ('admin','put:update_user','users/manage','update_user',?, 'req-1')",
+                (str(user_id),),
+            )
+            db.commit()
+        self._request_delete(token)
+        self._run_jobs([], self._later(5))
+        with sqlite3.connect(TEST_DB) as db:
+            self.assertEqual([r[0] for r in db.execute("SELECT session_id FROM lead_funnel_session_rollups")], ["sess-other"])
+            self.assertIsNone(db.execute("SELECT resource_id FROM admin_audit_log WHERE request_id='req-1'").fetchone()[0])
+
+    def test_migration_from_schema_without_closed_at_then_second_startup_keeps_baseline(self):
+        _user_id, listing_id, _token = self._seed_deletable_account()
+        with sqlite3.connect(TEST_DB) as db:
+            db.execute("DROP INDEX IF EXISTS idx_listing_reports_status_closed")
+            db.execute("ALTER TABLE listing_reports DROP COLUMN closed_at")
+            for key, status in (("pre-closed", "resolved"), ("pre-open", "pending")):
+                db.execute(
+                    "INSERT INTO listing_reports (listing_id, reporter_fingerprint, reason_code, details, status,"
+                    " idempotency_key, created_at) VALUES (?, 'f', 'spam', 'd', ?, ?, '2020-01-01 00:00:00')",
+                    (listing_id, status, key),
+                )
+            db.commit()
+        app_module.init_db()
+        with sqlite3.connect(TEST_DB) as db:
+            closed, opened = (
+                db.execute("SELECT closed_at FROM listing_reports WHERE idempotency_key=?", (k,)).fetchone()[0]
+                for k in ("pre-closed", "pre-open")
+            )
+            self.assertIsNotNone(closed)
+            self.assertGreater(closed, "2026-01-01")  # baseline is migration time, not created_at
+            self.assertIsNone(opened)
+            db.execute("UPDATE listing_reports SET closed_at = '2027-05-05 05:05:05' WHERE idempotency_key='pre-closed'")
+            db.commit()
+        app_module.init_db()
+        with sqlite3.connect(TEST_DB) as db:
+            self.assertEqual(
+                db.execute("SELECT closed_at FROM listing_reports WHERE idempotency_key='pre-closed'").fetchone()[0],
+                "2027-05-05 05:05:05",
+            )
 
     def test_account_deletion_removes_attributable_telemetry_immediately(self):
         user_id, _listing_id, token = self._seed_deletable_account()
