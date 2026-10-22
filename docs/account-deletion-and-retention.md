@@ -46,3 +46,14 @@ Objects uploaded by such presets under `listings/<id>/` are removed by the prefi
 | Deletion log | `account_deletion_log` | anonymous counters | – |
 
 No scheduled purge for leads/telemetry exists yet; implementing one requires the periods above.
+
+## Opt-in real test storage check
+
+`backend/test_cloudinary_real_storage.py` runs against a dedicated **test** Cloudinary cloud only. Create the gitignored `.env.test.local` in the repository root (`chmod 600`) with:
+
+```
+UA_TEST_CLOUDINARY_URL=cloudinary://<key>:<secret>@<test_cloud_name>
+UA_TEST_CLOUDINARY_CONFIRM=<test_cloud_name>
+```
+
+The gate (`backend/real_storage_gate.py`) fails closed unless both are set, the confirm value equals the cloud name, and that name differs from any `CLOUDINARY_URL` / `CLOUDINARY_CLOUD_NAME` production reference. Absence of a production reference does not prove isolation, so the explicit confirm is always required. Only a random `listings/<id>/` prefix is touched; presets are never changed. Run: `.venv/bin/python -m unittest backend.test_cloudinary_real_storage -v` (skipped without the file).

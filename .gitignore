@@ -49,3 +49,6 @@ app.*.map.json
 *.db
 *.db-shm
 *.db-wal
+
+# Local secrets for the opt-in real-storage test (never commit)
+.env.test.local
