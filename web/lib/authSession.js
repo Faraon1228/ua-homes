@@ -3,13 +3,18 @@ import { apiRequest } from "./apiClient.js";
 const TOKEN_KEY = "uaDim.authToken";
 const USER_KEY = "uaDim.currentUser";
 
+// Must match the Flutter auth bridge envelope (version 1); other shapes are ignored natively.
+function notifyNativeAuth(token) {
+  window.UaDimAuth?.postMessage?.(JSON.stringify({ version: 1, type: "auth", token: token || null }));
+}
+
 export function persistAuthSession(token, user) {
   if (typeof window === "undefined") return;
   if (window.UaDimAuth?.postMessage) {
     if (token) window.sessionStorage.setItem(TOKEN_KEY, token);
     else window.sessionStorage.removeItem(TOKEN_KEY);
     window.localStorage.removeItem(TOKEN_KEY);
-    window.UaDimAuth.postMessage(JSON.stringify({ type: "auth", token: token || null }));
+    notifyNativeAuth(token);
   } else if (token) {
     window.localStorage.setItem(TOKEN_KEY, token);
   } else {
@@ -24,6 +29,7 @@ export function clearAuthSessionCache() {
   window.sessionStorage.removeItem(TOKEN_KEY);
   window.localStorage.removeItem(TOKEN_KEY);
   window.localStorage.removeItem(USER_KEY);
+  notifyNativeAuth(null);
 }
 
 export function fetchCurrentUser(token, onUnauthorized) {

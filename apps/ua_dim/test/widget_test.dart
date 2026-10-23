@@ -241,6 +241,11 @@ void main() {
     );
     expect(UaDimAuthBridgeMessage.parse('{"version":1,"type":"auth"}'), isNull);
     expect(
+      UaDimAuthBridgeMessage.parse('{"type":"auth","token":null}'),
+      isNull,
+      reason: 'unversioned envelopes are ignored; web must send version 1',
+    );
+    expect(
       UaDimAuthBridgeMessage.parse('{"version":1,"type":"auth","token":123}'),
       isNull,
     );

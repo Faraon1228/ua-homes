@@ -133,3 +133,21 @@ test("latest-request coordinator aborts stale catalog work", async ({ page }) =>
     secondLatest: true,
   });
 });
+
+test("native auth messages use the version 1 envelope on login, logout and expiry", async ({ page }) => {
+  await loadPublicModules(page);
+  const messages = await page.evaluate(() => {
+    const sent = [];
+    window.UaDimAuth = { postMessage: (message) => sent.push(JSON.parse(message)) };
+    const { persistAuthSession, clearAuthSessionCache } = window.__publicModules.auth;
+    persistAuthSession("login-token", { id: 1 });
+    persistAuthSession("", null);
+    clearAuthSessionCache();
+    return sent;
+  });
+  expect(messages).toEqual([
+    { version: 1, type: "auth", token: "login-token" },
+    { version: 1, type: "auth", token: null },
+    { version: 1, type: "auth", token: null },
+  ]);
+});
