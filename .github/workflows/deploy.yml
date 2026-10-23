@@ -56,7 +56,7 @@ jobs:
         run: ./scripts/upload-sentry-sourcemaps.sh
       - name: Verify source maps are not published
         run: test -z "$(find web -type f -name '*.map' -print -quit)"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ua-homes-web-${{ github.sha }}
           path: web
