@@ -122,6 +122,13 @@
     banner.id = 'ua-privacy-banner';
     banner.className = 'ua-privacy-banner';
     banner.setAttribute('aria-labelledby', 'ua-privacy-title');
+    var nativeHandlers = window.webkit && window.webkit.messageHandlers;
+    if (nativeHandlers && nativeHandlers.UaDimMediaPicker) {
+      banner.setAttribute(
+        'data-native-overlay',
+        /^\/listing\//.test(window.location.pathname) ? 'stacked' : 'single'
+      );
+    }
     banner.innerHTML =
       '<div class="ua-privacy-banner__content">' +
         '<div>' +
