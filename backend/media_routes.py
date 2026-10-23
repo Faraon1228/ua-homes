@@ -37,11 +37,40 @@ def require_auth(f):
     return decorated
 
 
-def _cloudinary_upload_preset() -> str:
+def _cloudinary_credentials(cloudinary_url: str) -> tuple[str, str, str]:
+    parsed = urlparse(cloudinary_url or "")
+    cloud_name = parsed.hostname or ""
+    api_key = parsed.username or os.environ.get("CLOUDINARY_API_KEY", "").strip()
+    api_secret = parsed.password or os.environ.get("CLOUDINARY_API_SECRET", "").strip()
+    return cloud_name, api_key, api_secret
+
+
+def media_storage_config_problem() -> str | None:
+    """Explain why uploads cannot be issued; None when storage is usable.
+
+    Cloudinary uploads are signed-only: unsigned presets are never issued.
+    """
     app_module = _get_app_module()
-    if hasattr(app_module, "_cloudinary_upload_preset"):
-        return app_module._cloudinary_upload_preset()
-    return os.environ.get("CLOUDINARY_UPLOAD_PRESET", "").strip()
+    s3_bucket = getattr(app_module, "S3_BUCKET", "")
+    cloudinary_url = getattr(app_module, "CLOUDINARY_URL", "")
+    if s3_bucket:
+        if not (getattr(app_module, "S3_ACCESS_KEY", "") and getattr(app_module, "S3_SECRET_KEY", "")):
+            return "Сховище медіа не налаштоване: відсутні S3_ACCESS_KEY/S3_SECRET_KEY."
+        if not getattr(app_module, "S3_PUBLIC_BASE_URL", ""):
+            return "Сховище медіа не налаштоване: відсутній S3_PUBLIC_BASE_URL."
+        return None
+    if cloudinary_url:
+        cloud_name, api_key, api_secret = _cloudinary_credentials(cloudinary_url)
+        if not cloud_name:
+            return "Сховище медіа не налаштоване: CLOUDINARY_URL не містить cloud name."
+        if not (api_key and api_secret):
+            return (
+                "Сховище медіа не налаштоване: для підписаних завантажень Cloudinary потрібні "
+                "API key і secret (CLOUDINARY_URL або CLOUDINARY_API_KEY/CLOUDINARY_API_SECRET). "
+                "Незахищені upload preset не підтримуються."
+            )
+        return None
+    return "Сховище медіа не налаштоване."
 
 
 def generate_presigned_upload_url(
@@ -129,61 +158,31 @@ def generate_presigned_upload_url(
         import cloudinary.utils
 
         try:
-            parsed = urlparse(cloudinary_url)
-            cloud_name = parsed.hostname or ""
-            api_key = parsed.username or os.environ.get("CLOUDINARY_API_KEY", "").strip()
-            api_secret = parsed.password or os.environ.get("CLOUDINARY_API_SECRET", "").strip()
-            upload_preset = _cloudinary_upload_preset()
-
-            print(f"[Cloudinary] cloud_name={cloud_name}, preset={upload_preset}, has_api_key={bool(api_key)}")
-
-            if not cloud_name:
+            cloud_name, api_key, api_secret = _cloudinary_credentials(cloudinary_url)
+            if not (cloud_name and api_key and api_secret):
                 return None
 
             safe_stem = os.path.splitext(safe_filename)[0] or "media"
             public_id = f"listings/{user_id}/{unique_id}/{safe_stem}"
             upload_url = f"https://api.cloudinary.com/v1_1/{cloud_name}/{resource_type}/upload"
-
-            # Signed uploads are rejected by Cloudinary after ~1h; unsigned presets never expire.
-            if upload_preset and not (api_key and api_secret):
-                print(f"[Cloudinary] Using UNSIGNED upload preset: {upload_preset}")
-                return {
-                    "uploadUrl": upload_url,
-                    "method": "POST",
-                    "storage": "cloudinary",
-                    "expiresIn": expires_in,
-                    "cloudName": cloud_name,
-                    "authType": "unsigned",
-                    "uploadPreset": upload_preset,
-                    "publicId": public_id,
-                    "resourceType": resource_type,
-                }
-
-            if api_key and api_secret:
-                print(f"[Cloudinary] Preset NOT available, using SIGNED uploads with credentials")
-                timestamp = int(time.time())
-
-                sig_params = {
-                    "public_id": public_id,
-                    "timestamp": timestamp,
-                }
-                signature = cloudinary.utils.api_sign_request(sig_params, api_secret)
-
-                return {
-                    "uploadUrl": upload_url,
-                    "method": "POST",
-                    "storage": "cloudinary",
-                    "expiresIn": expires_in,
-                    "cloudName": cloud_name,
-                    "authType": "signed",
-                    "apiKey": api_key,
-                    "timestamp": timestamp,
-                    "signature": signature,
-                    "publicId": public_id,
-                    "resourceType": resource_type,
-                }
-
-            return None
+            # Cloudinary rejects signatures older than ~1h; deferred account-deletion sweeps rely on that window.
+            timestamp = int(time.time())
+            signature = cloudinary.utils.api_sign_request(
+                {"public_id": public_id, "timestamp": timestamp}, api_secret
+            )
+            return {
+                "uploadUrl": upload_url,
+                "method": "POST",
+                "storage": "cloudinary",
+                "expiresIn": expires_in,
+                "cloudName": cloud_name,
+                "authType": "signed",
+                "apiKey": api_key,
+                "timestamp": timestamp,
+                "signature": signature,
+                "publicId": public_id,
+                "resourceType": resource_type,
+            }
         except Exception as e:
             print(f"Error generating Cloudinary upload URL: {e}")
             return None
@@ -191,8 +190,39 @@ def generate_presigned_upload_url(
     return None
 
 
-def cleanup_listing_media(media_urls: list[str], user_id: int) -> list[str]:
-    """Delete only storage objects that are namespaced to the listing owner."""
+# Every storage request in the deletion path is bounded far below the job lease
+# (boto3 defaults are 60s connect/read with legacy 5 attempts; Cloudinary's admin and
+# uploader calls have no timeout unless one is passed).
+# Worst case S3: max_attempts=3 means 3 retries, i.e. 4 attempts x (5s + 30s) plus backoff ~ 3 min. Cloudinary: urllib3
+# default of 3 retries x (2 x 20s) ~ 3 min.
+S3_CONNECT_TIMEOUT_SECONDS = 5
+S3_READ_TIMEOUT_SECONDS = 30
+S3_MAX_ATTEMPTS = 3
+CLOUDINARY_TIMEOUT_SECONDS = 20
+
+
+def _bounded_s3_config():
+    from botocore.config import Config
+
+    return Config(
+        signature_version="s3v4",
+        connect_timeout=S3_CONNECT_TIMEOUT_SECONDS,
+        read_timeout=S3_READ_TIMEOUT_SECONDS,
+        retries={"max_attempts": S3_MAX_ATTEMPTS, "mode": "standard"},
+    )
+
+
+def _alive(heartbeat) -> bool:
+    """Heartbeat hook between provider calls; False means the caller lost its job lease."""
+    return heartbeat is None or bool(heartbeat())
+
+
+def cleanup_listing_media(media_urls: list[str], user_id: int, heartbeat=None) -> list[str]:
+    """Delete only storage objects that are namespaced to the listing owner.
+
+    ``heartbeat`` is called before every provider request; if it returns False the
+    work stops and ``lease-lost`` is reported so no further external I/O is issued.
+    """
     app_module = _get_app_module()
     s3_bucket = getattr(app_module, "S3_BUCKET", "")
     s3_access_key = getattr(app_module, "S3_ACCESS_KEY", "")
@@ -245,13 +275,17 @@ def cleanup_listing_media(media_urls: list[str], user_id: int) -> list[str]:
                 aws_access_key_id=s3_access_key,
                 aws_secret_access_key=s3_secret_key,
                 endpoint_url=s3_endpoint,
-                config=Config(signature_version="s3v4"),
+                config=_bounded_s3_config(),
             )
-            result = s3.delete_objects(
-                Bucket=s3_bucket,
-                Delete={"Objects": [{"Key": key} for key in sorted(set(s3_keys))], "Quiet": True},
-            )
-            failures.extend(str(item.get("Key") or "s3") for item in result.get("Errors", []))
+            unique_keys = sorted(set(s3_keys))
+            for start in range(0, len(unique_keys), 1000):
+                if not _alive(heartbeat):
+                    return ["lease-lost"]
+                result = s3.delete_objects(
+                    Bucket=s3_bucket,
+                    Delete={"Objects": [{"Key": key} for key in unique_keys[start : start + 1000]], "Quiet": True},
+                )
+                failures.extend(str(item.get("Key") or "s3") for item in result.get("Errors", []))
         except Exception:
             failures.extend(s3_keys)
 
@@ -260,12 +294,15 @@ def cleanup_listing_media(media_urls: list[str], user_id: int) -> list[str]:
             import cloudinary
             import cloudinary.uploader
 
-            cloudinary.config(secure=True)
+            cloudinary.config(secure=True, timeout=CLOUDINARY_TIMEOUT_SECONDS)
             for public_id, resource_type in sorted(set(cloudinary_assets)):
+                if not _alive(heartbeat):
+                    return ["lease-lost"]
                 result = cloudinary.uploader.destroy(
                     public_id,
                     resource_type=resource_type,
                     invalidate=True,
+                    timeout=CLOUDINARY_TIMEOUT_SECONDS,
                 )
                 if result.get("result") not in {"ok", "not found"}:
                     failures.append(public_id)
@@ -275,14 +312,16 @@ def cleanup_listing_media(media_urls: list[str], user_id: int) -> list[str]:
     return list(dict.fromkeys(failures))
 
 
-def purge_user_media(media_urls: list[str], user_id: int) -> list[str]:
+def purge_user_media(media_urls: list[str], user_id: int, heartbeat=None) -> list[str]:
     """Remove every stored object owned by a user, including orphaned uploads.
 
     Returns the identifiers that could not be deleted so callers can report the
     failure instead of claiming a clean removal.
     """
     app_module = _get_app_module()
-    failures = list(cleanup_listing_media(media_urls, user_id))
+    failures = list(cleanup_listing_media(media_urls, user_id, heartbeat))
+    if "lease-lost" in failures:
+        return failures
     prefix = f"listings/{int(user_id)}/"
 
     cloudinary_url = getattr(app_module, "CLOUDINARY_URL", "")
@@ -299,6 +338,10 @@ def purge_user_media(media_urls: list[str], user_id: int) -> list[str]:
     s3_access_key = getattr(app_module, "S3_ACCESS_KEY", "")
     s3_secret_key = getattr(app_module, "S3_SECRET_KEY", "")
     s3_configured = bool(s3_bucket and s3_access_key and s3_secret_key)
+    if not cloudinary_url and not s3_configured and not os.environ.get("UA_HOMES_STORAGE_DISABLED"):
+        # Fail closed: without credentials we cannot rule out earlier uploads, so an
+        # empty prefix must not be reported as a clean removal.
+        failures.append(f"storage:not-configured:{prefix}")
     owns_non_cloudinary_media = False
     for media_url in media_urls:
         try:
@@ -320,9 +363,16 @@ def purge_user_media(media_urls: list[str], user_id: int) -> list[str]:
                 aws_access_key_id=s3_access_key,
                 aws_secret_access_key=s3_secret_key,
                 endpoint_url=getattr(app_module, "S3_ENDPOINT", None),
-                config=Config(signature_version="s3v4"),
+                config=_bounded_s3_config(),
             )
-            for page in s3.get_paginator("list_objects_v2").paginate(Bucket=s3_bucket, Prefix=prefix):
+            pages = iter(s3.get_paginator("list_objects_v2").paginate(Bucket=s3_bucket, Prefix=prefix))
+            while True:
+                # Heartbeat before the network fetch of every page, including the first.
+                if not _alive(heartbeat):
+                    return ["lease-lost"]
+                page = next(pages, None)
+                if page is None:
+                    break
                 keys = [{"Key": item["Key"]} for item in page.get("Contents", [])]
                 if not keys:
                     continue
@@ -336,11 +386,16 @@ def purge_user_media(media_urls: list[str], user_id: int) -> list[str]:
             import cloudinary
             import cloudinary.api
 
-            cloudinary.config(secure=True)
+            cloudinary.config(secure=True, timeout=CLOUDINARY_TIMEOUT_SECONDS)
             for resource_type in ("image", "video"):
                 for _ in range(50):
+                    if not _alive(heartbeat):
+                        return ["lease-lost"]
                     result = cloudinary.api.delete_resources_by_prefix(
-                        prefix, resource_type=resource_type, invalidate=True
+                        prefix,
+                        resource_type=resource_type,
+                        invalidate=True,
+                        timeout=CLOUDINARY_TIMEOUT_SECONDS,
                     )
                     if not result.get("partial"):
                         break
@@ -394,7 +449,7 @@ def get_presigned_upload_url_route():
     gen_func = getattr(app_module, "generate_presigned_upload_url", generate_presigned_upload_url)
     presigned = gen_func(filename, normalized_content_type, resource_type)
     if not presigned:
-        return jsonify(error="Сховище медіа не налаштоване."), 503
+        return jsonify(error=media_storage_config_problem() or "Сховище медіа не налаштоване."), 503
 
     presigned["contentType"] = normalized_content_type
     presigned["resourceType"] = resource_type

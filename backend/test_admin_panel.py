@@ -475,9 +475,9 @@ class AdminPanelTests(unittest.TestCase):
         )
         self.assertEqual(updated.status_code, 200)
         with sqlite3.connect(TEST_DB) as db:
-            report_status = db.execute(
-                "SELECT status FROM listing_reports WHERE id = ?", (report_id,)
-            ).fetchone()[0]
+            report_status, closed_at = db.execute(
+                "SELECT status, closed_at FROM listing_reports WHERE id = ?", (report_id,)
+            ).fetchone()
             audit = db.execute(
                 """
                 SELECT permission, metadata_json, request_id
@@ -486,9 +486,30 @@ class AdminPanelTests(unittest.TestCase):
                 (request_id,),
             ).fetchone()
         self.assertEqual(report_status, "resolved")
+        self.assertRegex(closed_at, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
         self.assertEqual(audit[0], "reports/manage")
         self.assertNotIn("must-not-enter-audit", audit[1])
         self.assertNotIn("details", audit[1])
+
+    def test_repeating_terminal_status_preserves_original_close_time(self):
+        for status in ("resolved", "dismissed"):
+            with sqlite3.connect(TEST_DB) as db:
+                report_id = self._create_report(db, status=status, key=f"repeat-{status}")
+                db.execute(
+                    "UPDATE listing_reports SET closed_at = '2024-02-03 04:05:06' WHERE id = ?", (report_id,)
+                )
+                db.commit()
+            response = self.client.patch(
+                f"/api/admin/listing-reports/{report_id}",
+                headers=self._auth(self.moderator_token),
+                json={"status": status},
+            )
+            self.assertEqual(response.status_code, 200)
+            with sqlite3.connect(TEST_DB) as db:
+                closed_at = db.execute(
+                    "SELECT closed_at FROM listing_reports WHERE id = ?", (report_id,)
+                ).fetchone()[0]
+            self.assertEqual(closed_at, "2024-02-03 04:05:06")
 
     def test_rejected_mutation_does_not_persist_audit_entry(self):
         with sqlite3.connect(TEST_DB) as db:

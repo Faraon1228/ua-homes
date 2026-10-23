@@ -105,7 +105,9 @@ class S3Uploader {
      formData.append('file', file);
      formData.append('resource_type', presignedData.resourceType || 'image');
      if (presignedData.publicId) formData.append('public_id', presignedData.publicId);
-     if (presignedData.uploadPreset) formData.append('upload_preset', presignedData.uploadPreset);
+     if (presignedData.authType !== 'signed' || !presignedData.apiKey || !presignedData.signature || !presignedData.timestamp) {
+       throw new Error('Cloudinary upload requires a signed upload permission');
+     }
      if (presignedData.apiKey) formData.append('api_key', presignedData.apiKey);
      if (presignedData.timestamp) formData.append('timestamp', String(presignedData.timestamp));
      if (presignedData.signature) formData.append('signature', presignedData.signature);

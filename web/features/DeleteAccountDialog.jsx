@@ -25,14 +25,14 @@ export default function DeleteAccountDialog({ authToken, onClose, onDeleted }) {
     setError("");
     setRetryable(false);
     try {
-      await apiRequest("/auth/delete-account", {
+      const result = await apiRequest("/auth/delete-account", {
         method: "POST",
         token: authToken,
         body: { password, confirm: true },
         timeout: 60000,
         errorMessage: "Не вдалося видалити акаунт. Спробуйте ще раз.",
       });
-      onDeleted();
+      onDeleted(result || {});
     } catch (requestError) {
       setError(requestError.message || "Не вдалося видалити акаунт.");
       setRetryable(Boolean(requestError.payload?.retryable));

@@ -1970,8 +1970,11 @@ def admin_update_listing_report(report_id):
     if status not in REPORT_TRANSITIONS.get(existing["status"], set()):
         return jsonify(error="Invalid report status transition"), 409
     transition = db.execute(
-        "UPDATE listing_reports SET status = ? WHERE id = ? AND status = ?",
-        (status, report_id, existing["status"]),
+        "UPDATE listing_reports SET status = ?,"
+        " closed_at = CASE WHEN ? IN ('resolved', 'dismissed')"
+        " AND status NOT IN ('resolved', 'dismissed') THEN ? ELSE closed_at END"
+        " WHERE id = ? AND status = ?",
+        (status, status, datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), report_id, existing["status"]),
     )
     if transition.rowcount != 1:
         db.rollback()

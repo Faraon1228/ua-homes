@@ -1,0 +1,41 @@
+name: Run durable background jobs
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/10 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: background-jobs
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      API_URL: https://ua-dim.com
+      EDGE_TOKEN: ${{ secrets.UA_HOMES_EDGE_TOKEN }}
+      JOBS_KEY: ${{ secrets.UA_HOMES_STATUS_REFRESH_KEY }}
+    steps:
+      - name: Run due account-deletion jobs
+        run: |
+          if [ -z "$JOBS_KEY" ]; then
+            echo "UA_HOMES_STATUS_REFRESH_KEY is not configured; deferred deletion jobs cannot run" >&2
+            exit 1
+          fi
+          curl --fail --silent --show-error --max-time 120 \
+            -X POST "$API_URL/api/operations/jobs/run" \
+            -H "Authorization: Bearer $JOBS_KEY" \
+            -H "X-UA-Edge-Token: $EDGE_TOKEN" \
+            --output jobs.json
+          cat jobs.json
+          python3 - <<'PY'
+          import json
+          summary = json.load(open("jobs.json", encoding="utf-8"))
+          assert summary.get("failed", 0) == 0, f"Terminally failed deletion jobs: {summary}"
+          assert not summary.get("retention", {}).get("errors"), f"Retention purge errors: {summary}"
+          PY
