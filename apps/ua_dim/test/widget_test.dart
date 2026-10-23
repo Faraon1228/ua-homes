@@ -292,6 +292,44 @@ void main() {
   );
 
   test(
+    'UA-Dim logout deletes the stored token at once, dedupes the poll and allows the same login again',
+    () async {
+      final store = _RecordingAuthStore();
+      final consumer = _RecordingAuthConsumer();
+      final coordinator = UaDimAuthCoordinator(
+        store,
+        consumer,
+        initialToken: 'stored-token',
+      );
+      const logout = '{"version":1,"type":"auth","token":null}';
+
+      expect(await coordinator.handle(logout), isTrue);
+      expect(store.operations, ['delete']);
+      expect(coordinator.currentToken, isNull);
+      expect(await coordinator.handle(logout), isFalse);
+      expect(store.operations, ['delete']);
+
+      final restore = planUaDimAuthRestore(
+        storedToken: coordinator.currentToken,
+        sessionToken: null,
+        localToken: 'stored-token',
+        hasCurrentUser: true,
+      );
+      expect(restore.sessionToken, isNull);
+      expect(restore.localToken, isNull);
+      expect(restore.clearCurrentUser, isTrue);
+
+      expect(
+        await coordinator.handle(
+          '{"version":1,"type":"auth","token":"stored-token"}',
+        ),
+        isTrue,
+      );
+      expect(store.operations, ['delete', 'write:stored-token']);
+    },
+  );
+
+  test(
     'UA-Dim auth coordinator ignores unrelated and stale rejections',
     () async {
       final store = _RecordingAuthStore();
