@@ -86,7 +86,7 @@ rm -rf "$WEB_DIR/chunks"
 
 CATALOG_BYTES=$(wc -c < "$WEB_DIR/real-estate-app.js" | tr -d ' ')
 SELLER_BYTES=$(wc -c < "$WEB_DIR/seller-app.js" | tr -d ' ')
-if [ "$CATALOG_BYTES" -gt 133100 ] || [ "$SELLER_BYTES" -gt 136000 ]; then
+if [ "$CATALOG_BYTES" -gt 133000 ] || [ "$SELLER_BYTES" -gt 136000 ]; then
   echo "Frontend bundle budget exceeded: catalog=${CATALOG_BYTES}, seller=${SELLER_BYTES}" >&2
   exit 1
 fi

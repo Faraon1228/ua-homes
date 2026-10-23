@@ -27,7 +27,7 @@ export function persistAuthSession(token, user) {
 
 // A late 401 for a token that was already replaced must not clear the newer session.
 export function clearAuthSessionCache(requestToken) {
-  if (typeof window === "undefined" || requestToken !== lastToken) return false;
+  if (requestToken !== lastToken) return false;
   window.sessionStorage.removeItem(TOKEN_KEY);
   window.localStorage.removeItem(TOKEN_KEY);
   window.localStorage.removeItem(USER_KEY);
