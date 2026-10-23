@@ -62,3 +62,55 @@ test("app consent on a listing path clears both stacked native buttons and stays
   expect(app.bottom).toBeLessThanOrEqual(fabTop(app.vh, FAB.shareBottom));
   expect(app.top).toBeGreaterThanOrEqual(0);
 });
+
+const androidChannel = () => {
+  window.UaDimMediaPicker = { postMessage() {} };
+};
+
+async function bottomGap(page) {
+  return page.evaluate(() => {
+    const b = document.getElementById("ua-privacy-banner").getBoundingClientRect();
+    return innerHeight - b.bottom;
+  });
+}
+
+test("Android channel shape: no clearance off listings, share-button clearance on listings", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 700 });
+  await page.addInitScript(androidChannel);
+  await page.goto("/real-estate-demo.html");
+  await expect(page.locator("#ua-privacy-banner")).toBeVisible();
+  await expect(page.locator("#ua-privacy-banner")).not.toHaveAttribute("data-native-overlay", /.+/);
+  expect(await bottomGap(page)).toBeLessThanOrEqual(17);
+  await page.evaluate(() => history.pushState(null, "", "/listing/demo-1"));
+  await expect(page.locator("#ua-privacy-banner")).toHaveAttribute("data-native-overlay", "single");
+  expect(await bottomGap(page)).toBeGreaterThanOrEqual(FAB.pickerBottom + FAB.size);
+  expect(await bottomGap(page)).toBeLessThan(FAB.shareBottom + FAB.size);
+});
+
+test("iOS SPA navigation switches single to stacked and back", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 700 });
+  await page.addInitScript(() => {
+    window.webkit = { messageHandlers: { UaDimMediaPicker: { postMessage() {} } } };
+  });
+  await page.goto("/real-estate-demo.html");
+  const banner = page.locator("#ua-privacy-banner");
+  await expect(banner).toHaveAttribute("data-native-overlay", "single");
+  await page.evaluate(() => history.pushState(null, "", "/listing/demo-1"));
+  await expect(banner).toHaveAttribute("data-native-overlay", "stacked");
+  expect(await bottomGap(page)).toBeGreaterThanOrEqual(FAB.shareBottom + FAB.size);
+  await page.evaluate(() => history.replaceState(null, "", "/real-estate-demo.html"));
+  await expect(banner).toHaveAttribute("data-native-overlay", "single");
+});
+
+test("a channel injected after the banner renders is applied on the next navigation or load event", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 700 });
+  await page.goto("/real-estate-demo.html");
+  const banner = page.locator("#ua-privacy-banner");
+  await expect(banner).toBeVisible();
+  await expect(banner).not.toHaveAttribute("data-native-overlay", /.+/);
+  await page.evaluate(() => {
+    window.UaDimMediaPicker = { postMessage() {} };
+    history.pushState(null, "", "/listing/late-1");
+  });
+  await expect(banner).toHaveAttribute("data-native-overlay", "single");
+});
