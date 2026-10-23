@@ -154,12 +154,12 @@ class UaDimAuthCoordinator {
       nextToken: parsed.token,
     );
     if (!transition.changed) return false;
-    _currentToken = transition.nextToken;
     if (transition.shouldDeleteStoredToken) {
       await _store.delete();
     } else {
       await _store.write(transition.nextToken!);
     }
+    _currentToken = transition.nextToken;
     await _consumer.setAuthToken(transition.nextToken);
     return true;
   });
@@ -171,9 +171,9 @@ class UaDimAuthCoordinator {
     )) {
       return false;
     }
+    await _store.delete();
     _currentToken = null;
     await _consumer.setAuthToken(null);
-    await _store.delete();
     return true;
   });
 

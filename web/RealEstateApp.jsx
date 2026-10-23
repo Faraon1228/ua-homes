@@ -2553,7 +2553,8 @@ export default function RealEstateApp() {
   };
 
   const expireSession = () => {
-    clearAuthSessionCache();
+    // Each render closes over its own token, so only the current session may be expired.
+    if (!clearAuthSessionCache(authToken)) return;
     setAuthToken("");
     setCurrentUser(null);
     setAuthError("Сесія закінчилась — увійдіть у кабінет знову.");

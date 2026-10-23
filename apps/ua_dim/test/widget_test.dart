@@ -330,6 +330,41 @@ void main() {
   );
 
   test(
+    'UA-Dim auth coordinator surfaces store failures and retries instead of deduping stale state',
+    () async {
+      final store = _RecordingAuthStore();
+      final consumer = _RecordingAuthConsumer();
+      final coordinator = UaDimAuthCoordinator(
+        store,
+        consumer,
+        initialToken: 'stored-token',
+      );
+      const logout = '{"version":1,"type":"auth","token":null}';
+
+      store.failNext = true;
+      await expectLater(coordinator.handle(logout), throwsStateError);
+      expect(coordinator.currentToken, 'stored-token');
+      expect(consumer.tokens, isEmpty);
+
+      expect(await coordinator.handle(logout), isTrue);
+      expect(store.operations, ['delete']);
+      expect(coordinator.currentToken, isNull);
+
+      store.failNext = true;
+      await expectLater(
+        coordinator.handle('{"version":1,"type":"auth","token":"next"}'),
+        throwsStateError,
+      );
+      expect(coordinator.currentToken, isNull);
+      expect(
+        await coordinator.handle('{"version":1,"type":"auth","token":"next"}'),
+        isTrue,
+      );
+      expect(store.operations, ['delete', 'write:next']);
+    },
+  );
+
+  test(
     'UA-Dim auth coordinator ignores unrelated and stale rejections',
     () async {
       final store = _RecordingAuthStore();
@@ -464,16 +499,25 @@ class _RecordingAuthStore implements UaDimAuthTokenStore {
 
   final Duration delay;
   final List<String> operations = [];
+  bool failNext = false;
+
+  void _failIfRequested() {
+    if (!failNext) return;
+    failNext = false;
+    throw StateError('store failure');
+  }
 
   @override
   Future<void> delete() async {
     await Future<void>.delayed(delay);
+    _failIfRequested();
     operations.add('delete');
   }
 
   @override
   Future<void> write(String token) async {
     await Future<void>.delayed(delay);
+    _failIfRequested();
     operations.add('write:$token');
   }
 }

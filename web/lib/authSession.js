@@ -3,18 +3,19 @@ import { apiRequest } from "./apiClient.js";
 const TOKEN_KEY = "uaDim.authToken";
 const USER_KEY = "uaDim.currentUser";
 
-// Must match the Flutter auth bridge envelope (version 1); other shapes are ignored natively.
-function notifyNativeAuth(token) {
-  window.UaDimAuth?.postMessage?.(JSON.stringify({ version: 1, type: "auth", token: token || null }));
-}
+let lastToken;
 
 export function persistAuthSession(token, user) {
   if (typeof window === "undefined") return;
+  // The first call only mirrors what the app restored, so the native secure token wins cold start.
+  const previous = lastToken ?? token;
+  lastToken = token;
   if (window.UaDimAuth?.postMessage) {
     if (token) window.sessionStorage.setItem(TOKEN_KEY, token);
     else window.sessionStorage.removeItem(TOKEN_KEY);
     window.localStorage.removeItem(TOKEN_KEY);
-    notifyNativeAuth(token);
+    // Must match the Flutter auth bridge envelope (version 1); other shapes are ignored natively.
+    if (previous !== token) window.UaDimAuth.postMessage(JSON.stringify({ version: 1, type: "auth", token: token || null }));
   } else if (token) {
     window.localStorage.setItem(TOKEN_KEY, token);
   } else {
@@ -24,12 +25,13 @@ export function persistAuthSession(token, user) {
   else window.localStorage.removeItem(USER_KEY);
 }
 
-export function clearAuthSessionCache() {
-  if (typeof window === "undefined") return;
+// A late 401 for a token that was already replaced must not clear the newer session.
+export function clearAuthSessionCache(requestToken) {
+  if (typeof window === "undefined" || requestToken !== lastToken) return false;
   window.sessionStorage.removeItem(TOKEN_KEY);
   window.localStorage.removeItem(TOKEN_KEY);
   window.localStorage.removeItem(USER_KEY);
-  notifyNativeAuth(null);
+  return true;
 }
 
 export function fetchCurrentUser(token, onUnauthorized) {
