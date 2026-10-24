@@ -245,9 +245,18 @@ const String uaDimInstallAuthBridgeScript = '''
     UaDimAuth.postMessage(payload);
   };
   window.addEventListener('storage', syncAuth);
-  window.setInterval(syncAuth, 1500);
+  const timer = window.setInterval(syncAuth, 1500);
+  window.__uaDimAuthBridgeStop = () => {
+    window.clearInterval(timer);
+    window.removeEventListener('storage', syncAuth);
+  };
   syncAuth();
 })();
+''';
+
+/// Stops a partially released poller so a failed release cannot flush web state to native.
+const String uaDimStopAuthBridgeScript = '''
+(() => { window.__uaDimAuthBridgeStop?.(); })();
 ''';
 
 /// Tells the page that secure-token restore is finished, so web auth state is authoritative.
@@ -286,5 +295,22 @@ Future<UaDimRestoreOutcome> runUaDimAuthRestore({
     return UaDimRestoreOutcome.reloading;
   } catch (_) {
     return UaDimRestoreOutcome.failed;
+  }
+}
+
+/// Installs the poller and releases the page. If either step fails the poller is stopped, the
+/// ready signal is not (further) sent and [false] is returned so the UI can offer a retry.
+Future<bool> runUaDimAuthRelease({
+  required Future<void> Function(String script) execute,
+}) async {
+  try {
+    await execute(uaDimInstallAuthBridgeScript);
+    await execute(uaDimAuthReadyScript);
+    return true;
+  } catch (_) {
+    try {
+      await execute(uaDimStopAuthBridgeScript);
+    } catch (_) {}
+    return false;
   }
 }

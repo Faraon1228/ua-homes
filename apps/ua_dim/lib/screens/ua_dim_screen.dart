@@ -90,8 +90,12 @@ class _UaDimScreenState extends State<UaDimScreen> {
               case UaDimRestoreOutcome.ready:
                 break;
             }
-            await _installAuthBridge();
-            await _controller.runJavaScript(uaDimAuthReadyScript);
+            if (!await runUaDimAuthRelease(
+              execute: _controller.runJavaScript,
+            )) {
+              _showSessionError('page auth release');
+              return;
+            }
             await _installIosPhotoPickerBridge();
             final canGoBack = await _controller.canGoBack();
             final title = await _controller.getTitle();
@@ -231,10 +235,6 @@ class _UaDimScreenState extends State<UaDimScreen> {
       _restoredAuthForPage = true;
     }
     return outcome;
-  }
-
-  Future<void> _installAuthBridge() async {
-    await _controller.runJavaScript(uaDimInstallAuthBridgeScript);
   }
 
   Future<void> _handleAuthTokenMessage(JavaScriptMessage message) async {

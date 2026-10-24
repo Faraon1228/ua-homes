@@ -211,6 +211,35 @@ void main() {
     },
   );
 
+  test(
+    'UA-Dim release failure stops the poller, never signals ready, retry succeeds',
+    () async {
+      final ran = <String>[];
+      var failOn = uaDimInstallAuthBridgeScript;
+      Future<void> execute(String script) async {
+        ran.add(script);
+        if (script == failOn) throw StateError('boom');
+      }
+
+      expect(await runUaDimAuthRelease(execute: execute), isFalse);
+      expect(ran, [uaDimInstallAuthBridgeScript, uaDimStopAuthBridgeScript]);
+
+      ran.clear();
+      failOn = uaDimAuthReadyScript;
+      expect(await runUaDimAuthRelease(execute: execute), isFalse);
+      expect(ran, [
+        uaDimInstallAuthBridgeScript,
+        uaDimAuthReadyScript,
+        uaDimStopAuthBridgeScript,
+      ]);
+
+      ran.clear();
+      failOn = '';
+      expect(await runUaDimAuthRelease(execute: execute), isTrue);
+      expect(ran, [uaDimInstallAuthBridgeScript, uaDimAuthReadyScript]);
+    },
+  );
+
   test('UA-Dim auth ready script signals the web auth handshake', () {
     expect(uaDimAuthHandshakeChannel, 'UaDimAuthHandshake');
     expect(uaDimAuthReadyScript, contains('__uaDimAuthReady'));
