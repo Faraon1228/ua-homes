@@ -92,6 +92,9 @@ class _UaDimScreenState extends State<UaDimScreen> {
           onPageFinished: (url) async {
             if (!mounted) return;
             if (!_sessionInitialized) return;
+            // Android also reports onPageFinished for the error page; restoring there would mark
+            // the restore as done and the retried real page would load as a guest.
+            if (_loadError != null) return;
             switch (await _restoreAuthTokenIfNeeded()) {
               case UaDimRestoreOutcome.reloading:
               case UaDimRestoreOutcome.failed:
