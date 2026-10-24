@@ -107,7 +107,10 @@ UaDimAuthRestorePlan planUaDimAuthRestore({
 
   if (normalizedStoredToken != null) {
     return UaDimAuthRestorePlan(
-      shouldReload: normalizedLocalToken != normalizedStoredToken,
+      shouldReload:
+          normalizedLocalToken != normalizedStoredToken ||
+          (normalizedSessionToken != null &&
+              normalizedSessionToken != normalizedStoredToken),
       sessionToken: normalizedStoredToken,
       localToken: normalizedStoredToken,
       clearCurrentUser: false,
@@ -241,5 +244,13 @@ const String uaDimInstallAuthBridgeScript = '''
   window.addEventListener('storage', syncAuth);
   window.setInterval(syncAuth, 1500);
   syncAuth();
+})();
+''';
+
+/// Tells the page that secure-token restore is finished, so web auth state is authoritative.
+const String uaDimAuthReadyScript = '''
+(() => {
+  window.__uaDimAuthReady = true;
+  window.dispatchEvent(new Event('uadim-auth-ready'));
 })();
 ''';

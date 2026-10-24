@@ -20,6 +20,7 @@ import {
   clearAuthSessionCache,
   fetchCurrentUser,
   persistAuthSession,
+  whenAuthReady,
   requestPasswordReset,
   resetPassword as submitPasswordReset,
   submitAuth,
@@ -2563,6 +2564,7 @@ export default function RealEstateApp() {
   const refreshProfile = async () => {
     if (!authToken) return;
     try {
+      await whenAuthReady();
       const data = await fetchCurrentUser(authToken, expireSession);
       if (data.user) setCurrentUser(data.user);
     } catch (error) {

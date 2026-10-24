@@ -145,14 +145,12 @@ test("native auth messages use the version 1 envelope on login and logout (expir
   const messages = await page.evaluate(() => {
     const sent = [];
     window.UaDimAuth = { postMessage: (message) => sent.push(JSON.parse(message)) };
-    const { persistAuthSession, clearAuthSessionCache } = window.__publicModules.auth;
-    persistAuthSession("", null);
+    window.__uaDimAuthReady = true;
+    const { persistAuthSession } = window.__publicModules.auth;
     persistAuthSession("login-token", { id: 1 });
     persistAuthSession("", null);
-    clearAuthSessionCache();
     return sent;
   });
-  // The first call mirrors restored state and must not reach native.
   expect(messages).toEqual([
     { version: 1, type: "auth", token: "login-token" },
     { version: 1, type: "auth", token: null },

@@ -146,6 +146,23 @@ void main() {
     },
   );
 
+  test('UA-Dim auth restore reloads when a stale session token differs', () {
+    final plan = planUaDimAuthRestore(
+      storedToken: 'token-b',
+      sessionToken: 'token-a',
+      localToken: 'token-b',
+      hasCurrentUser: true,
+    );
+    expect(plan.shouldReload, isTrue);
+    expect(plan.sessionToken, 'token-b');
+    expect(plan.localToken, 'token-b');
+  });
+
+  test('UA-Dim auth ready script signals the web auth handshake', () {
+    expect(uaDimAuthReadyScript, contains('__uaDimAuthReady'));
+    expect(uaDimAuthReadyScript, contains('uadim-auth-ready'));
+  });
+
   test(
     'UA-Dim auth restore clears stale browser auth state when native token is absent',
     () {

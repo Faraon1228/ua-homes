@@ -90,6 +90,7 @@ class _UaDimScreenState extends State<UaDimScreen> {
             if (!mounted) return;
             if (await _restoreAuthTokenIfNeeded()) return;
             await _installAuthBridge();
+            await _controller.runJavaScript(uaDimAuthReadyScript);
             await _installIosPhotoPickerBridge();
             final canGoBack = await _controller.canGoBack();
             final title = await _controller.getTitle();

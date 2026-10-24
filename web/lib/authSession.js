@@ -4,13 +4,43 @@ const TOKEN_KEY = "uaDim.authToken";
 const USER_KEY = "uaDim.currentUser";
 
 let lastToken;
+let pending;
+let waiter;
+let released;
+
+const isNative = () => Boolean(window.UaDimAuth?.postMessage);
+const isReady = () => !isNative() || released || window.__uaDimAuthReady;
+
+// The native shell restores its secure token on cold start and then fires "uadim-auth-ready".
+// Until then web auth state may be stale, so nothing is validated or sent to native. Shells that
+// never signal (older builds) are released by the timeout and keep the previous behaviour.
+export function whenAuthReady() {
+  if (isReady()) return Promise.resolve();
+  waiter ??= new Promise((resolve) => {
+    const done = () => {
+      released = true;
+      clearTimeout(timer);
+      window.removeEventListener("uadim-auth-ready", done);
+      if (pending) persistAuthSession(...pending);
+      resolve();
+    };
+    const timer = setTimeout(done, 3000);
+    window.addEventListener("uadim-auth-ready", done);
+  });
+  return waiter;
+}
 
 export function persistAuthSession(token, user) {
   if (typeof window === "undefined") return;
-  // The first call only mirrors what the app restored, so the native secure token wins cold start.
-  const previous = lastToken ?? token;
+  if (!isReady()) {
+    pending = [token, user];
+    whenAuthReady();
+    return;
+  }
+  const native = isNative();
+  const previous = lastToken;
   lastToken = token;
-  if (window.UaDimAuth?.postMessage) {
+  if (native) {
     if (token) window.sessionStorage.setItem(TOKEN_KEY, token);
     else window.sessionStorage.removeItem(TOKEN_KEY);
     window.localStorage.removeItem(TOKEN_KEY);
@@ -25,9 +55,10 @@ export function persistAuthSession(token, user) {
   else window.localStorage.removeItem(USER_KEY);
 }
 
-// A late 401 for a token that was already replaced must not clear the newer session.
+// A late 401 must only clear the session it was issued for, judged by the live storage as well.
 export function clearAuthSessionCache(requestToken) {
-  if (requestToken !== lastToken) return false;
+  const stored = window.sessionStorage.getItem(TOKEN_KEY) || window.localStorage.getItem(TOKEN_KEY);
+  if (requestToken !== lastToken || (stored && stored !== requestToken)) return false;
   window.sessionStorage.removeItem(TOKEN_KEY);
   window.localStorage.removeItem(TOKEN_KEY);
   window.localStorage.removeItem(USER_KEY);
