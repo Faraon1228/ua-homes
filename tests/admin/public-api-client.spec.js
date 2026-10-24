@@ -76,14 +76,20 @@ test("401 invokes auth expiry and clears both cached session forms", async ({ pa
     localStorage.setItem("uaDim.authToken", "stale");
     sessionStorage.setItem("uaDim.authToken", "stale");
     localStorage.setItem("uaDim.currentUser", "{}");
+    window.__publicModules.auth.persistAuthSession("stale", { id: 1 });
+    sessionStorage.setItem("uaDim.authToken", "stale");
+    localStorage.setItem("uaDim.authToken", "stale");
+    localStorage.setItem("uaDim.currentUser", "{}");
+    const ignoredForOtherToken = window.__publicModules.auth.clearAuthSessionCache("replaced");
     let expired = false;
     try {
       await window.__publicModules.auth.fetchCurrentUser("stale", () => {
         expired = true;
-        window.__publicModules.auth.clearAuthSessionCache();
+        window.__publicModules.auth.clearAuthSessionCache("stale");
       });
     } catch {}
     return {
+      ignoredForOtherToken,
       expired,
       localToken: localStorage.getItem("uaDim.authToken"),
       sessionToken: sessionStorage.getItem("uaDim.authToken"),
@@ -91,7 +97,7 @@ test("401 invokes auth expiry and clears both cached session forms", async ({ pa
     };
   });
 
-  expect(state).toEqual({ expired: true, localToken: null, sessionToken: null, user: null });
+  expect(state).toEqual({ ignoredForOtherToken: false, expired: true, localToken: null, sessionToken: null, user: null });
 });
 
 test("503 status remains available to the password-reset retry surface", async ({ page }) => {
@@ -132,4 +138,21 @@ test("latest-request coordinator aborts stale catalog work", async ({ page }) =>
     secondAborted: false,
     secondLatest: true,
   });
+});
+
+test("native auth messages use the version 1 envelope on login and logout (expiry reaches native through the token state change)", async ({ page }) => {
+  await loadPublicModules(page);
+  const messages = await page.evaluate(() => {
+    const sent = [];
+    window.UaDimAuth = { postMessage: (message) => sent.push(JSON.parse(message)) };
+    window.__uaDimAuthReady = true;
+    const { persistAuthSession } = window.__publicModules.auth;
+    persistAuthSession("login-token", { id: 1 });
+    persistAuthSession("", null);
+    return sent;
+  });
+  expect(messages).toEqual([
+    { version: 1, type: "auth", token: "login-token" },
+    { version: 1, type: "auth", token: null },
+  ]);
 });

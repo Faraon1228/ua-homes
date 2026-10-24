@@ -146,6 +146,106 @@ void main() {
     },
   );
 
+  test('UA-Dim auth restore reloads when a stale session token differs', () {
+    final plan = planUaDimAuthRestore(
+      storedToken: 'token-b',
+      sessionToken: 'token-a',
+      localToken: 'token-b',
+      hasCurrentUser: true,
+    );
+    expect(plan.shouldReload, isTrue);
+    expect(plan.sessionToken, 'token-b');
+    expect(plan.localToken, 'token-b');
+  });
+
+  test(
+    'UA-Dim auth restore failure is reported, never released, and retry succeeds',
+    () async {
+      final executed = <String>[];
+      var reloads = 0;
+      var failSnapshot = true;
+      Future<UaDimRestoreOutcome> run() => runUaDimAuthRestore(
+        storedToken: 'token-b',
+        evaluate: (script) async {
+          if (failSnapshot) throw StateError('webview js failure');
+          return '{"sessionToken":"token-b","localToken":"token-b","hasCurrentUser":true}';
+        },
+        execute: (script) async => executed.add(script),
+        reload: () async => reloads++,
+      );
+
+      expect(await run(), UaDimRestoreOutcome.failed);
+      expect(executed, isEmpty);
+      expect(reloads, 0);
+
+      failSnapshot = false;
+      expect(await run(), UaDimRestoreOutcome.ready);
+      expect(executed, hasLength(1));
+      expect(executed.single, contains('token-b'));
+    },
+  );
+
+  test(
+    'UA-Dim auth restore reports a failed apply or reload instead of ready',
+    () async {
+      Future<Object> snapshot(String _) async =>
+          '{"sessionToken":null,"localToken":null,"hasCurrentUser":false}';
+      expect(
+        await runUaDimAuthRestore(
+          storedToken: 'token-b',
+          evaluate: snapshot,
+          execute: (_) async => throw StateError('apply failed'),
+          reload: () async {},
+        ),
+        UaDimRestoreOutcome.failed,
+      );
+      expect(
+        await runUaDimAuthRestore(
+          storedToken: 'token-b',
+          evaluate: snapshot,
+          execute: (_) async {},
+          reload: () async => throw StateError('reload failed'),
+        ),
+        UaDimRestoreOutcome.failed,
+      );
+    },
+  );
+
+  test(
+    'UA-Dim release failure stops the poller, never signals ready, retry succeeds',
+    () async {
+      final ran = <String>[];
+      var failOn = uaDimInstallAuthBridgeScript;
+      Future<void> execute(String script) async {
+        ran.add(script);
+        if (script == failOn) throw StateError('boom');
+      }
+
+      expect(await runUaDimAuthRelease(execute: execute), isFalse);
+      expect(ran, [uaDimInstallAuthBridgeScript, uaDimStopAuthBridgeScript]);
+
+      ran.clear();
+      failOn = uaDimAuthReadyScript;
+      expect(await runUaDimAuthRelease(execute: execute), isFalse);
+      expect(ran, [
+        uaDimInstallAuthBridgeScript,
+        uaDimAuthReadyScript,
+        uaDimStopAuthBridgeScript,
+      ]);
+
+      ran.clear();
+      failOn = '';
+      expect(await runUaDimAuthRelease(execute: execute), isTrue);
+      expect(ran, [uaDimInstallAuthBridgeScript, uaDimAuthReadyScript]);
+    },
+  );
+
+  test('UA-Dim auth ready script signals the web auth handshake', () {
+    expect(uaDimAuthHandshakeChannel, 'UaDimAuthHandshake');
+    expect(uaDimAuthReadyScript, contains('__uaDimAuthReady'));
+    expect(uaDimAuthReadyScript, contains('uadim-auth-ready'));
+  });
+
   test(
     'UA-Dim auth restore clears stale browser auth state when native token is absent',
     () {
@@ -241,6 +341,11 @@ void main() {
     );
     expect(UaDimAuthBridgeMessage.parse('{"version":1,"type":"auth"}'), isNull);
     expect(
+      UaDimAuthBridgeMessage.parse('{"type":"auth","token":null}'),
+      isNull,
+      reason: 'unversioned envelopes are ignored; web must send version 1',
+    );
+    expect(
       UaDimAuthBridgeMessage.parse('{"version":1,"type":"auth","token":123}'),
       isNull,
     );
@@ -283,6 +388,79 @@ void main() {
         'delete',
       ]);
       expect(consumer.tokens, ['login-token', 'account-token', null]);
+    },
+  );
+
+  test(
+    'UA-Dim logout deletes the stored token at once, dedupes the poll and allows the same login again',
+    () async {
+      final store = _RecordingAuthStore();
+      final consumer = _RecordingAuthConsumer();
+      final coordinator = UaDimAuthCoordinator(
+        store,
+        consumer,
+        initialToken: 'stored-token',
+      );
+      const logout = '{"version":1,"type":"auth","token":null}';
+
+      expect(await coordinator.handle(logout), isTrue);
+      expect(store.operations, ['delete']);
+      expect(coordinator.currentToken, isNull);
+      expect(await coordinator.handle(logout), isFalse);
+      expect(store.operations, ['delete']);
+
+      final restore = planUaDimAuthRestore(
+        storedToken: coordinator.currentToken,
+        sessionToken: null,
+        localToken: 'stored-token',
+        hasCurrentUser: true,
+      );
+      expect(restore.sessionToken, isNull);
+      expect(restore.localToken, isNull);
+      expect(restore.clearCurrentUser, isTrue);
+
+      expect(
+        await coordinator.handle(
+          '{"version":1,"type":"auth","token":"stored-token"}',
+        ),
+        isTrue,
+      );
+      expect(store.operations, ['delete', 'write:stored-token']);
+    },
+  );
+
+  test(
+    'UA-Dim auth coordinator surfaces store failures and retries instead of deduping stale state',
+    () async {
+      final store = _RecordingAuthStore();
+      final consumer = _RecordingAuthConsumer();
+      final coordinator = UaDimAuthCoordinator(
+        store,
+        consumer,
+        initialToken: 'stored-token',
+      );
+      const logout = '{"version":1,"type":"auth","token":null}';
+
+      store.failNext = true;
+      await expectLater(coordinator.handle(logout), throwsStateError);
+      expect(coordinator.currentToken, 'stored-token');
+      expect(consumer.tokens, isEmpty);
+
+      expect(await coordinator.handle(logout), isTrue);
+      expect(store.operations, ['delete']);
+      expect(coordinator.currentToken, isNull);
+
+      store.failNext = true;
+      await expectLater(
+        coordinator.handle('{"version":1,"type":"auth","token":"next"}'),
+        throwsStateError,
+      );
+      expect(coordinator.currentToken, isNull);
+      expect(
+        await coordinator.handle('{"version":1,"type":"auth","token":"next"}'),
+        isTrue,
+      );
+      expect(store.operations, ['delete', 'write:next']);
     },
   );
 
@@ -421,16 +599,25 @@ class _RecordingAuthStore implements UaDimAuthTokenStore {
 
   final Duration delay;
   final List<String> operations = [];
+  bool failNext = false;
+
+  void _failIfRequested() {
+    if (!failNext) return;
+    failNext = false;
+    throw StateError('store failure');
+  }
 
   @override
   Future<void> delete() async {
     await Future<void>.delayed(delay);
+    _failIfRequested();
     operations.add('delete');
   }
 
   @override
   Future<void> write(String token) async {
     await Future<void>.delayed(delay);
+    _failIfRequested();
     operations.add('write:$token');
   }
 }

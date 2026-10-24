@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 
+/// Registered at document start (iOS and Android channels) so the page can tell that this
+/// shell will signal restore completion instead of being released by a timeout.
+const String uaDimAuthHandshakeChannel = 'UaDimAuthHandshake';
 const String uaDimAuthStorageKey = 'uaDim.authToken';
 
 String? normalizeUaDimAuthToken(String? token) {
@@ -107,7 +110,10 @@ UaDimAuthRestorePlan planUaDimAuthRestore({
 
   if (normalizedStoredToken != null) {
     return UaDimAuthRestorePlan(
-      shouldReload: normalizedLocalToken != normalizedStoredToken,
+      shouldReload:
+          normalizedLocalToken != normalizedStoredToken ||
+          (normalizedSessionToken != null &&
+              normalizedSessionToken != normalizedStoredToken),
       sessionToken: normalizedStoredToken,
       localToken: normalizedStoredToken,
       clearCurrentUser: false,
@@ -154,12 +160,12 @@ class UaDimAuthCoordinator {
       nextToken: parsed.token,
     );
     if (!transition.changed) return false;
-    _currentToken = transition.nextToken;
     if (transition.shouldDeleteStoredToken) {
       await _store.delete();
     } else {
       await _store.write(transition.nextToken!);
     }
+    _currentToken = transition.nextToken;
     await _consumer.setAuthToken(transition.nextToken);
     return true;
   });
@@ -171,9 +177,9 @@ class UaDimAuthCoordinator {
     )) {
       return false;
     }
+    await _store.delete();
     _currentToken = null;
     await _consumer.setAuthToken(null);
-    await _store.delete();
     return true;
   });
 
@@ -239,7 +245,72 @@ const String uaDimInstallAuthBridgeScript = '''
     UaDimAuth.postMessage(payload);
   };
   window.addEventListener('storage', syncAuth);
-  window.setInterval(syncAuth, 1500);
+  const timer = window.setInterval(syncAuth, 1500);
+  window.__uaDimAuthBridgeStop = () => {
+    window.clearInterval(timer);
+    window.removeEventListener('storage', syncAuth);
+  };
   syncAuth();
 })();
 ''';
+
+/// Stops a partially released poller so a failed release cannot flush web state to native.
+const String uaDimStopAuthBridgeScript = '''
+(() => { window.__uaDimAuthBridgeStop?.(); })();
+''';
+
+/// Tells the page that secure-token restore is finished, so web auth state is authoritative.
+const String uaDimAuthReadyScript = '''
+(() => {
+  window.__uaDimAuthReady = true;
+  window.dispatchEvent(new Event('uadim-auth-ready'));
+})();
+''';
+
+enum UaDimRestoreOutcome { ready, reloading, failed }
+
+/// Restores the secure native token into the page. Any failure is reported as [failed] so the
+/// caller can surface it; the page must then stay un-released and nothing may be flushed back.
+Future<UaDimRestoreOutcome> runUaDimAuthRestore({
+  required String? storedToken,
+  required Future<Object> Function(String script) evaluate,
+  required Future<void> Function(String script) execute,
+  required Future<void> Function() reload,
+}) async {
+  try {
+    final raw = await evaluate(uaDimAuthSnapshotScript);
+    final decoded = decodeUaDimJsonEnvelope(
+      raw is String ? raw : raw.toString(),
+    );
+    final snapshot = decoded is Map ? decoded : const <String, Object?>{};
+    final plan = planUaDimAuthRestore(
+      storedToken: storedToken,
+      sessionToken: snapshot['sessionToken']?.toString(),
+      localToken: snapshot['localToken']?.toString(),
+      hasCurrentUser: snapshot['hasCurrentUser'] == true,
+    );
+    await execute(uaDimApplyAuthRestoreScript(plan));
+    if (!plan.shouldReload) return UaDimRestoreOutcome.ready;
+    await reload();
+    return UaDimRestoreOutcome.reloading;
+  } catch (_) {
+    return UaDimRestoreOutcome.failed;
+  }
+}
+
+/// Installs the poller and releases the page. If either step fails the poller is stopped, the
+/// ready signal is not (further) sent and [false] is returned so the UI can offer a retry.
+Future<bool> runUaDimAuthRelease({
+  required Future<void> Function(String script) execute,
+}) async {
+  try {
+    await execute(uaDimInstallAuthBridgeScript);
+    await execute(uaDimAuthReadyScript);
+    return true;
+  } catch (_) {
+    try {
+      await execute(uaDimStopAuthBridgeScript);
+    } catch (_) {}
+    return false;
+  }
+}

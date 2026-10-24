@@ -89,6 +89,44 @@
     if (banner) banner.hidden = currentState.decided;
   }
 
+  // Flutter registers the UaDimMediaPicker channel: window.webkit.messageHandlers on iOS,
+  // window.UaDimMediaPicker on Android. Native floating buttons: iOS picker everywhere plus
+  // share above it on listings; Android share on listings only.
+  function nativeOverlayMode() {
+    var handlers = window.webkit && window.webkit.messageHandlers;
+    var onListing = /^\/listing\//.test(window.location.pathname);
+    if (handlers && handlers.UaDimMediaPicker) return onListing ? 'stacked' : 'single';
+    var android = window.UaDimMediaPicker;
+    if (android && typeof android.postMessage === 'function') return onListing ? 'single' : '';
+    return '';
+  }
+
+  function syncNativeOverlay() {
+    var banner = document.getElementById('ua-privacy-banner');
+    if (!banner) return;
+    var mode = nativeOverlayMode();
+    if (mode) {
+      banner.setAttribute('data-native-overlay', mode);
+    } else {
+      banner.removeAttribute('data-native-overlay');
+    }
+  }
+
+  function watchNativeOverlay() {
+    ['pushState', 'replaceState'].forEach(function (name) {
+      var original = window.history[name];
+      if (typeof original !== 'function') return;
+      window.history[name] = function () {
+        var result = original.apply(this, arguments);
+        syncNativeOverlay();
+        return result;
+      };
+    });
+    ['popstate', 'hashchange', 'pageshow', 'load'].forEach(function (type) {
+      window.addEventListener(type, syncNativeOverlay);
+    });
+  }
+
   function openSettings(trigger) {
     var dialog = document.getElementById('ua-privacy-dialog');
     var checkbox = document.getElementById('ua-consent-analytics');
@@ -197,6 +235,8 @@
     });
 
     renderBanner();
+    syncNativeOverlay();
+    watchNativeOverlay();
   }
 
   updateGoogleConsent();

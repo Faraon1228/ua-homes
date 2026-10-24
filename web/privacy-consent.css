@@ -11,6 +11,18 @@
   display: none;
 }
 
+/* The iOS app draws native floating buttons above the WebView; keep consent clear of them. */
+.ua-privacy-banner[data-native-overlay] {
+  --ua-native-clearance: 3.5rem;
+  bottom: calc(max(1rem, env(safe-area-inset-bottom)) + var(--ua-native-clearance));
+  max-height: calc(100dvh - var(--ua-native-clearance) - 2rem);
+  overflow-y: auto;
+}
+
+.ua-privacy-banner[data-native-overlay="stacked"] {
+  --ua-native-clearance: 7.5rem;
+}
+
 .ua-privacy-banner__content {
   display: flex;
   max-width: 72rem;

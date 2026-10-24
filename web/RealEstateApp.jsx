@@ -20,6 +20,7 @@ import {
   clearAuthSessionCache,
   fetchCurrentUser,
   persistAuthSession,
+  whenAuthReady,
   requestPasswordReset,
   resetPassword as submitPasswordReset,
   submitAuth,
@@ -2553,7 +2554,8 @@ export default function RealEstateApp() {
   };
 
   const expireSession = () => {
-    clearAuthSessionCache();
+    // Each render closes over its own token, so only the current session may be expired.
+    if (!clearAuthSessionCache(authToken)) return;
     setAuthToken("");
     setCurrentUser(null);
     setAuthError("Сесія закінчилась — увійдіть у кабінет знову.");
@@ -2562,6 +2564,7 @@ export default function RealEstateApp() {
   const refreshProfile = async () => {
     if (!authToken) return;
     try {
+      await whenAuthReady();
       const data = await fetchCurrentUser(authToken, expireSession);
       if (data.user) setCurrentUser(data.user);
     } catch (error) {
