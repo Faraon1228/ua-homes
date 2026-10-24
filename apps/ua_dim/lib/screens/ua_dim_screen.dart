@@ -25,7 +25,16 @@ bool isJavaScriptTrue(Object? value) =>
     value == true || value == 'true' || value == 1;
 
 class UaDimScreen extends StatefulWidget {
-  const UaDimScreen({super.key});
+  /// [startUrl] and [navigationPolicy] exist so integration tests can target a local server;
+  /// production always uses the defaults.
+  const UaDimScreen({
+    super.key,
+    this.startUrl,
+    this.navigationPolicy = const UaDimNavigationPolicy(),
+  });
+
+  final Uri? startUrl;
+  final UaDimNavigationPolicy navigationPolicy;
 
   @override
   State<UaDimScreen> createState() => _UaDimScreenState();
@@ -36,13 +45,13 @@ class _UaDimScreenState extends State<UaDimScreen> {
   bool _isLoading = true;
   bool _canGoBack = false;
   String? _loadError;
-  Uri _currentUri = Uri.parse(uaDimProductionUrl);
+  late Uri _currentUri = widget.startUrl ?? Uri.parse(uaDimProductionUrl);
   String _pageTitle = 'UA-Dim';
   bool _iosPhotoPickerAvailable = false;
   bool _iosPhotoBridgeAvailable = false;
   bool _isPickingIosPhotos = false;
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
-  final UaDimNavigationPolicy _navigationPolicy = const UaDimNavigationPolicy();
+  UaDimNavigationPolicy get _navigationPolicy => widget.navigationPolicy;
   late UaDimAuthCoordinator _authCoordinator;
   final AppLinks _appLinks = AppLinks();
   StreamSubscription<Uri>? _linkSubscription;
@@ -163,7 +172,8 @@ class _UaDimScreenState extends State<UaDimScreen> {
     final initialUri = await _configureDeepLinks();
     await _configureConnectivity();
     if (!mounted) return;
-    _currentUri = initialUri ?? Uri.parse(uaDimProductionUrl);
+    _currentUri =
+        initialUri ?? widget.startUrl ?? Uri.parse(uaDimProductionUrl);
     await _controller.loadRequest(_currentUri);
   }
 
