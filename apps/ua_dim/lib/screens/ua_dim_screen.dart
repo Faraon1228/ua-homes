@@ -73,6 +73,10 @@ class _UaDimScreenState extends State<UaDimScreen> {
         onMessageReceived: _handleIosPhotoPickerMessage,
       )
       ..addJavaScriptChannel(
+        uaDimAuthHandshakeChannel,
+        onMessageReceived: (_) {},
+      )
+      ..addJavaScriptChannel(
         'UaDimAuth',
         onMessageReceived: _handleAuthTokenMessage,
       )
@@ -88,7 +92,12 @@ class _UaDimScreenState extends State<UaDimScreen> {
           },
           onPageFinished: (url) async {
             if (!mounted) return;
-            if (await _restoreAuthTokenIfNeeded()) return;
+            try {
+              if (await _restoreAuthTokenIfNeeded()) return;
+            } catch (error) {
+              // Without a ready signal the page would hold auth back forever.
+              debugPrint('UA-Dim auth restore failed: $error');
+            }
             await _installAuthBridge();
             await _controller.runJavaScript(uaDimAuthReadyScript);
             await _installIosPhotoPickerBridge();

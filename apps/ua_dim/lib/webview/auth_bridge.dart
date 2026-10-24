@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 
+/// Registered at document start (iOS and Android channels) so the page can tell that this
+/// shell will signal restore completion instead of being released by a timeout.
+const String uaDimAuthHandshakeChannel = 'UaDimAuthHandshake';
 const String uaDimAuthStorageKey = 'uaDim.authToken';
 
 String? normalizeUaDimAuthToken(String? token) {

@@ -9,6 +9,7 @@ const json = (route, body, status = 200) =>
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     window.__nativeAuth = [];
+    window.UaDimAuthHandshake = { postMessage() {} };
     window.UaDimAuth = { postMessage: (message) => window.__nativeAuth.push(JSON.parse(message)) };
   });
   await page.route("**/api/listings?*", (route) => json(route, { listings: [], total: 0, has_more: false }));
@@ -79,7 +80,24 @@ test("a 401 for the stale token arriving after native restore wrote the secure t
   expect((await messages(page)).some((message) => message.token === null)).toBe(false);
 });
 
-test("shells that never signal ready are released by the timeout", async ({ page }) => {
+test("a handshake-capable shell is never released by a timer, however slow its restore is", async ({ page }) => {
+  await seedStale(page, "token-a");
+  const meAuth = [];
+  await page.route("**/api/auth/me", (route) => {
+    meAuth.push(route.request().headers().authorization);
+    return json(route, { user });
+  });
+  await page.goto("/real-estate-demo.html?seller=1");
+  await expect(page.locator("#header-logout-cta")).toBeVisible();
+  await page.waitForTimeout(4500);
+  expect(meAuth).toEqual([]);
+  expect(await messages(page)).toEqual([]);
+  await nativeReady(page);
+  await expect.poll(() => meAuth[0]).toBe("Bearer token-a");
+});
+
+test("legacy shells without the handshake channel are released by the timeout", async ({ page }) => {
+  await page.addInitScript(() => delete window.UaDimAuthHandshake);
   await seedStale(page, "token-a");
   const meAuth = [];
   await page.route("**/api/auth/me", (route) => {

@@ -159,6 +159,7 @@ void main() {
   });
 
   test('UA-Dim auth ready script signals the web auth handshake', () {
+    expect(uaDimAuthHandshakeChannel, 'UaDimAuthHandshake');
     expect(uaDimAuthReadyScript, contains('__uaDimAuthReady'));
     expect(uaDimAuthReadyScript, contains('uadim-auth-ready'));
   });

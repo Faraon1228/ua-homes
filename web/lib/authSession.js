@@ -11,20 +11,21 @@ let released;
 const isNative = () => Boolean(window.UaDimAuth?.postMessage);
 const isReady = () => !isNative() || released || window.__uaDimAuthReady;
 
-// The native shell restores its secure token on cold start and then fires "uadim-auth-ready".
-// Until then web auth state may be stale, so nothing is validated or sent to native. Shells that
-// never signal (older builds) are released by the timeout and keep the previous behaviour.
+// A handshake-capable shell registers the UaDimAuthHandshake channel at document start, restores
+// its secure token on cold start and then fires "uadim-auth-ready". Until then web auth state may
+// be stale, so nothing is validated or sent to native, however slow the restore is. Only legacy
+// shells without the channel are released by the timeout and keep the previous behaviour.
 export function whenAuthReady() {
   if (isReady()) return Promise.resolve();
   waiter ??= new Promise((resolve) => {
     const done = () => {
+      if (released) return;
       released = true;
-      clearTimeout(timer);
       window.removeEventListener("uadim-auth-ready", done);
       if (pending) persistAuthSession(...pending);
       resolve();
     };
-    const timer = setTimeout(done, 3000);
+    if (!window.UaDimAuthHandshake) setTimeout(done, 3000);
     window.addEventListener("uadim-auth-ready", done);
   });
   return waiter;
