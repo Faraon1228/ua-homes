@@ -257,3 +257,34 @@ const String uaDimAuthReadyScript = '''
   window.dispatchEvent(new Event('uadim-auth-ready'));
 })();
 ''';
+
+enum UaDimRestoreOutcome { ready, reloading, failed }
+
+/// Restores the secure native token into the page. Any failure is reported as [failed] so the
+/// caller can surface it; the page must then stay un-released and nothing may be flushed back.
+Future<UaDimRestoreOutcome> runUaDimAuthRestore({
+  required String? storedToken,
+  required Future<Object> Function(String script) evaluate,
+  required Future<void> Function(String script) execute,
+  required Future<void> Function() reload,
+}) async {
+  try {
+    final raw = await evaluate(uaDimAuthSnapshotScript);
+    final decoded = decodeUaDimJsonEnvelope(
+      raw is String ? raw : raw.toString(),
+    );
+    final snapshot = decoded is Map ? decoded : const <String, Object?>{};
+    final plan = planUaDimAuthRestore(
+      storedToken: storedToken,
+      sessionToken: snapshot['sessionToken']?.toString(),
+      localToken: snapshot['localToken']?.toString(),
+      hasCurrentUser: snapshot['hasCurrentUser'] == true,
+    );
+    await execute(uaDimApplyAuthRestoreScript(plan));
+    if (!plan.shouldReload) return UaDimRestoreOutcome.ready;
+    await reload();
+    return UaDimRestoreOutcome.reloading;
+  } catch (_) {
+    return UaDimRestoreOutcome.failed;
+  }
+}

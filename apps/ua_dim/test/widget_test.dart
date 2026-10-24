@@ -158,6 +158,59 @@ void main() {
     expect(plan.localToken, 'token-b');
   });
 
+  test(
+    'UA-Dim auth restore failure is reported, never released, and retry succeeds',
+    () async {
+      final executed = <String>[];
+      var reloads = 0;
+      var failSnapshot = true;
+      Future<UaDimRestoreOutcome> run() => runUaDimAuthRestore(
+        storedToken: 'token-b',
+        evaluate: (script) async {
+          if (failSnapshot) throw StateError('webview js failure');
+          return '{"sessionToken":"token-b","localToken":"token-b","hasCurrentUser":true}';
+        },
+        execute: (script) async => executed.add(script),
+        reload: () async => reloads++,
+      );
+
+      expect(await run(), UaDimRestoreOutcome.failed);
+      expect(executed, isEmpty);
+      expect(reloads, 0);
+
+      failSnapshot = false;
+      expect(await run(), UaDimRestoreOutcome.ready);
+      expect(executed, hasLength(1));
+      expect(executed.single, contains('token-b'));
+    },
+  );
+
+  test(
+    'UA-Dim auth restore reports a failed apply or reload instead of ready',
+    () async {
+      Future<Object> snapshot(String _) async =>
+          '{"sessionToken":null,"localToken":null,"hasCurrentUser":false}';
+      expect(
+        await runUaDimAuthRestore(
+          storedToken: 'token-b',
+          evaluate: snapshot,
+          execute: (_) async => throw StateError('apply failed'),
+          reload: () async {},
+        ),
+        UaDimRestoreOutcome.failed,
+      );
+      expect(
+        await runUaDimAuthRestore(
+          storedToken: 'token-b',
+          evaluate: snapshot,
+          execute: (_) async {},
+          reload: () async => throw StateError('reload failed'),
+        ),
+        UaDimRestoreOutcome.failed,
+      );
+    },
+  );
+
   test('UA-Dim auth ready script signals the web auth handshake', () {
     expect(uaDimAuthHandshakeChannel, 'UaDimAuthHandshake');
     expect(uaDimAuthReadyScript, contains('__uaDimAuthReady'));

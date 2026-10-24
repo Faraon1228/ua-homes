@@ -48,6 +48,8 @@ class _UaDimScreenState extends State<UaDimScreen> {
   StreamSubscription<Uri>? _linkSubscription;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   bool _restoredAuthForPage = false;
+  bool _sessionInitialized = false;
+  late final Future<void> _channelsReady;
   bool _isOffline = false;
 
   bool get _supportsAndroidNativeIntegration =>
@@ -68,18 +70,6 @@ class _UaDimScreenState extends State<UaDimScreen> {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0xFFF1F5F9))
-      ..addJavaScriptChannel(
-        'UaDimMediaPicker',
-        onMessageReceived: _handleIosPhotoPickerMessage,
-      )
-      ..addJavaScriptChannel(
-        uaDimAuthHandshakeChannel,
-        onMessageReceived: (_) {},
-      )
-      ..addJavaScriptChannel(
-        'UaDimAuth',
-        onMessageReceived: _handleAuthTokenMessage,
-      )
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (_) {
@@ -92,11 +82,13 @@ class _UaDimScreenState extends State<UaDimScreen> {
           },
           onPageFinished: (url) async {
             if (!mounted) return;
-            try {
-              if (await _restoreAuthTokenIfNeeded()) return;
-            } catch (error) {
-              // Without a ready signal the page would hold auth back forever.
-              debugPrint('UA-Dim auth restore failed: $error');
+            if (!_sessionInitialized) return;
+            switch (await _restoreAuthTokenIfNeeded()) {
+              case UaDimRestoreOutcome.reloading:
+              case UaDimRestoreOutcome.failed:
+                return;
+              case UaDimRestoreOutcome.ready:
+                break;
             }
             await _installAuthBridge();
             await _controller.runJavaScript(uaDimAuthReadyScript);
@@ -129,24 +121,55 @@ class _UaDimScreenState extends State<UaDimScreen> {
           },
         ),
       );
+    _channelsReady = Future.wait(<Future<void>>[
+      _controller.addJavaScriptChannel(
+        'UaDimMediaPicker',
+        onMessageReceived: _handleIosPhotoPickerMessage,
+      ),
+      _controller.addJavaScriptChannel(
+        uaDimAuthHandshakeChannel,
+        onMessageReceived: (_) {},
+      ),
+      _controller.addJavaScriptChannel(
+        'UaDimAuth',
+        onMessageReceived: _handleAuthTokenMessage,
+      ),
+    ]);
     _initializeMobileSession();
     _configureAndroidFileSelector();
     _configureIosPhotoLibrary();
   }
 
   Future<void> _initializeMobileSession() async {
-    final storedToken = await _secureStorage.read(key: uaDimAuthStorageKey);
-    _authCoordinator = UaDimAuthCoordinator(
-      _SecureAuthTokenStore(_secureStorage),
-      _PushAuthTokenConsumer(),
-      initialToken: storedToken,
-    );
+    try {
+      // Channels must be registered before the first load so the page sees them at document start.
+      await _channelsReady;
+      final storedToken = await _secureStorage.read(key: uaDimAuthStorageKey);
+      _authCoordinator = UaDimAuthCoordinator(
+        _SecureAuthTokenStore(_secureStorage),
+        _PushAuthTokenConsumer(),
+        initialToken: storedToken,
+      );
+      _sessionInitialized = true;
+    } catch (error) {
+      _showSessionError(error);
+      return;
+    }
     unawaited(_initializeMobilePush());
     final initialUri = await _configureDeepLinks();
     await _configureConnectivity();
     if (!mounted) return;
     _currentUri = initialUri ?? Uri.parse(uaDimProductionUrl);
     await _controller.loadRequest(_currentUri);
+  }
+
+  void _showSessionError(Object error) {
+    debugPrint('UA-Dim session restore failed: $error');
+    if (!mounted) return;
+    setState(() {
+      _isLoading = false;
+      _loadError = 'Не вдалося відновити сесію. Спробуйте ще раз.';
+    });
   }
 
   Future<void> _initializeMobilePush() async {
@@ -194,29 +217,20 @@ class _UaDimScreenState extends State<UaDimScreen> {
     );
   }
 
-  Future<bool> _restoreAuthTokenIfNeeded() async {
-    if (_restoredAuthForPage) return false;
-    _restoredAuthForPage = true;
-    final snapshotRaw = await _controller.runJavaScriptReturningResult(
-      uaDimAuthSnapshotScript,
-    );
-    final snapshotMessage = snapshotRaw is String
-        ? snapshotRaw
-        : snapshotRaw.toString();
-    final decodedSnapshot = decodeUaDimJsonEnvelope(snapshotMessage);
-    final snapshot = decodedSnapshot is Map
-        ? decodedSnapshot
-        : const <String, Object?>{};
-    final plan = planUaDimAuthRestore(
+  Future<UaDimRestoreOutcome> _restoreAuthTokenIfNeeded() async {
+    if (_restoredAuthForPage) return UaDimRestoreOutcome.ready;
+    final outcome = await runUaDimAuthRestore(
       storedToken: _authCoordinator.currentToken,
-      sessionToken: snapshot['sessionToken']?.toString(),
-      localToken: snapshot['localToken']?.toString(),
-      hasCurrentUser: snapshot['hasCurrentUser'] == true,
+      evaluate: _controller.runJavaScriptReturningResult,
+      execute: _controller.runJavaScript,
+      reload: _controller.reload,
     );
-    await _controller.runJavaScript(uaDimApplyAuthRestoreScript(plan));
-    if (!plan.shouldReload) return false;
-    await _controller.reload();
-    return true;
+    if (outcome == UaDimRestoreOutcome.failed) {
+      _showSessionError('page auth restore');
+    } else {
+      _restoredAuthForPage = true;
+    }
+    return outcome;
   }
 
   Future<void> _installAuthBridge() async {
@@ -224,6 +238,7 @@ class _UaDimScreenState extends State<UaDimScreen> {
   }
 
   Future<void> _handleAuthTokenMessage(JavaScriptMessage message) async {
+    if (!_sessionInitialized) return;
     await _authCoordinator.handle(message.message);
   }
 
@@ -536,6 +551,10 @@ class _UaDimScreenState extends State<UaDimScreen> {
       _isLoading = true;
       _loadError = null;
     });
+    if (!_sessionInitialized) {
+      _initializeMobileSession();
+      return;
+    }
     _controller.loadRequest(_currentUri);
   }
 
