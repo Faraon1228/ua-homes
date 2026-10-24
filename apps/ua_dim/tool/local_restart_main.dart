@@ -34,6 +34,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final next = await _server('/__restart/next') as Map;
   final action = next['action'] as String;
+  final startPath = next['path'] as String? ?? '/seller';
   if (action == 'seed') {
     await _storage.write(key: uaDimAuthStorageKey, value: 'synthetic-token-B');
   }
@@ -42,7 +43,7 @@ Future<void> main() async {
   runApp(
     MaterialApp(
       home: UaDimScreen(
-        startUrl: Uri.parse('$_origin/seller'),
+        startUrl: Uri.parse('$_origin$startPath'),
         navigationPolicy: const UaDimNavigationPolicy(
           allowedHosts: {'127.0.0.1'},
         ),
